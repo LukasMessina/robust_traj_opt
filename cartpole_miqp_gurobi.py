@@ -232,7 +232,7 @@ print(f"\nModel: {m.NumVars} vars ({m.NumIntVars} int), "
       f"{m.NumSOS} SOS")
 
 
-# ---- 4. Solve --------------------------------------------------------------
+# ---- 4. Solve -------------------------------------------------------------
 t0 = time.time()
 m.optimize()
 elapsed = time.time() - t0
