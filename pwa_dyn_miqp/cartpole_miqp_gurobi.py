@@ -141,7 +141,7 @@ m.setParam("MIPFocus",     3)
 m.setParam("Cuts",         3)
 m.setParam("Heuristics",   0)
 m.setParam("RINS",         0)
-m.setParam("Method",       2)   # barrier at the root LP/QCP relaxation
+m.setParam("Method",       1)   
 m.setParam("Presolve",     2)
 m.setParam("PreSparsify",  1)
 
@@ -244,7 +244,7 @@ print(f"NodeCount : {m.NodeCount}")
 
 # ---- 5. Extract and plot ---------------------------------------------------
 x_val = x.X
-u_val = u.X
+u_val = u.X 
 z_val = z.X
 mode_seq = np.argmax(z_val, axis=0)
 dwell = {i: int(np.sum(mode_seq == i)) for i in range(NUM_MODES)}
