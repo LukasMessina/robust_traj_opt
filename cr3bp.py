@@ -191,16 +191,29 @@ class HaloL2ToHaloL1(TestCase):
     target_period_nd: float = 2.5748200748171399     # [-]
 
 
+@dataclass
+class OCPSolution:
+    mesh: np.ndarray
+    degrees: np.ndarray
+    x: np.ndarray
+    u: np.ndarray
+    sigma: np.ndarray
+    stages: dict[tuple[int, int], np.ndarray]
+    diagnostics: dict[str, float]
+
+
+
 CASE_TYPES: tuple[type[TestCase], ...] = (LyapunovL1ToL2, HaloL2ToHaloL1)
 CASE_REGISTRY: dict[str, type[TestCase]] = {
     case_type().test_case_id: case_type for case_type in CASE_TYPES
 }
 MAX_ITER = 10000
 PRINT_LEVEL = 0
-TOL = 1e-7
+TOL = 1e-8
 DEFAULT_OUTPUT_DIR = Path("output/cr3bp")
 DEFAULT_OUTPUT_PREFIX = ""
-
+INITIAL_GUESS = OCPSolution | tuple[np.ndarray, np.ndarray, np.ndarray] | None
+COLLOCATION_CACHE: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = {}
 
 
 def _compute_root(function, lo: float, hi: float, iterations: int = 100, tol: float = 1e-14) -> float:
@@ -239,7 +252,6 @@ def _compute_root(function, lo: float, hi: float, iterations: int = 100, tol: fl
         x = x_new
 
     return float(0.5 * (lo + hi))
-
 
 def collinear_lagrange_points(case: CR3BPEarthMoon) -> dict[str, float]:
     def equilibrium_condition(x):
@@ -294,7 +306,6 @@ def eom(case: CR3BPEarthMoon, state, control, sigma):
         return casadi.vertcat(vx, vy, vz, ax, ay, az, mdot)
     return np.array([vx, vy, vz, ax, ay, az, mdot], dtype=float)
 
-
 def propagate_periodic_orbit(
     case: CR3BPEarthMoon,
     initial_state: np.ndarray,
@@ -322,7 +333,6 @@ def _rollout(
         x_guess[:, k + 1] = integrator.rk4(case, x_guess[:, k], u_guess[:, k], sigma_guess[0, k], h)
     return x_guess, u_guess, sigma_guess
 
-
 def _resample_solution(
     sol: tuple[np.ndarray, np.ndarray, np.ndarray] | None,
     nodes: int,
@@ -337,7 +347,6 @@ def _resample_solution(
     u_guess = np.vstack([np.interp(new_grid, old_grid, old_u[i]) for i in range(old_u.shape[0])])
     sigma_guess = np.vstack([np.interp(new_grid, old_grid, old_sigma[0])])
     return x_guess, u_guess, sigma_guess
-
 
 def _warm_start(
     case: TestCase,
@@ -389,20 +398,29 @@ def _warm_start(
     opti.set_initial(u_var, u_guess)
     opti.set_initial(sigma_var, sigma_guess)
 
-    ipopt_options = {
+    ipopt_settings = {
         "max_iter": max_iter,
-        "tol": TOL,
+        # Desired convergence tolerance (relative)
+        "tol": TOL,                     
+        # "Acceptable" convergence tolerance (relative)
         "acceptable_tol": TOL,
+        # Desired threshold for the constraint and variable bound violation
         "constr_viol_tol": TOL,
+        # Desired threshold for the dual infeasibility
         "dual_inf_tol": TOL,
+        # Desired threshold for the complementarity conditions
         "compl_inf_tol": TOL,
+        # Update strategy for barrier parameter.
         "mu_strategy": "adaptive",
         "print_level": print_level,
+        # Suppresses IPOPT banner
         "sb": "yes",
     }
     if extra_options:
-        ipopt_options.update(extra_options)
-    opti.solver("ipopt", {"expand": True}, ipopt_options)
+        ipopt_settings.update(extra_options)
+    # NOTE: Expand the MX graph into scalar SX operations before solving, which can speed up
+    # numerical evaluations significantly but may increase memory usage.
+    opti.solver("ipopt", {"expand": True}, ipopt_settings)
 
     sol = opti.solve()
     x_sol = np.asarray(sol.value(x_var), dtype=float)
@@ -412,18 +430,6 @@ def _warm_start(
     diagnostics["fuel_consumed_kg"] = float(sol.value(fuel_consumed))
     diagnostics["nodes"] = float(nodes)
     return x_sol, u_sol, sigma_sol, diagnostics
-
-
-def interpolate_control_at_time(
-    t_query_nd: float,
-    t_grid_nd: np.ndarray,
-    u_values: np.ndarray,
-    sigma_values: np.ndarray,
-) -> tuple[np.ndarray, float]:
-    control = np.array([np.interp(t_query_nd, t_grid_nd, u_values[i]) for i in range(u_values.shape[0])])
-    sigma = float(np.interp(t_query_nd, t_grid_nd, sigma_values[0]))
-    return control, sigma
-
 
 def integrate_with_dense_control(
     case: TestCase,
@@ -436,8 +442,10 @@ def integrate_with_dense_control(
     x_integrated[:, 0] = initial_state
 
     def rhs(t_nd: float, state: np.ndarray) -> np.ndarray:
-        control, sigma = interpolate_control_at_time(t_nd, t_grid_nd, u_values, sigma_values)
-        return eom(case, state, control, sigma)
+        control = np.array([np.interp(t_nd, t_grid_nd, u_values[i]) for i in range(u_values.shape[0])])
+        sigma = float(np.interp(t_nd, t_grid_nd, sigma_values[0]))
+        control_norm = np.linalg.norm(control)
+        return eom(case, state, control, control_norm)
 
     for k in range(t_grid_nd.size - 1):
         t_k = float(t_grid_nd[k])
@@ -450,8 +458,7 @@ def integrate_with_dense_control(
         x_integrated[:, k + 1] = state + h * (k1 + 2.0 * k2 + 2.0 * k3 + k4) / 6.0
     return x_integrated
 
-
-def verification_position_error(
+def compute_augm_state_error(
     case: TestCase,
     t_dense_days: np.ndarray,
     x_dense: np.ndarray,
@@ -478,7 +485,6 @@ def verification_position_error(
         mass_consumption_abs_difference_kg,
     )
 
-
 def get_diagnostics(
     case: TestCase,
     x_sol: np.ndarray,
@@ -486,67 +492,34 @@ def get_diagnostics(
     sigma_sol: np.ndarray,
 ) -> dict[str, float]:
     u_norm = np.linalg.norm(u_sol, axis=0)
-    cap = case.max_thrust_nd
     final_error = np.max(np.abs(x_sol[:6, -1] - case.xf_state))
     return {
         "final_mass_kg": x_sol[6, -1] * case.m0_wet,
         "max_thrust": float(np.max(u_norm) * case.thrust_unit),
         "max_sigma": float(np.max(sigma_sol) * case.thrust_unit),
-        "max_thrust_margin": float((np.max(u_norm) - cap) * case.thrust_unit),
         "max_sigma_minus_norm_n": float(np.max(sigma_sol[0] - u_norm) * case.thrust_unit),
         "terminal_error_nd": float(final_error),
     }
 
-
-
-
-
-COLLOCATION_SCHEME = "radau"
-DEFAULT_INITIAL_INTERVALS = 150
-DEFAULT_MIN_DEGREE = 3
-DEFAULT_MAX_DEGREE = 5
-DEFAULT_MAX_INTERVALS = 1000
-DEFAULT_MAX_ADAPT_ITERATIONS = 5
-DEFAULT_HP_TOL = 1e-11
-DEFAULT_PREWARM_WITH_HERMITE_SIMPSON = True
-
-
 @dataclass(frozen=True)
 class HPAdaptiveOptions:
-    initial_intervals: int = DEFAULT_INITIAL_INTERVALS
-    min_degree: int = DEFAULT_MIN_DEGREE
-    max_degree: int = DEFAULT_MAX_DEGREE
-    max_intervals: int = DEFAULT_MAX_INTERVALS
-    max_adapt_iterations: int = DEFAULT_MAX_ADAPT_ITERATIONS
-    defect_tolerance: float = DEFAULT_HP_TOL
+    initial_intervals: int = 150
+    min_degree: int = 3
+    max_degree: int = 10
+    max_intervals: int = 1000
+    max_adapt_iterations: int = 10
+    defect_tolerance: float = 1e-10
     split_error_factor: float = 20.0
-    control_jump_threshold: float = 0.35
+    control_rel_change_treshold: float = 0.25
     p_coarsen_factor: float = 0.02
     rk4_substeps_per_interval: int = 8
-    ipopt_max_cpu_time: float | None = None
-    prewarm_with_hermite_simpson: bool = DEFAULT_PREWARM_WITH_HERMITE_SIMPSON
-
-
-@dataclass
-class HPRadauSolution:
-    mesh: np.ndarray
-    degrees: np.ndarray
-    x: np.ndarray
-    u: np.ndarray
-    sigma: np.ndarray
-    stages: dict[tuple[int, int], np.ndarray]
-    diagnostics: dict[str, float]
-
-
-Guess = HPRadauSolution | tuple[np.ndarray, np.ndarray, np.ndarray] | None
-_COLLOCATION_CACHE: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = {}
 
 
 def collocation_coefficients(degree: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    if degree in _COLLOCATION_CACHE:
-        return _COLLOCATION_CACHE[degree]
+    if degree in COLLOCATION_CACHE:
+        return COLLOCATION_CACHE[degree]
 
-    tau_root = np.array([0.0] + casadi.collocation_points(degree, COLLOCATION_SCHEME), dtype=float)
+    tau_root = np.array([0.0] + casadi.collocation_points(degree, "radau"), dtype=float)
     c_matrix = np.zeros((degree + 1, degree + 1), dtype=float)
     d_vector = np.zeros(degree + 1, dtype=float)
     b_vector = np.zeros(degree + 1, dtype=float)
@@ -565,8 +538,8 @@ def collocation_coefficients(degree: int) -> tuple[np.ndarray, np.ndarray, np.nd
         b_vector[r] = basis_integral(1.0) - basis_integral(0.0)
         d_vector[r] = basis(1.0)
 
-    _COLLOCATION_CACHE[degree] = (tau_root, c_matrix, d_vector, b_vector)
-    return _COLLOCATION_CACHE[degree]
+    COLLOCATION_CACHE[degree] = (tau_root, c_matrix, d_vector, b_vector)
+    return COLLOCATION_CACHE[degree]
 
 
 def lagrange_basis_values(theta: float, tau_root: np.ndarray) -> np.ndarray:
@@ -602,24 +575,24 @@ def variable_rollout_guess(
     return x_guess, u_guess, sigma_guess
 
 
-def evaluate_hp_state(solution: HPRadauSolution, fraction: float) -> np.ndarray:
+def evaluate_hp_state(OCPSolution: OCPSolution, fraction: float) -> np.ndarray:
     fraction = float(np.clip(fraction, 0.0, 1.0))
-    if fraction <= solution.mesh[0]:
-        return solution.x[:, 0].copy()
-    if fraction >= solution.mesh[-1]:
-        return solution.x[:, -1].copy()
+    if fraction <= OCPSolution.mesh[0]:
+        return OCPSolution.x[:, 0].copy()
+    if fraction >= OCPSolution.mesh[-1]:
+        return OCPSolution.x[:, -1].copy()
 
-    interval = int(np.searchsorted(solution.mesh, fraction, side="right") - 1)
-    interval = min(max(interval, 0), solution.degrees.size - 1)
-    left = float(solution.mesh[interval])
-    right = float(solution.mesh[interval + 1])
+    interval = int(np.searchsorted(OCPSolution.mesh, fraction, side="right") - 1)
+    interval = min(max(interval, 0), OCPSolution.degrees.size - 1)
+    left = float(OCPSolution.mesh[interval])
+    right = float(OCPSolution.mesh[interval + 1])
     theta = (fraction - left) / (right - left)
-    degree = int(solution.degrees[interval])
+    degree = int(OCPSolution.degrees[interval])
     tau_root, _, _, _ = collocation_coefficients(degree)
-    interval_states = [solution.x[:, interval]]
+    interval_states = [OCPSolution.x[:, interval]]
     for j in range(1, degree):
-        interval_states.append(solution.stages[(interval, j)])
-    interval_states.append(solution.x[:, interval + 1])
+        interval_states.append(OCPSolution.stages[(interval, j)])
+    interval_states.append(OCPSolution.x[:, interval + 1])
 
     basis = lagrange_basis_values(theta, tau_root)
     state = np.zeros(7, dtype=float)
@@ -628,11 +601,11 @@ def evaluate_hp_state(solution: HPRadauSolution, fraction: float) -> np.ndarray:
     return state
 
 
-def evaluate_guess_state(case: TestCase, guess: Guess, fraction: float) -> np.ndarray:
+def evaluate_guess_state(case: TestCase, guess: INITIAL_GUESS, fraction: float) -> np.ndarray:
     if guess is None:
         return (1.0 - fraction) * case.x0_augmented_state + fraction * case.xf_augmented_state
 
-    if isinstance(guess, HPRadauSolution):
+    if isinstance(guess, OCPSolution):
         return evaluate_hp_state(guess, fraction)
 
     old_x, _, _ = guess
@@ -642,13 +615,13 @@ def evaluate_guess_state(case: TestCase, guess: Guess, fraction: float) -> np.nd
 
 def sample_endpoint_guess(
     case: TestCase,
-    guess: Guess,
+    guess: INITIAL_GUESS,
     mesh: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     if guess is None:
         return variable_rollout_guess(case, mesh)
 
-    if isinstance(guess, HPRadauSolution):
+    if isinstance(guess, OCPSolution):
         x_guess = np.column_stack([evaluate_hp_state(guess, fraction) for fraction in mesh])
         u_guess = np.vstack([np.interp(mesh, guess.mesh, guess.u[i]) for i in range(guess.u.shape[0])])
         sigma_guess = np.vstack([np.interp(mesh, guess.mesh, guess.sigma[0])])
@@ -664,7 +637,7 @@ def sample_endpoint_guess(
 
 def uniform_tuple_guess(
     case: TestCase,
-    guess: Guess,
+    guess: INITIAL_GUESS,
     nodes: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
     if guess is None:
@@ -677,13 +650,12 @@ def solve_hp(
     case: TestCase,
     mesh: np.ndarray,
     degrees: np.ndarray,
-    guess: Guess,
+    guess: INITIAL_GUESS,
     max_iter: int,
     print_level: int,
     clip_control_guess: bool,
     clip_fraction: float = 0.95,
-    ipopt_extra_options: dict[str, float | int | str] | None = None,
-) -> HPRadauSolution:
+) -> OCPSolution:
     opti = casadi.Opti()
     intervals = degrees.size
     thrust_cap = case.max_thrust_nd
@@ -763,8 +735,7 @@ def solve_hp(
         "print_level": print_level,
         "sb": "yes",
     }
-    if ipopt_extra_options:
-        ipopt_options.update(ipopt_extra_options)
+
     opti.solver("ipopt", {"expand": True}, ipopt_options)
 
     sol = opti.solve()
@@ -786,7 +757,7 @@ def solve_hp(
     diagnostics["min_step_days"] = float(np.min(np.diff(mesh)) * case.tof_days)
     diagnostics["max_step_days"] = float(np.max(np.diff(mesh)) * case.tof_days)
 
-    return HPRadauSolution(
+    return OCPSolution(
         mesh=np.asarray(mesh, dtype=float).copy(),
         degrees=np.asarray(degrees, dtype=int).copy(),
         x=x_sol,
@@ -801,14 +772,14 @@ def solve_hp_with_retries(
     case: TestCase,
     mesh: np.ndarray,
     degrees: np.ndarray,
-    guess: Guess,
+    guess: INITIAL_GUESS,
     options: HPAdaptiveOptions,
     max_iter: int,
     print_level: int,
     log_prefix: str,
     prefer_hermite_simpson_warm_start: bool = False,
-) -> tuple[HPRadauSolution, bool]:
-    def hermite_simpson_warm_start() -> HPRadauSolution:
+) -> tuple[OCPSolution, bool]:
+    def hermite_simpson_warm_start() -> OCPSolution:
         print(f"{log_prefix}  retry: hermite-simpson warm start", flush=True)
         nodes = mesh.size - 1
         hs_guess = uniform_tuple_guess(case, guess, nodes)
@@ -830,7 +801,6 @@ def solve_hp_with_retries(
             print_level=print_level,
             clip_control_guess=False,
             clip_fraction=0.99,
-            ipopt_extra_options=ipopt_limits(options),
         )
 
     if prefer_hermite_simpson_warm_start:
@@ -850,8 +820,6 @@ def solve_hp_with_retries(
         try:
             if label != "default":
                 print(f"{log_prefix}  retry: {label}", flush=True)
-            merged_options = ipopt_limits(options)
-            merged_options.update(extra_options)
             return (
                 solve_hp(
                     case=case,
@@ -862,7 +830,6 @@ def solve_hp_with_retries(
                     print_level=print_level,
                     clip_control_guess=attempt_clip,
                     clip_fraction=sigma_fraction,
-                    ipopt_extra_options=merged_options,
                 ),
                 False,
             )
@@ -875,12 +842,6 @@ def solve_hp_with_retries(
         if last_error is not None:
             raise last_error from exc
         raise
-
-
-def ipopt_limits(options: HPAdaptiveOptions) -> dict[str, float]:
-    if options.ipopt_max_cpu_time is None:
-        return {}
-    return {"max_cpu_time": options.ipopt_max_cpu_time}
 
 
 def integrate_interval_rk4(
@@ -916,29 +877,29 @@ def integrate_interval_rk4(
 
 def estimate_interval_defects(
     case: TestCase,
-    solution: HPRadauSolution,
+    OCPSolution: OCPSolution,
     substeps: int,
 ) -> dict[str, np.ndarray]:
-    intervals = solution.degrees.size
+    intervals = OCPSolution.degrees.size
     scaled_error = np.empty(intervals, dtype=float)
     position_error_m = np.empty(intervals, dtype=float)
     velocity_error_m_per_s = np.empty(intervals, dtype=float)
     mass_error_kg = np.empty(intervals, dtype=float)
 
     for k in range(intervals):
-        h = case.tof_nd * float(solution.mesh[k + 1] - solution.mesh[k])
+        h = case.tof_nd * float(OCPSolution.mesh[k + 1] - OCPSolution.mesh[k])
         x_integrated = integrate_interval_rk4(
             case,
-            solution.x[:, k],
-            solution.u[:, k],
-            solution.u[:, k + 1],
-            float(solution.sigma[0, k]),
-            float(solution.sigma[0, k + 1]),
+            OCPSolution.x[:, k],
+            OCPSolution.u[:, k],
+            OCPSolution.u[:, k + 1],
+            float(OCPSolution.sigma[0, k]),
+            float(OCPSolution.sigma[0, k + 1]),
             h,
             substeps,
         )
-        error = x_integrated - solution.x[:, k + 1]
-        scale = np.maximum(1.0, np.maximum(np.abs(solution.x[:, k]), np.abs(solution.x[:, k + 1])))
+        error = x_integrated - OCPSolution.x[:, k + 1]
+        scale = np.maximum(1.0, np.maximum(np.abs(OCPSolution.x[:, k]), np.abs(OCPSolution.x[:, k + 1])))
         scaled_error[k] = float(np.max(np.abs(error) / scale))
         position_error_m[k] = float(np.linalg.norm(error[0:3]) * case.length_unit * 1000.0)
         velocity_error_m_per_s[k] = float(np.linalg.norm(error[3:6]) * case.velocity_unit * 1000.0)
@@ -953,25 +914,26 @@ def estimate_interval_defects(
 
 
 def refine_hp_mesh(
-    solution: HPRadauSolution,
+    OCPSolution: OCPSolution,
     defects: np.ndarray,
     options: HPAdaptiveOptions,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, float]]:
-    mesh = solution.mesh
-    degrees = solution.degrees
+    mesh = OCPSolution.mesh
+    degrees = OCPSolution.degrees
     intervals = degrees.size
     over_tol = defects > options.defect_tolerance
 
     split_candidates: list[int] = []
     for k in np.flatnonzero(over_tol):
         degree = int(degrees[k])
-        u0 = solution.u[:, k]
-        u1 = solution.u[:, k + 1]
+        u0 = OCPSolution.u[:, k]
+        u1 = OCPSolution.u[:, k + 1]
         jump = np.linalg.norm(u1 - u0) / max(np.linalg.norm(u0), np.linalg.norm(u1), 1e-14)
         should_split = (
             degree >= options.max_degree
             or defects[k] > options.split_error_factor * options.defect_tolerance
-            or jump > options.control_jump_threshold
+            or jump > options.control_rel_change_treshold
+
         )
         if should_split:
             split_candidates.append(int(k))
@@ -1022,9 +984,9 @@ def refine_hp_mesh(
     return new_mesh_array, new_degrees_array, summary
 
 
-def interpolate_hp_solution(
+def interpolate_hp_OCPSolution(
     case: TestCase,
-    solution: HPRadauSolution,
+    OCPSolution: OCPSolution,
     samples_per_interval: int = 20,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     t_days_values: list[float] = []
@@ -1032,13 +994,13 @@ def interpolate_hp_solution(
     u_values: list[np.ndarray] = []
     sigma_values: list[float] = []
 
-    for k, degree in enumerate(solution.degrees):
+    for k, degree in enumerate(OCPSolution.degrees):
         degree = int(degree)
         tau_root, _, _, _ = collocation_coefficients(degree)
-        interval_states = [solution.x[:, k]]
+        interval_states = [OCPSolution.x[:, k]]
         for j in range(1, degree):
-            interval_states.append(solution.stages[(k, j)])
-        interval_states.append(solution.x[:, k + 1])
+            interval_states.append(OCPSolution.stages[(k, j)])
+        interval_states.append(OCPSolution.x[:, k + 1])
 
         theta_grid = np.linspace(0.0, 1.0, samples_per_interval + 1)
         thetas = theta_grid if k == 0 else theta_grid[1:]
@@ -1049,9 +1011,9 @@ def interpolate_hp_solution(
             for coefficient, interval_state in zip(basis, interval_states):
                 x_theta += coefficient * interval_state
 
-            u_theta = (1.0 - theta) * solution.u[:, k] + theta * solution.u[:, k + 1]
-            sigma_theta = (1.0 - theta) * solution.sigma[0, k] + theta * solution.sigma[0, k + 1]
-            fraction = float(solution.mesh[k] + theta * (solution.mesh[k + 1] - solution.mesh[k]))
+            u_theta = (1.0 - theta) * OCPSolution.u[:, k] + theta * OCPSolution.u[:, k + 1]
+            sigma_theta = (1.0 - theta) * OCPSolution.sigma[0, k] + theta * OCPSolution.sigma[0, k + 1]
+            fraction = float(OCPSolution.mesh[k] + theta * (OCPSolution.mesh[k + 1] - OCPSolution.mesh[k]))
 
             t_days_values.append(fraction * case.tof_days)
             x_values.append(x_theta)
@@ -1153,7 +1115,7 @@ def style_2d_axis(ax, *, equal_axis: bool = False, grid_which: str = "major") ->
         ax.set_aspect("equal", adjustable="box")
 
 
-def is_three_dimensional_solution(*arrays: np.ndarray, tol: float = 1e-8) -> bool:
+def is_three_dimensional_OCPSolution(*arrays: np.ndarray, tol: float = 1e-8) -> bool:
     return any(array is not None and np.max(np.abs(array[2])) > tol for array in arrays)
 
 
@@ -1361,7 +1323,7 @@ def save_moon_distance_plot(
 ) -> None:
     fig, ax = plt.subplots(figsize=WIDE_FIGSIZE, dpi=FIGURE_DPI, constrained_layout=True)
     ax.plot(t_dense_days, moon_distance_km, color=SECONDARY_DATA_COLOR, lw=TRAJECTORY_LINE_WIDTH)
-    ax.axhline(0.0, color=LIMIT_COLOR, linestyle="dotted", lw=GUIDE_LINE_WIDTH)
+    ax.axhline(0.0, color=CALEB_THRUST_COLOR, linestyle="dotted", lw=GUIDE_LINE_WIDTH)
     closest_idx = int(np.argmin(moon_distance_km))
     ax.scatter(t_dense_days[closest_idx], moon_distance_km[closest_idx], color=POINT_MARKER_COLOR, s=22, zorder=4)
     ax.set_xlabel("time [days]")
@@ -1391,7 +1353,7 @@ def save_verification_plots(
         fig, ax = plt.subplots(figsize=WIDE_FIGSIZE, dpi=FIGURE_DPI, constrained_layout=True)
         ax.semilogy(t_dense_days, y_plot, color=color, lw=TRAJECTORY_LINE_WIDTH)
         max_idx = int(np.argmax(y_raw))
-        ax.scatter(t_dense_days[max_idx], max(y_raw[max_idx], 1e-16), color=POINT_MARKER_COLOR, s=22, zorder=4)
+        ax.scatter(t_dense_days[max_idx], max(y_raw[max_idx], 1e-16), color=CALEB_THRUST_COLOR, s=22, zorder=4)
         ax.set_xlabel("time [days]")
         ax.set_ylabel(ylabel)
         style_2d_axis(ax, grid_which="both")
@@ -1421,16 +1383,16 @@ def save_thrust_plot(
 
 def save_outputs(
     case: TestCase,
-    solution: HPRadauSolution,
+    OCPSolution: OCPSolution,
     history: list[dict[str, float]],
     defects: dict[str, np.ndarray],
     options: HPAdaptiveOptions,
     output_prefix: Path,
 ) -> list[Path]:
     output_prefix.parent.mkdir(parents=True, exist_ok=True)
-    t_days = solution.mesh * case.tof_days
-    u_norm_n = np.linalg.norm(solution.u, axis=0) * case.thrust_unit
-    t_dense_days, x_dense, u_dense, sigma_dense = interpolate_hp_solution(case, solution)
+    t_days = OCPSolution.mesh * case.tof_days
+    u_norm_n = np.linalg.norm(OCPSolution.u, axis=0) * case.thrust_unit
+    t_dense_days, x_dense, u_dense, sigma_dense = interpolate_hp_OCPSolution(case, OCPSolution)
     u_dense_norm_n = np.linalg.norm(u_dense, axis=0) * case.thrust_unit
     moon_distance_surface_km = moon_surface_distance_km(case, x_dense)
     (
@@ -1441,7 +1403,7 @@ def save_outputs(
         velocity_error_m_per_s,
         mass_consumption_difference_kg,
         mass_consumption_abs_difference_kg,
-    ) = verification_position_error(
+    ) = compute_augm_state_error(
         case,
         t_dense_days,
         x_dense,
@@ -1453,8 +1415,8 @@ def save_outputs(
     stage_degree_index: list[int] = []
     stage_tau: list[float] = []
     stage_state: list[np.ndarray] = []
-    for (interval, j), state in sorted(solution.stages.items()):
-        tau_root, _, _, _ = collocation_coefficients(int(solution.degrees[interval]))
+    for (interval, j), state in sorted(OCPSolution.stages.items()):
+        tau_root, _, _, _ = collocation_coefficients(int(OCPSolution.degrees[interval]))
         stage_interval.append(interval)
         stage_degree_index.append(j)
         stage_tau.append(float(tau_root[j]))
@@ -1463,12 +1425,12 @@ def save_outputs(
     npz_path = output_prefix.with_suffix(".npz")
     np.savez(
         npz_path,
-        mesh_fraction=solution.mesh,
-        interval_degrees=solution.degrees,
+        mesh_fraction=OCPSolution.mesh,
+        interval_degrees=OCPSolution.degrees,
         t_days=t_days,
-        x=solution.x,
-        u=solution.u,
-        sigma=solution.sigma,
+        x=OCPSolution.x,
+        u=OCPSolution.u,
+        sigma=OCPSolution.sigma,
         u_norm_n=u_norm_n,
         stage_interval=np.asarray(stage_interval, dtype=int),
         stage_degree_index=np.asarray(stage_degree_index, dtype=int),
@@ -1553,26 +1515,26 @@ def save_outputs(
     figure_3d_path = output_prefix.with_name(f"{output_prefix.name}_3d").with_suffix(".png")
     save_3d_plot(case, x_dense, u_dense, departure_orbit, target_orbit, lagrange, figure_3d_path)
     saved_paths.append(figure_3d_path)
-    saved_paths.extend(save_defect_plots(case, solution, defects, options, output_prefix))
+    saved_paths.extend(save_defect_plots(case, OCPSolution, defects, options, output_prefix))
     return saved_paths
 
 
 def save_defect_plots(
     case: TestCase,
-    solution: HPRadauSolution,
+    OCPSolution: OCPSolution,
     defects: dict[str, np.ndarray],
     options: HPAdaptiveOptions,
     output_prefix: Path,
 ) -> list[Path]:
-    centers = 0.5 * (solution.mesh[:-1] + solution.mesh[1:]) * case.tof_days
-    widths = np.diff(solution.mesh) * case.tof_days
+    centers = 0.5 * (OCPSolution.mesh[:-1] + OCPSolution.mesh[1:]) * case.tof_days
+    widths = np.diff(OCPSolution.mesh) * case.tof_days
     scaled = np.maximum(defects["scaled"], 1e-16)
 
     saved_paths: list[Path] = []
     defect_path = output_prefix.with_name(f"{output_prefix.name}_defect").with_suffix(".png")
     fig, defect_ax = plt.subplots(figsize=WIDE_FIGSIZE, dpi=FIGURE_DPI, constrained_layout=True)
     defect_ax.bar(centers, scaled, width=widths, align="center", color=CALEB_TRAJECTORY_COLOR, alpha=0.85)
-    defect_ax.axhline(options.defect_tolerance, color=LIMIT_COLOR, linestyle="dotted", lw=GUIDE_LINE_WIDTH)
+    defect_ax.axhline(options.defect_tolerance, color=CALEB_THRUST_COLOR, linestyle="dotted", lw=GUIDE_LINE_WIDTH)
     defect_ax.set_yscale("log")
     defect_ax.set_xlabel("time [days]")
     defect_ax.set_ylabel("scaled endpoint defect")
@@ -1584,8 +1546,8 @@ def save_defect_plots(
     degree_path = output_prefix.with_name(f"{output_prefix.name}_degree").with_suffix(".png")
     fig, degree_ax = plt.subplots(figsize=WIDE_FIGSIZE, dpi=FIGURE_DPI, constrained_layout=True)
     degree_ax.step(
-        solution.mesh * case.tof_days,
-        np.r_[solution.degrees, solution.degrees[-1]],
+        OCPSolution.mesh * case.tof_days,
+        np.r_[OCPSolution.degrees, OCPSolution.degrees[-1]],
         where="post",
         color=SECONDARY_DATA_COLOR,
         lw=TRAJECTORY_LINE_WIDTH,
@@ -1606,34 +1568,33 @@ def run_hp_adaptive(
     max_iter: int,
     print_level: int,
     log_prefix: str = "",
-) -> tuple[HPRadauSolution, list[dict[str, float]], dict[str, np.ndarray]]:
+) -> tuple[OCPSolution, list[dict[str, float]], dict[str, np.ndarray]]:
     mesh = np.linspace(0.0, 1.0, options.initial_intervals + 1)
     degrees = np.full(options.initial_intervals, options.min_degree, dtype=int)
-    guess: Guess = None
+    guess: INITIAL_GUESS = None
     history: list[dict[str, float]] = []
     prefer_hs_warm_start = False
-    solution: HPRadauSolution | None = None
+    OCPSolution: OCPSolution | None = None
     defects: dict[str, np.ndarray] | None = None
 
-    if options.prewarm_with_hermite_simpson:
-        print(
-            f"\n{log_prefix}Hermite-Simpson pre-warm: nodes={options.initial_intervals}",
-            flush=True,
-        )
-        hs_x, hs_u, hs_sigma, hs_diag = _warm_start(
-            case=case,
-            nodes=options.initial_intervals,
-            sol=None,
-            max_iter=max_iter,
-            print_level=print_level,
-        )
-        print(
-            log_prefix
-            + "  pre-warm objective={fuel_consumed_kg:.6f} kg, "
-            "terminal_error={terminal_error_nd:.3e}".format(**hs_diag),
-            flush=True,
-        )
-        guess = (hs_x, hs_u, hs_sigma)
+    print(
+        f"\n{log_prefix}Hermite-Simpson pre-warm: nodes={options.initial_intervals}",
+        flush=True,
+    )
+    hs_x, hs_u, hs_sigma, hs_diag = _warm_start(
+        case=case,
+        nodes=options.initial_intervals,
+        sol=None,
+        max_iter=max_iter,
+        print_level=print_level,
+    )
+    print(
+        log_prefix
+        + "  pre-warm objective={fuel_consumed_kg:.6f} kg, "
+        "terminal_error={terminal_error_nd:.3e}".format(**hs_diag),
+        flush=True,
+    )
+    guess = (hs_x, hs_u, hs_sigma)
 
     for adaptation_index in range(1, options.max_adapt_iterations + 1):
         print(
@@ -1641,7 +1602,7 @@ def run_hp_adaptive(
             f"intervals={degrees.size}, p=[{np.min(degrees)}, {np.max(degrees)}]",
             flush=True,
         )
-        solution, used_hs_warm_start = solve_hp_with_retries(
+        OCPSolution, used_hs_warm_start = solve_hp_with_retries(
             case=case,
             mesh=mesh,
             degrees=degrees,
@@ -1652,12 +1613,12 @@ def run_hp_adaptive(
             log_prefix=log_prefix,
             prefer_hermite_simpson_warm_start=prefer_hs_warm_start,
         )
-        defects = estimate_interval_defects(case, solution, options.rk4_substeps_per_interval)
+        defects = estimate_interval_defects(case, OCPSolution, options.rk4_substeps_per_interval)
         max_defect = float(np.max(defects["scaled"]))
         mean_defect = float(np.mean(defects["scaled"]))
         max_defect_idx = int(np.argmax(defects["scaled"]))
 
-        diag = dict(solution.diagnostics)
+        diag = dict(OCPSolution.diagnostics)
         diag["adapt_iteration"] = float(adaptation_index)
         diag["max_interval_defect"] = max_defect
         diag["mean_interval_defect"] = mean_defect
@@ -1677,7 +1638,7 @@ def run_hp_adaptive(
             print(f"{log_prefix}  hp tolerance reached.", flush=True)
             break
 
-        new_mesh, new_degrees, refinement = refine_hp_mesh(solution, defects["scaled"], options)
+        new_mesh, new_degrees, refinement = refine_hp_mesh(OCPSolution, defects["scaled"], options)
         print(
             f"{log_prefix}  refine: split={refinement['split_count']:.0f}, "
             f"p+={refinement['p_increase_count']:.0f}, p-={refinement['p_decrease_count']:.0f}",
@@ -1687,14 +1648,14 @@ def run_hp_adaptive(
             print(f"{log_prefix}  hp refinement limit reached.", flush=True)
             break
 
-        guess = solution
+        guess = OCPSolution
         mesh = new_mesh
         degrees = new_degrees
-        prefer_hs_warm_start = used_hs_warm_start and degrees.size != solution.degrees.size
+        prefer_hs_warm_start = used_hs_warm_start and degrees.size != OCPSolution.degrees.size
 
-    assert solution is not None
+    assert OCPSolution is not None
     assert defects is not None
-    return solution, history, defects
+    return OCPSolution, history, defects
 
 
 def output_prefix_for_case(output_dir: Path, output_prefix: str, case: TestCase) -> Path:
@@ -1711,19 +1672,18 @@ def run_case(test_case_id: str) -> tuple[str, str, list[str]]:
     print(
         f"{log_prefix}initial_intervals={options.initial_intervals}, "
         f"max_intervals={options.max_intervals}, p=[{options.min_degree}, {options.max_degree}], "
-        f"defect_tol={options.defect_tolerance:g}, "
-        f"hs_prewarm={options.prewarm_with_hermite_simpson}",
+        f"defect_tol={options.defect_tolerance:g}, ",
         flush=True,
     )
 
-    solution, history, defects = run_hp_adaptive(
+    OCPSolution, history, defects = run_hp_adaptive(
         case=case,
         options=options,
         max_iter=MAX_ITER,
         print_level=PRINT_LEVEL,
         log_prefix=log_prefix,
     )
-    saved_paths = save_outputs(case, solution, history, defects, options, output_prefix)
+    saved_paths = save_outputs(case, OCPSolution, history, defects, options, output_prefix)
 
     print(f"\n{log_prefix}Saved:", flush=True)
     for path in saved_paths:
