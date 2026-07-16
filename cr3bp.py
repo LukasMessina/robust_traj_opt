@@ -200,7 +200,7 @@ class OCPSolution:
 
 @dataclass(frozen=True)
 class HAdaptiveOptions:
-    initial_intervals: int = 150
+    initial_intervals: int = 100
     radau_degree: int = 3
     max_intervals: int = 1000
     max_adapt_iterations: int = 20
@@ -286,10 +286,10 @@ def eom(case: CR3BPEarthMoon, state, control, sigma):
         rx, ry, rz, vx, vy, vz, mass = np.asarray(state, dtype=float)
         ux, uy, uz = np.asarray(control, dtype=float)
         sigma = float(sigma)
-        sqrt = np.sqrt
 
-    r1 = sqrt((rx + case.mu) ** 2 + ry**2 + rz**2)
-    r2 = sqrt((rx - (1.0 - case.mu)) ** 2 + ry**2 + rz**2)
+    control_norm = np.sqrt(ux**2 + uy**2 + uz**2)
+    r1 = np.sqrt((rx + case.mu) ** 2 + ry**2 + rz**2)
+    r2 = np.sqrt((rx - (1.0 - case.mu)) ** 2 + ry**2 + rz**2)
 
     ax = (
         2.0 * vy
@@ -306,7 +306,7 @@ def eom(case: CR3BPEarthMoon, state, control, sigma):
         + uy / mass
     )
     az = -(1.0 - case.mu) * rz / r1**3 - case.mu * rz / r2**3 + uz / mass
-    mdot = -sigma / case.exhaust_velocity_nd
+    mdot = -control_norm / case.exhaust_velocity_nd
     if any(isinstance(v, (casadi.MX, casadi.SX, casadi.DM)) for v in (state, control, sigma)):
         return casadi.vertcat(vx, vy, vz, ax, ay, az, mdot)
     return np.array([vx, vy, vz, ax, ay, az, mdot], dtype=float)
@@ -807,11 +807,30 @@ def estimate_interval_defects(
             )
 
         error = x_integrated - OCPSolution.x[:, k + 1]
-        scale = np.maximum(1.0, np.maximum(np.abs(OCPSolution.x[:, k]), np.abs(OCPSolution.x[:, k + 1])))
-        scaled_error[k] = float(np.max(np.abs(error) / scale))
-        position_error[k] = float(np.linalg.norm(error[0:3]) * case.length_unit * 1000.0)         # [m]
-        velocity_error[k] = float(np.linalg.norm(error[3:6]) * case.velocity_unit * 1000.0)       # [m/s]   
-        mass_error[k] = float(abs(error[6]) * case.m0_wet)                                        # [kg]
+        position_error_nd = float(np.linalg.norm(error[0:3]))
+        velocity_error_nd = float(np.linalg.norm(error[3:6]))
+        mass_error_nd = float(abs(error[6]))
+
+        position_scale = max(
+            np.linalg.norm(OCPSolution.x[0:3, k]),
+            np.linalg.norm(OCPSolution.x[0:3, k + 1]),
+            1e-13
+        )
+        velocity_scale = max(
+            np.linalg.norm(OCPSolution.x[3:6, k]),
+            np.linalg.norm(OCPSolution.x[3:6, k + 1]),
+            1e-13
+        )
+        mass_scale = max(abs(OCPSolution.x[6, k]), abs(OCPSolution.x[6, k + 1]), 1e-13)
+
+        scaled_error[k] = max(
+            position_error_nd / position_scale,
+            velocity_error_nd / velocity_scale,
+            mass_error_nd / mass_scale,
+        )
+        position_error[k] = position_error_nd * case.length_unit * 1000.0                        # [m]
+        velocity_error[k] = velocity_error_nd * case.velocity_unit * 1000.0                      # [m/s]   
+        mass_error[k] = mass_error_nd * case.m0_wet                                              # [kg]
 
     return {
         "scaled": scaled_error,
@@ -1004,17 +1023,17 @@ def save_outputs(
         target_orbit = propagate_periodic_orbit(case, case.xf_augmented_state, case.target_period_nd)
 
     plotter = Plotter(output_prefix)
-    plotter.save_projection_figure(case, x_dense, u_dense, departure_orbit, target_orbit, lagrange_points)
-    plotter.save_3d_plot(case, x_dense, u_dense, departure_orbit, target_orbit, lagrange_points)
-    plotter.save_thrust_plot(t_days, u_norm_n, case.max_thrust_n)
-    plotter.save_moon_distance_plot(t_dense_days, moon_distance_surface_km)
-    plotter.save_verification_errors(
+    plotter.plot_traj_projection(case, x_dense, u_dense, departure_orbit, target_orbit, lagrange_points)
+    plotter.plot_3d_traj(case, x_dense, u_dense, departure_orbit, target_orbit, lagrange_points)
+    plotter.plot_thrust_time_evolution(t_days, u_norm_n, case.max_thrust_n)
+    plotter.plot_moon_distance_time_evolution(t_dense_days, moon_distance_surface_km)
+    plotter.plot_collocation_approx_errors(
         t_dense_days,
         position_error_m,
         velocity_error_m_per_s,
         mass_consumption_abs_difference_kg,
     )
-    plotter.save_defect_plot(OCPSolution.mesh, case.tof_days, defects["scaled"], options.defect_tolerance)
+    plotter.plot_interval_defect(OCPSolution.mesh, case.tof_days, defects["scaled"], options.defect_tolerance)
 
 
 def h_adaptive_method(

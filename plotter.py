@@ -328,7 +328,7 @@ class Plotter:
         ax.set_ylabel(self.AXIS_LABELS[axis_1])
         self._style_2d_axis(ax, equal_axis=True, tick_size=self.PROJECTION_TICK_SIZE)
 
-    def save_projection_figure(
+    def plot_traj_projection(
         self,
         case: Any,
         x_dense: np.ndarray,
@@ -438,7 +438,7 @@ class Plotter:
             label="Thrust direction",
         )
 
-    def save_3d_plot(
+    def plot_3d_traj(
         self,
         case: Any,
         x_dense: np.ndarray,
@@ -506,7 +506,7 @@ class Plotter:
         plt.close(fig)
         return output_path
 
-    def save_thrust_plot(self, t_days: np.ndarray, u_norm_n: np.ndarray, max_thrust_n: float) -> Path:
+    def plot_thrust_time_evolution(self, t_days: np.ndarray, u_norm_n: np.ndarray, max_thrust_n: float) -> Path:
         fig, ax = plt.subplots(figsize=self.SQUARE_DIAGNOSTIC_FIGSIZE, dpi=self.FIGURE_DPI)
         ax.plot(t_days, u_norm_n, color=self.TRAJECTORY_COLOR, lw=self.TRAJECTORY_LINE_WIDTH, label="_nolegend_")
         ax.axhline(max_thrust_n, color=self.RED, linestyle=":", lw=self.GUIDE_LINE_WIDTH, label="Maximum thrust")
@@ -520,9 +520,9 @@ class Plotter:
         plt.close(fig)
         return output_path
 
-    def save_moon_distance_plot(self, t_dense_days: np.ndarray, moon_distance_km: np.ndarray) -> Path:
+    def plot_moon_distance_time_evolution(self, t_dense_days: np.ndarray, moon_distance_km: np.ndarray) -> Path:
         fig, ax = plt.subplots(figsize=self.SQUARE_DIAGNOSTIC_FIGSIZE, dpi=self.FIGURE_DPI)
-        ax.plot(t_dense_days, moon_distance_km, color=self.BLUE, lw=self.TRAJECTORY_LINE_WIDTH, label="_nolegend_")
+        ax.plot(t_dense_days, moon_distance_km, color=self.BLACK, lw=self.TRAJECTORY_LINE_WIDTH, label="_nolegend_")
         ax.axhline(0.0, color=self.RED, linestyle=":", lw=self.GUIDE_LINE_WIDTH, label="_nolegend_")
         ax.set_xlabel("time [days]")
         ax.set_ylabel("distance to Moon surface [km]")
@@ -533,7 +533,7 @@ class Plotter:
         plt.close(fig)
         return output_path
 
-    def save_verification_errors(
+    def plot_collocation_approx_errors(
         self,
         t_dense_days: np.ndarray,
         position_error_m: np.ndarray,
@@ -576,7 +576,7 @@ class Plotter:
         plt.close(fig)
         return output_path
 
-    def save_defect_plot(
+    def plot_interval_defect(
         self,
         mesh: np.ndarray,
         tof_days: float,
