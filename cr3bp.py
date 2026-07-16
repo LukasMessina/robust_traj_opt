@@ -1,8 +1,8 @@
 """
-Compute Earth-Moon CR3BP low-thrust transfers with hp-adaptive Radau collocation.
+Compute Earth-Moon CR3BP low-thrust transfers with h-adaptive Radau collocation.
 
-The continuous-time optimal control problem is discretized with a variable-size
-Radau collocation mesh, formulated with CasADi, and solved with IPOPT.
+The continuous-time optimal control problem is discretized with a variable-size,
+fixed-degree Radau collocation mesh, formulated with CasADi, and solved with IPOPT.
 """
 
 from __future__ import annotations
@@ -12,21 +12,9 @@ from pathlib import Path
 
 import multiprocessing as mp
 import casadi
-import matplotlib as mpl
-import matplotlib.pyplot as plt
 import numpy as np
 import integrator
-
-mpl.rcParams.update(
-    {
-        "font.family": "serif",
-        "font.serif": ["Computer Modern Roman", "DejaVu Serif", "Times New Roman"],
-        "mathtext.fontset": "cm",
-        "figure.facecolor": "white",
-        "axes.facecolor": "white",
-        "text.usetex": True,
-    }
-)
+from plotter import Plotter
 
 @dataclass(frozen=True)
 class CR3BPEarthMoon:
@@ -93,8 +81,8 @@ class TestCase(CR3BPEarthMoon):
 
     departure_label: str = "departure orbit"  
     target_label: str = "target orbit"        
-    departure_period_nd: float | None = None    # [-]
-    target_period_nd: float | None = None       # [-]
+    departure_period: float | None = None       # [-]
+    target_period: float | None = None          # [-]
     departure_period_days: float | None = None  # [days]
     target_period_days: float | None = None     # [days]
 
@@ -120,18 +108,18 @@ class TestCase(CR3BPEarthMoon):
 
     @property
     def departure_period_nd(self) -> float | None:
-        if self.departure_period_nd is not None:
-            return self.departure_period_nd  
+        if self.departure_period is not None:
+            return self.departure_period  # [-]
         if self.departure_period_days is not None:
-            return self.departure_period_days * 86400.0 / self.time_unit  
+            return self.departure_period_days * 86400.0 / self.time_unit
         return None
 
     @property
     def target_period_nd(self) -> float | None:
-        if self.target_period_nd is not None:
-            return self.target_period_nd  # [-]
+        if self.target_period is not None:
+            return self.target_period  # [-]
         if self.target_period_days is not None:
-            return self.target_period_days * 86400.0 / self.time_unit  
+            return self.target_period_days * 86400.0 / self.time_unit
         return None
 
 
@@ -159,8 +147,8 @@ class LyapunovL1ToL2(TestCase):
     )  # [-]
     departure_label: str = "Lyapunov L1"  
     target_label: str = "Lyapunov L2"     
-    departure_period_nd: float = 2.9750964922007723  # [-]
-    target_period_nd: float = 3.49306635929003       # [-]
+    departure_period: float = 2.9750964922007723  # [-]
+    target_period: float = 3.49306635929003       # [-]
 
 
 @dataclass(frozen=True)
@@ -187,8 +175,8 @@ class HaloL2ToHaloL1(TestCase):
     )  # [-]
     departure_label: str = "Halo L2"  
     target_label: str = "Halo L1"     
-    departure_period_nd: float = 3.2746644337639852  # [-]
-    target_period_nd: float = 2.5748200748171399     # [-]
+    departure_period: float = 3.2746644337639852  # [-]
+    target_period: float = 2.5748200748171399     # [-]
 
 
 @dataclass
@@ -211,17 +199,13 @@ class OCPSolution:
 
 
 @dataclass(frozen=True)
-class HPAdaptiveOptions:
+class HAdaptiveOptions:
     initial_intervals: int = 150
-    min_degree: int = 3
-    max_degree: int = 9
+    radau_degree: int = 3
     max_intervals: int = 1000
     max_adapt_iterations: int = 20
-    defect_tolerance: float = 2e-7
-    split_error_factor: float = 20.0
-    control_rel_change_treshold: float = 0.35
-    p_coarsen_factor: float = 0.02
-    rk4_substeps_per_interval: int = 16
+    defect_tolerance: float = 1e-11
+    rk4_substeps_per_interval: int = 32
     
 
 CASE_TYPES: tuple[type[TestCase], ...] = (LyapunovL1ToL2, HaloL2ToHaloL1)
@@ -230,7 +214,7 @@ CASE_REGISTRY: dict[str, type[TestCase]] = {
 }
 MAX_ITER = 10000
 PRINT_LEVEL = 0
-TOL = 1e-8
+TOL = 1e-9
 DEFAULT_OUTPUT_DIR = Path("output/cr3bp")
 DEFAULT_OUTPUT_PREFIX = ""
 INITIAL_GUESS = OCPSolution | None
@@ -274,7 +258,7 @@ def _compute_root(function, lo: float, hi: float, iterations: int = 100, tol: fl
 
     return float(0.5 * (lo + hi))
 
-def collinear_lagrange_points(case: CR3BPEarthMoon) -> dict[str, float]:
+def get_collinear_lagrange_points(case: CR3BPEarthMoon) -> dict[str, float]:
     def equilibrium_condition(x):
         r1 = casadi.fabs(x + case.mu)
         r2 = casadi.fabs(x - (1.0 - case.mu))
@@ -376,8 +360,7 @@ def _warm_start(
     print_level: int,
     extra_options: dict[str, float | int | str] | None = None,
 ) -> OCPSolution:
-    "Solve the optimal control problem with a Hermite-Simpson collocation method "
-    "to warm-start the hp-adaptive Radau refinement."
+    "Solve the optimal control problem with a Hermite-Simpson collocation method to warm-start the h-adaptive Radau refinement."
     opti = casadi.Opti()
     h = case.tof_nd / nodes
     x_var = opti.variable(7, nodes + 1)
@@ -705,6 +688,9 @@ def solve_ocp(
                     interval_states.append(x_stage)
                 interval_states.append(x_var[:, k + 1])
 
+
+                fuel_consumed_nd += h * b_vector[0] * sigma_var[0, k] / case.exhaust_velocity_nd
+
                 for j in range(1, degree + 1):
                     tau_j = float(tau_root[j])
                     x_j = interval_states[j]
@@ -794,7 +780,7 @@ def estimate_interval_defects(
     substeps: int,
 ) -> dict[str, np.ndarray]:
     intervals = OCPSolution.degrees.size
-    midpoints = (np.arange(substeps, dtype=float) + 0.5) / substeps
+    substep_grid = np.arange(substeps + 1, dtype=float) / substeps
     scaled_error = np.empty(intervals, dtype=float)
     position_error = np.empty(intervals, dtype=float)              # [m]
     velocity_error = np.empty(intervals, dtype=float)              # [m/s]
@@ -809,10 +795,16 @@ def estimate_interval_defects(
         sigma1 = float(OCPSolution.sigma[0, k + 1])
         x_integrated = OCPSolution.x[:, k].copy()
 
-        for tau in midpoints:
-            control = (1.0 - tau) * u0 + tau * u1
-            sigma = (1.0 - tau) * sigma0 + tau * sigma1
-            x_integrated = integrator.rk4(case, x_integrated, control, sigma, dt)
+        for tau_a, tau_b in zip(substep_grid[:-1], substep_grid[1:]):
+            x_integrated = integrator.rk4(
+                case,
+                x_integrated,
+                (1.0 - tau_a) * u0 + tau_a * u1,
+                (1.0 - tau_a) * sigma0 + tau_a * sigma1,
+                dt,
+                control_end=(1.0 - tau_b) * u0 + tau_b * u1,
+                sigma_end=(1.0 - tau_b) * sigma0 + tau_b * sigma1,
+            )
 
         error = x_integrated - OCPSolution.x[:, k + 1]
         scale = np.maximum(1.0, np.maximum(np.abs(OCPSolution.x[:, k]), np.abs(OCPSolution.x[:, k + 1])))
@@ -823,46 +815,29 @@ def estimate_interval_defects(
 
     return {
         "scaled": scaled_error,
-        "position_m": position_error,
-        "velocity_m_per_s": position_error,
+        "position": position_error,
+        "velocity": velocity_error,
         "mass_kg": mass_error,
     }
 
 
-def refine_hp_mesh(
+def refine_h_mesh(
     OCPSolution: OCPSolution,
     defects: np.ndarray,
-    options: HPAdaptiveOptions,
+    options: HAdaptiveOptions,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, float]]:
     mesh = OCPSolution.mesh
     degrees = OCPSolution.degrees
     intervals = degrees.size
     over_tol = defects > options.defect_tolerance
 
-    split_candidates: list[int] = []
-    for k in np.flatnonzero(over_tol):
-        degree = int(degrees[k])
-        u0 = OCPSolution.u[:, k]
-        u1 = OCPSolution.u[:, k + 1]
-        jump = np.linalg.norm(u1 - u0) / max(np.linalg.norm(u0), np.linalg.norm(u1), 1e-14)
-        should_split = (
-            degree >= options.max_degree
-            or defects[k] > options.split_error_factor * options.defect_tolerance
-            or jump > options.control_rel_change_treshold
-
-        )
-        if should_split:
-            split_candidates.append(int(k))
-
     remaining_capacity = max(options.max_intervals - intervals, 0)
     split_selected = set(
-        sorted(split_candidates, key=lambda idx: defects[idx], reverse=True)[:remaining_capacity]
+        sorted(np.flatnonzero(over_tol), key=lambda idx: defects[idx], reverse=True)[:remaining_capacity]
     )
 
     new_mesh = [float(mesh[0])]
     new_degrees: list[int] = []
-    p_increases = 0
-    p_decreases = 0
 
     for k in range(intervals):
         degree = int(degrees[k])
@@ -874,36 +849,22 @@ def refine_hp_mesh(
             new_mesh.append(float(mesh[k + 1]))
             continue
 
-        new_degree = degree
-        if over_tol[k] and new_degree < options.max_degree:
-            new_degree += 1
-            p_increases += 1
-        elif (
-            defects[k] < options.p_coarsen_factor * options.defect_tolerance
-            and new_degree > options.min_degree
-        ):
-            new_degree -= 1
-            p_decreases += 1
-
-        new_degrees.append(new_degree)
+        new_degrees.append(degree)
         new_mesh.append(float(mesh[k + 1]))
 
     new_mesh_array = np.asarray(new_mesh, dtype=float)
     new_degrees_array = np.asarray(new_degrees, dtype=int)
-    changed = len(split_selected) + p_increases + p_decreases
     summary = {
         "split_count": float(len(split_selected)),
-        "p_increase_count": float(p_increases),
-        "p_decrease_count": float(p_decreases),
-        "changed_count": float(changed),
+        "changed_count": float(len(split_selected)),
     }
     return new_mesh_array, new_degrees_array, summary
 
 
-def interpolate_hp_OCPSolution(
+def interpolate_OCPSolution(
     case: TestCase,
     OCPSolution: OCPSolution,
-    samples_per_interval: int = 20,
+    samples_per_interval: int = 40,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     t_days_values: list[float] = []
     x_values: list[np.ndarray] = []
@@ -944,376 +905,25 @@ def interpolate_hp_OCPSolution(
     )
 
 
-AXIS_LABELS = ("x [LU]", "y [LU]", "z [LU]")
-BLACK_COLOR = "#000000"
-TURQUOISE_COLOR = "#00A6A6"
-DARK_RED_COLOR = "#8B0000"
-DARK_RED_VARIANT_COLOR = "#6F0000"
-GREY_COLOR = "#8A8A8A"
-DARK_GREY_COLOR = "#2F2F2F"
-LIGHT_GREY_COLOR = "#D8D8D8"
-TRAJECTORY_COLOR = BLACK_COLOR
-THRUST_COLOR = DARK_RED_COLOR
-SECONDARY_DATA_COLOR = TURQUOISE_COLOR
-REFERENCE_COLOR = GREY_COLOR
-POINT_MARKER_COLOR = TURQUOISE_COLOR
-MOON_COLOR = GREY_COLOR
-LIMIT_COLOR = DARK_RED_VARIANT_COLOR
-FIGURE_DPI = 220
-SQUARE_FIGSIZE = (5.6, 5.6)
-WIDE_FIGSIZE = SQUARE_FIGSIZE
-THREE_D_FIGSIZE = (5.8, 5.8)
-AXIS_LABEL_FONT_SIZE = 12
-TICK_LABEL_FONT_SIZE = 10
-LEGEND_FONT_SIZE = 10
-ANNOTATION_FONT_SIZE = 9
-AXIS_SPINE_WIDTH = 1.25
-MAJOR_TICK_WIDTH = 1.15
-MINOR_TICK_WIDTH = 0.9
-TRAJECTORY_LINE_WIDTH = 1.8
-REFERENCE_LINE_WIDTH = 1.2
-GUIDE_LINE_WIDTH = 1.2
-PROJECTION_COLORS = {
-    (0, 1): TRAJECTORY_COLOR,
-    (0, 2): TRAJECTORY_COLOR,
-    (1, 2): TRAJECTORY_COLOR,
-}
-PROJECTION_AXES = ((0, 1), (0, 2), (1, 2))
-LYAPUNOV_L1_TO_L2_PROJECTION_AXES = ((0, 1),)
-PROJECTION_SUFFIXES = {
-    (0, 1): "xy",
-    (0, 2): "xz",
-    (1, 2): "yz",
-}
-CALEB_TRAJECTORY_COLOR = TRAJECTORY_COLOR
-CALEB_REFERENCE_COLOR = REFERENCE_COLOR
-CALEB_THRUST_COLOR = THRUST_COLOR
-CALEB_POINT_COLOR = POINT_MARKER_COLOR
-CALEB_MOON_COLOR = MOON_COLOR
-
-
-def style_2d_axis(ax, *, equal_axis: bool = False, grid_which: str = "major") -> None:
-    ax.minorticks_on()
-    ax.grid(True, which=grid_which, color=LIGHT_GREY_COLOR, alpha=0.75, linewidth=0.7)
-    ax.tick_params(
-        axis="both",
-        which="major",
-        direction="out",
-        top=False,
-        right=False,
-        colors=DARK_GREY_COLOR,
-        labelsize=TICK_LABEL_FONT_SIZE,
-        width=MAJOR_TICK_WIDTH,
-        length=5.5,
-    )
-    ax.tick_params(
-        axis="both",
-        which="minor",
-        direction="out",
-        top=False,
-        right=False,
-        colors=DARK_GREY_COLOR,
-        width=MINOR_TICK_WIDTH,
-        length=3.0,
-    )
-    ax.xaxis.label.set_size(AXIS_LABEL_FONT_SIZE)
-    ax.yaxis.label.set_size(AXIS_LABEL_FONT_SIZE)
-    ax.title.set_size(AXIS_LABEL_FONT_SIZE)
-    for side, spine in ax.spines.items():
-        spine.set_visible(side in ("left", "bottom"))
-        spine.set_color(GREY_COLOR)
-        spine.set_linewidth(AXIS_SPINE_WIDTH)
-    try:
-        ax.set_box_aspect(1.0)
-    except AttributeError:
-        pass
-    if equal_axis:
-        ax.set_aspect("equal", adjustable="box")
-
-
-def is_three_dimensional_OCPSolution(*arrays: np.ndarray, tol: float = 1e-8) -> bool:
-    return any(array is not None and np.max(np.abs(array[2])) > tol for array in arrays)
-
-
-def plot_system_points_2d(ax, case: TestCase, axis_0: int, axis_1: int, lagrange: dict[str, float]) -> None:
-    moon_coord = np.zeros(3)
-    moon_coord[0] = 1.0 - case.mu
-    ax.scatter(
-        moon_coord[axis_0],
-        moon_coord[axis_1],
-        color=CALEB_MOON_COLOR,
-        edgecolor=DARK_GREY_COLOR,
-        linewidth=AXIS_SPINE_WIDTH,
-        marker="o",
-        s=70,
-        zorder=6,
-    )
-    ax.text(moon_coord[axis_0], moon_coord[axis_1], " MOON", fontsize=ANNOTATION_FONT_SIZE)
-    for name in ("L1", "L2"):
-        point = np.zeros(3)
-        point[0] = lagrange[name]
-        ax.scatter(point[axis_0], point[axis_1], color=DARK_GREY_COLOR, marker="o", s=16, zorder=6)
-        ax.text(point[axis_0], point[axis_1], f" ${name[0]}_{name[1]}$", fontsize=ANNOTATION_FONT_SIZE)
-
-
-def plot_projection(
-    ax,
-    case: TestCase,
-    x_dense: np.ndarray,
-    u_dense: np.ndarray,
-    departure_orbit: np.ndarray | None,
-    target_orbit: np.ndarray | None,
-    lagrange: dict[str, float],
-    axis_0: int,
-    axis_1: int,
-    trajectory_color: str | None = None,
-) -> None:
-    trajectory_color = trajectory_color or PROJECTION_COLORS.get((axis_0, axis_1), CALEB_TRAJECTORY_COLOR)
-    if departure_orbit is not None:
-        ax.plot(
-            departure_orbit[axis_0],
-            departure_orbit[axis_1],
-            color=CALEB_REFERENCE_COLOR,
-            linestyle="dashed",
-            lw=REFERENCE_LINE_WIDTH,
-        )
-    if target_orbit is not None:
-        ax.plot(
-            target_orbit[axis_0],
-            target_orbit[axis_1],
-            color=CALEB_REFERENCE_COLOR,
-            linestyle="dotted",
-            lw=REFERENCE_LINE_WIDTH,
-        )
-
-    ax.plot(x_dense[axis_0], x_dense[axis_1], color=trajectory_color, lw=TRAJECTORY_LINE_WIDTH, zorder=4)
-    ax.scatter(x_dense[axis_0, 0], x_dense[axis_1, 0], color=CALEB_POINT_COLOR, marker="^", s=28, zorder=7)
-    ax.text(x_dense[axis_0, 0], x_dense[axis_1, 0], " $x_0$", fontsize=ANNOTATION_FONT_SIZE)
-    ax.scatter(x_dense[axis_0, -1], x_dense[axis_1, -1], color=CALEB_POINT_COLOR, marker="v", s=28, zorder=7)
-    ax.text(x_dense[axis_0, -1], x_dense[axis_1, -1], " $x_t$", fontsize=ANNOTATION_FONT_SIZE)
-
-    u_norm = np.linalg.norm(u_dense, axis=0)
-    active = np.flatnonzero(u_norm > 0.03 * case.max_thrust_nd)
-    if active.size:
-        chosen = active[np.unique(np.linspace(0, active.size - 1, min(36, active.size)).astype(int))]
-        direction = u_dense[:, chosen] / np.maximum(u_norm[chosen], 1e-14)
-        thrust_ratio = u_norm[chosen] / max(case.max_thrust_nd, float(np.max(u_norm)))
-        arrow_scale_lu = 0.035
-        ax.quiver(
-            x_dense[axis_0, chosen],
-            x_dense[axis_1, chosen],
-            direction[axis_0] * thrust_ratio * arrow_scale_lu,
-            direction[axis_1] * thrust_ratio * arrow_scale_lu,
-            angles="xy",
-            scale_units="xy",
-            scale=1.0,
-            color=CALEB_THRUST_COLOR,
-            width=0.0045,
-            headwidth=3.5,
-            headlength=4.5,
-            alpha=0.85,
-            zorder=5,
-        )
-
-    plot_system_points_2d(ax, case, axis_0, axis_1, lagrange)
-    ax.set_xlabel(AXIS_LABELS[axis_0])
-    ax.set_ylabel(AXIS_LABELS[axis_1])
-    style_2d_axis(ax, equal_axis=True)
-
-
-def save_projection_plot(
-    case: TestCase,
-    x_dense: np.ndarray,
-    u_dense: np.ndarray,
-    departure_orbit: np.ndarray | None,
-    target_orbit: np.ndarray | None,
-    lagrange: dict[str, float],
-    axis_0: int,
-    axis_1: int,
-    output_path: Path,
-) -> None:
-    fig, ax = plt.subplots(figsize=SQUARE_FIGSIZE, dpi=FIGURE_DPI, constrained_layout=True)
-    plot_projection(
-        ax,
-        case,
-        x_dense,
-        u_dense,
-        departure_orbit,
-        target_orbit,
-        lagrange,
-        axis_0,
-        axis_1,
-        trajectory_color=PROJECTION_COLORS[(axis_0, axis_1)],
-    )
-    fig.savefig(output_path, dpi=FIGURE_DPI, bbox_inches="tight")
-    plt.close(fig)
-
-
-def set_axes_equal_3d(ax) -> None:
-    x_limits = ax.get_xlim3d()
-    y_limits = ax.get_ylim3d()
-    z_limits = ax.get_zlim3d()
-    ranges = np.array([x_limits[1] - x_limits[0], y_limits[1] - y_limits[0], z_limits[1] - z_limits[0]])
-    centers = np.array([sum(x_limits), sum(y_limits), sum(z_limits)]) * 0.5
-    radius = 0.5 * max(ranges)
-    ax.set_xlim3d(centers[0] - radius, centers[0] + radius)
-    ax.set_ylim3d(centers[1] - radius, centers[1] + radius)
-    ax.set_zlim3d(centers[2] - radius, centers[2] + radius)
-
-
-def save_3d_plot(
-    case: TestCase,
-    x_dense: np.ndarray,
-    u_dense: np.ndarray,
-    departure_orbit: np.ndarray | None,
-    target_orbit: np.ndarray | None,
-    lagrange: dict[str, float],
-    output_path: Path,
-) -> None:
-    fig = plt.figure(figsize=THREE_D_FIGSIZE, dpi=FIGURE_DPI)
-    ax = fig.add_subplot(111, projection="3d")
-    if departure_orbit is not None:
-        ax.plot(
-            departure_orbit[0],
-            departure_orbit[1],
-            departure_orbit[2],
-            color=CALEB_REFERENCE_COLOR,
-            linestyle="dashed",
-            lw=REFERENCE_LINE_WIDTH,
-        )
-    if target_orbit is not None:
-        ax.plot(
-            target_orbit[0],
-            target_orbit[1],
-            target_orbit[2],
-            color=CALEB_REFERENCE_COLOR,
-            linestyle="dotted",
-            lw=REFERENCE_LINE_WIDTH,
-        )
-    ax.plot(x_dense[0], x_dense[1], x_dense[2], color=CALEB_TRAJECTORY_COLOR, lw=TRAJECTORY_LINE_WIDTH)
-    ax.scatter(x_dense[0, 0], x_dense[1, 0], x_dense[2, 0], color=CALEB_POINT_COLOR, marker="^", s=26)
-    ax.scatter(x_dense[0, -1], x_dense[1, -1], x_dense[2, -1], color=CALEB_POINT_COLOR, marker="v", s=26)
-    ax.text(x_dense[0, 0], x_dense[1, 0], x_dense[2, 0], " $x_0$", fontsize=ANNOTATION_FONT_SIZE)
-    ax.text(x_dense[0, -1], x_dense[1, -1], x_dense[2, -1], " $x_t$", fontsize=ANNOTATION_FONT_SIZE)
-    moon = np.array([1.0 - case.mu, 0.0, 0.0])
-    ax.scatter(
-        moon[0],
-        moon[1],
-        moon[2],
-        color=CALEB_MOON_COLOR,
-        edgecolor=DARK_GREY_COLOR,
-        linewidth=AXIS_SPINE_WIDTH,
-        marker="o",
-        s=70,
-    )
-    ax.text(moon[0], moon[1], moon[2], " MOON", fontsize=ANNOTATION_FONT_SIZE)
-    for name in ("L1", "L2"):
-        ax.scatter(lagrange[name], 0.0, 0.0, color=DARK_GREY_COLOR, marker="o", s=16)
-        ax.text(lagrange[name], 0.0, 0.0, f" ${name[0]}_{name[1]}$", fontsize=ANNOTATION_FONT_SIZE)
-    ax.set_xlabel("x [LU]")
-    ax.set_ylabel("y [LU]")
-    ax.set_zlabel("z [LU]")
-    ax.xaxis.label.set_size(AXIS_LABEL_FONT_SIZE)
-    ax.yaxis.label.set_size(AXIS_LABEL_FONT_SIZE)
-    ax.zaxis.label.set_size(AXIS_LABEL_FONT_SIZE)
-    ax.tick_params(axis="both", which="major", labelsize=TICK_LABEL_FONT_SIZE, width=MAJOR_TICK_WIDTH)
-    ax.view_init(azim=78, elev=15)
-    ax.grid(True, color=LIGHT_GREY_COLOR, alpha=0.7)
-    set_axes_equal_3d(ax)
-    fig.tight_layout(pad=0.2)
-    fig.savefig(output_path, dpi=FIGURE_DPI, bbox_inches="tight")
-    plt.close(fig)
-
-
-def moon_surface_distance_km(case: TestCase, x_values: np.ndarray) -> np.ndarray:
-    moon_relative_position = x_values[0:3] - np.array([[1.0 - case.mu], [0.0], [0.0]])
-    moon_center_distance_lu = np.linalg.norm(moon_relative_position, axis=0)
-    return (moon_center_distance_lu - case.moon_radius_lu) * case.length_unit
-
-
-def save_moon_distance_plot(
-    case: TestCase,
-    t_dense_days: np.ndarray,
-    moon_distance_km: np.ndarray,
-    output_path: Path,
-) -> None:
-    fig, ax = plt.subplots(figsize=WIDE_FIGSIZE, dpi=FIGURE_DPI, constrained_layout=True)
-    ax.plot(t_dense_days, moon_distance_km, color=SECONDARY_DATA_COLOR, lw=TRAJECTORY_LINE_WIDTH)
-    ax.axhline(0.0, color=CALEB_THRUST_COLOR, linestyle="dotted", lw=GUIDE_LINE_WIDTH)
-    closest_idx = int(np.argmin(moon_distance_km))
-    ax.scatter(t_dense_days[closest_idx], moon_distance_km[closest_idx], color=POINT_MARKER_COLOR, s=22, zorder=4)
-    ax.set_xlabel("time [days]")
-    ax.set_ylabel("distance to Moon surface [km]")
-    style_2d_axis(ax)
-    fig.savefig(output_path, dpi=FIGURE_DPI, bbox_inches="tight")
-    plt.close(fig)
-
-
-def save_verification_plots(
-    t_dense_days: np.ndarray,
-    position_error_m: np.ndarray,
-    velocity_error_m_per_s: np.ndarray,
-    mass_consumption_abs_difference_kg: np.ndarray,
-    output_prefix: Path,
-) -> list[Path]:
-    plot_error_m = np.maximum(position_error_m, 1e-16)
-    plot_velocity_error_m_per_s = np.maximum(velocity_error_m_per_s, 1e-16)
-    plot_mass_error_kg = np.maximum(mass_consumption_abs_difference_kg, 1e-16)
-    specs = [
-        ("verification_position", "absolute position difference [m]", plot_error_m, position_error_m, TRAJECTORY_COLOR),
-        ("verification_velocity", "absolute velocity difference [m/s]", plot_velocity_error_m_per_s, velocity_error_m_per_s, SECONDARY_DATA_COLOR),
-        ("verification_mass", "mass-consumption difference [kg]", plot_mass_error_kg, mass_consumption_abs_difference_kg, THRUST_COLOR),
-    ]
-    saved_paths: list[Path] = []
-    for suffix, ylabel, y_plot, y_raw, color in specs:
-        fig, ax = plt.subplots(figsize=WIDE_FIGSIZE, dpi=FIGURE_DPI, constrained_layout=True)
-        ax.semilogy(t_dense_days, y_plot, color=color, lw=TRAJECTORY_LINE_WIDTH)
-        max_idx = int(np.argmax(y_raw))
-        ax.scatter(t_dense_days[max_idx], max(y_raw[max_idx], 1e-16), color=CALEB_THRUST_COLOR, s=22, zorder=4)
-        ax.set_xlabel("time [days]")
-        ax.set_ylabel(ylabel)
-        style_2d_axis(ax, grid_which="both")
-        output_path = output_prefix.with_name(f"{output_prefix.name}_{suffix}").with_suffix(".png")
-        fig.savefig(output_path, dpi=FIGURE_DPI, bbox_inches="tight")
-        plt.close(fig)
-        saved_paths.append(output_path)
-    return saved_paths
-
-
-def save_thrust_plot(
-    t_days: np.ndarray,
-    u_norm_n: np.ndarray,
-    max_thrust_n: float,
-    output_path: Path,
-) -> None:
-    fig, ax = plt.subplots(figsize=WIDE_FIGSIZE, dpi=FIGURE_DPI, constrained_layout=True)
-    ax.step(t_days, u_norm_n, where="post", color=CALEB_THRUST_COLOR, lw=TRAJECTORY_LINE_WIDTH, label="Thrust")
-    ax.axhline(max_thrust_n, color=LIMIT_COLOR, linestyle="dotted", lw=GUIDE_LINE_WIDTH, label="Max thrust")
-    ax.set_xlabel("time [days]")
-    ax.set_ylabel("thrust [N]")
-    ax.legend(loc="best", fontsize=LEGEND_FONT_SIZE, frameon=True, edgecolor=GREY_COLOR)
-    style_2d_axis(ax)
-    fig.savefig(output_path, dpi=FIGURE_DPI, bbox_inches="tight")
-    plt.close(fig)
-
-
 def save_outputs(
     case: TestCase,
     OCPSolution: OCPSolution,
     history: list[dict[str, float]],
     defects: dict[str, np.ndarray],
-    options: HPAdaptiveOptions,
+    options: HAdaptiveOptions,
     output_prefix: Path,
-) -> list[Path]:
+) -> None:
     output_prefix.parent.mkdir(parents=True, exist_ok=True)
     t_days = OCPSolution.mesh * case.tof_days
     u_norm_n = np.linalg.norm(OCPSolution.u, axis=0) * case.thrust_unit
-    t_dense_days, x_dense, u_dense, sigma_dense = interpolate_hp_OCPSolution(case, OCPSolution)
+    t_dense_days, x_dense, u_dense, sigma_dense = interpolate_OCPSolution(case, OCPSolution)
     u_dense_norm_n = np.linalg.norm(u_dense, axis=0) * case.thrust_unit
-    moon_distance_surface_km = moon_surface_distance_km(case, x_dense)
+    moon_relative_position_nd = x_dense[0:3] - np.array([[1.0 - case.mu], [0.0], [0.0]])
+    moon_center_distance_nd = np.linalg.norm(moon_relative_position_nd, axis=0)
+    moon_distance_surface_km = (moon_center_distance_nd - case.moon_radius_lu) * case.length_unit
     (
         x_integrated,
-        position_error_lu,
+        position_error_nd,
         position_error_m,
         velocity_error_nd,
         velocity_error_m_per_s,
@@ -1359,21 +969,21 @@ def save_outputs(
         u_dense_norm_n=u_dense_norm_n,
         moon_distance_surface_km=moon_distance_surface_km,
         x_integrated=x_integrated,
-        position_error_lu=position_error_lu,
+        position_error_nd=position_error_nd,
         position_error_m=position_error_m,
         velocity_error_nd=velocity_error_nd,
         velocity_error_m_per_s=velocity_error_m_per_s,
         mass_consumption_difference_kg=mass_consumption_difference_kg,
         mass_consumption_abs_difference_kg=mass_consumption_abs_difference_kg,
         interval_defect_scaled=defects["scaled"],
-        interval_defect_position_m=defects["position_m"],
-        interval_defect_velocity_m_per_s=defects["velocity_m_per_s"],
+        interval_defect_position_m=defects["position"],
+        interval_defect_velocity_m_per_s=defects["velocity"],
         interval_defect_mass_kg=defects["mass_kg"],
         history=np.array(history, dtype=object),
     )
 
     header = "t_days,x,y,z,vx,vy,vz,m_nd,ux_N,uy_N,uz_N,sigma_N,thrust_norm_N"
-    dense_csv = np.column_stack(
+    csv_content = np.column_stack(
         [
             t_dense_days,
             x_dense.T,
@@ -1383,9 +993,9 @@ def save_outputs(
         ]
     )
     csv_path = output_prefix.with_suffix(".csv")
-    np.savetxt(csv_path, dense_csv, delimiter=",", header=header, comments="")
+    np.savetxt(csv_path, csv_content, delimiter=",", header=header, comments="")
 
-    lagrange = collinear_lagrange_points(case)
+    lagrange_points = get_collinear_lagrange_points(case)
     departure_orbit = None
     target_orbit = None
     if case.departure_period_nd is not None:
@@ -1393,100 +1003,29 @@ def save_outputs(
     if case.target_period_nd is not None:
         target_orbit = propagate_periodic_orbit(case, case.xf_augmented_state, case.target_period_nd)
 
-    saved_paths = [npz_path, csv_path]
-    projection_axes = (
-        LYAPUNOV_L1_TO_L2_PROJECTION_AXES
-        if case.test_case_id == "lyapunov_l1_to_l2"
-        else PROJECTION_AXES
-    )
-    for axis_0, axis_1 in projection_axes:
-        suffix = PROJECTION_SUFFIXES[(axis_0, axis_1)]
-        projection_path = output_prefix.with_name(f"{output_prefix.name}_{suffix}").with_suffix(".png")
-        save_projection_plot(
-            case,
-            x_dense,
-            u_dense,
-            departure_orbit,
-            target_orbit,
-            lagrange,
-            axis_0,
-            axis_1,
-            projection_path,
-        )
-        saved_paths.append(projection_path)
-
-    thrust_path = output_prefix.with_name(f"{output_prefix.name}_thrust").with_suffix(".png")
-    save_thrust_plot(t_days, u_norm_n, case.max_thrust_n, thrust_path)
-    saved_paths.append(thrust_path)
-    moon_distance_path = output_prefix.with_name(f"{output_prefix.name}_moon_distance").with_suffix(".png")
-    save_moon_distance_plot(case, t_dense_days, moon_distance_surface_km, moon_distance_path)
-    saved_paths.append(moon_distance_path)
-    saved_paths.extend(save_verification_plots(
+    plotter = Plotter(output_prefix)
+    plotter.save_projection_figure(case, x_dense, u_dense, departure_orbit, target_orbit, lagrange_points)
+    plotter.save_3d_plot(case, x_dense, u_dense, departure_orbit, target_orbit, lagrange_points)
+    plotter.save_thrust_plot(t_days, u_norm_n, case.max_thrust_n)
+    plotter.save_moon_distance_plot(t_dense_days, moon_distance_surface_km)
+    plotter.save_verification_errors(
         t_dense_days,
         position_error_m,
         velocity_error_m_per_s,
         mass_consumption_abs_difference_kg,
-        output_prefix,
-    ))
-    figure_3d_path = output_prefix.with_name(f"{output_prefix.name}_3d").with_suffix(".png")
-    save_3d_plot(case, x_dense, u_dense, departure_orbit, target_orbit, lagrange, figure_3d_path)
-    saved_paths.append(figure_3d_path)
-    saved_paths.extend(save_defect_plots(case, OCPSolution, defects, options, output_prefix))
-    return saved_paths
-
-
-def save_defect_plots(
-    case: TestCase,
-    OCPSolution: OCPSolution,
-    defects: dict[str, np.ndarray],
-    options: HPAdaptiveOptions,
-    output_prefix: Path,
-) -> list[Path]:
-    centers = 0.5 * (OCPSolution.mesh[:-1] + OCPSolution.mesh[1:]) * case.tof_days
-    widths = np.diff(OCPSolution.mesh) * case.tof_days
-    scaled = np.maximum(defects["scaled"], 1e-16)
-
-    saved_paths: list[Path] = []
-    defect_path = output_prefix.with_name(f"{output_prefix.name}_defect").with_suffix(".png")
-    fig, defect_ax = plt.subplots(figsize=WIDE_FIGSIZE, dpi=FIGURE_DPI, constrained_layout=True)
-    defect_ax.bar(centers, scaled, width=widths, align="center", color=CALEB_TRAJECTORY_COLOR, alpha=0.85)
-    defect_ax.axhline(options.defect_tolerance, color=CALEB_THRUST_COLOR, linestyle="dotted", lw=GUIDE_LINE_WIDTH)
-    defect_ax.set_yscale("log")
-    defect_ax.set_xlabel("time [days]")
-    defect_ax.set_ylabel("scaled endpoint defect")
-    style_2d_axis(defect_ax, grid_which="both")
-    fig.savefig(defect_path, dpi=FIGURE_DPI, bbox_inches="tight")
-    plt.close(fig)
-    saved_paths.append(defect_path)
-
-    degree_path = output_prefix.with_name(f"{output_prefix.name}_degree").with_suffix(".png")
-    fig, degree_ax = plt.subplots(figsize=WIDE_FIGSIZE, dpi=FIGURE_DPI, constrained_layout=True)
-    degree_ax.step(
-        OCPSolution.mesh * case.tof_days,
-        np.r_[OCPSolution.degrees, OCPSolution.degrees[-1]],
-        where="post",
-        color=SECONDARY_DATA_COLOR,
-        lw=TRAJECTORY_LINE_WIDTH,
     )
-    degree_ax.set_xlabel("time [days]")
-    degree_ax.set_ylabel("Radau degree")
-    degree_ax.set_ylim(options.min_degree - 0.5, options.max_degree + 0.5)
-    style_2d_axis(degree_ax)
-    fig.savefig(degree_path, dpi=FIGURE_DPI, bbox_inches="tight")
-    plt.close(fig)
-    saved_paths.append(degree_path)
-    return saved_paths
+    plotter.save_defect_plot(OCPSolution.mesh, case.tof_days, defects["scaled"], options.defect_tolerance)
 
 
-def hp_adaptive_method(
+def h_adaptive_method(
     case: TestCase,
-    options: HPAdaptiveOptions,
+    options: HAdaptiveOptions,
     max_iter: int,
     print_level: int,
     log_prefix: str = "",
 ) -> tuple[OCPSolution, list[dict[str, float]], dict[str, np.ndarray]]:
     mesh = np.linspace(0.0, 1.0, options.initial_intervals + 1)
-    degrees = np.full(options.initial_intervals, options.min_degree, dtype=int)
+    degrees = np.full(options.initial_intervals, options.radau_degree, dtype=int)
     guess: INITIAL_GUESS = None
     history: list[dict[str, float]] = []
     ocp_solution: OCPSolution | None = None
@@ -1514,7 +1053,7 @@ def hp_adaptive_method(
     for adapt_iter in range(1, options.max_adapt_iterations + 1):
         print(
             f"\n{log_prefix} Iteration {adapt_iter}: "
-            f"intervals={degrees.size}, polynomial order=[min:{np.min(degrees)}, max:{np.max(degrees)}]",
+            f"intervals={degrees.size}, fixed Radau degree={options.radau_degree}",
             flush=True,
         )
         ocp_solution = solve_ocp(
@@ -1550,14 +1089,13 @@ def hp_adaptive_method(
             print(f"{log_prefix} tolerance reached.", flush=True)
             break
 
-        new_mesh, new_degrees, refinement = refine_hp_mesh(ocp_solution, defects["scaled"], options)
+        new_mesh, new_degrees, refinement = refine_h_mesh(ocp_solution, defects["scaled"], options)
         print(
-            f"{log_prefix}  refine: split={refinement['split_count']:.0f}, "
-            f"p+={refinement['p_increase_count']:.0f}, p-={refinement['p_decrease_count']:.0f}",
+            f"{log_prefix}  h-refine: split={refinement['split_count']:.0f}",
             flush=True,
         )
         if refinement["changed_count"] <= 0.0:
-            print(f"{log_prefix}  hp refinement limit reached.", flush=True)
+            print(f"{log_prefix}  h-refinement limit reached.", flush=True)
             break
 
         guess = ocp_solution
@@ -1568,12 +1106,12 @@ def hp_adaptive_method(
 
 def run_test_case(test_case_id: str) -> str:
     case = CASE_REGISTRY[test_case_id]()
-    options = HPAdaptiveOptions()
+    options = HAdaptiveOptions()
     output_prefix = DEFAULT_OUTPUT_DIR / DEFAULT_OUTPUT_PREFIX / case.test_case_id
     
     log_prefix = f"[{case.test_case_id}] "
 
-    ocp_solution, history, defects = hp_adaptive_method(
+    ocp_solution, history, defects = h_adaptive_method(
         case=case,
         options=options,
         max_iter=MAX_ITER,
@@ -1593,7 +1131,6 @@ def main() -> None:
         flush=True,
     )
     context = mp.get_context("spawn")
-    results: dict[str, tuple[str, list[str]]] = {}
     with ProcessPoolExecutor(max_workers=process_count, mp_context=context) as executor:
         futures = {executor.submit(run_test_case, test_case_id): test_case_id for test_case_id in CASE_REGISTRY}
         for future in as_completed(futures):
