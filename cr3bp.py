@@ -452,7 +452,6 @@ def integrate_with_dense_control(
 
     def rhs(t_nd: float, state: np.ndarray) -> np.ndarray:
         control = np.array([np.interp(t_nd, t_grid_nd, u_values[i]) for i in range(u_values.shape[0])])
-        sigma = float(np.interp(t_nd, t_grid_nd, sigma_values[0]))
         control_norm = np.linalg.norm(control)
         return eom(case, state, control, control_norm)
 
@@ -567,7 +566,6 @@ def rollout_initial_guess(
 
     return x_guess, u_guess_nd, sigma_guess_nd
 
-
 def evaluate_hp_state(solution: OCPSolution, fraction: float) -> np.ndarray:
 
     interval = int(np.searchsorted(solution.mesh, fraction, side="right") - 1)
@@ -587,7 +585,6 @@ def evaluate_hp_state(solution: OCPSolution, fraction: float) -> np.ndarray:
     for coefficient, interval_state in zip(basis, interval_states):
         state += coefficient * interval_state
     return state
-
 
 def evaluate_hs_state(case: TestCase, solution: OCPSolution, fraction: float) -> np.ndarray:
 
@@ -622,12 +619,10 @@ def evaluate_hs_state(case: TestCase, solution: OCPSolution, fraction: float) ->
         + tau3 / (3.0 * h * h) * (2.0 * xdot_k - 4.0 * xdot_c + 2.0 * xdot_kp1)
     )
 
-
 def evaluate_solution_state(case: TestCase, solution: OCPSolution, fraction: float) -> np.ndarray:
     if solution.is_hp_radau:
         return evaluate_hp_state(solution, fraction)
     return evaluate_hs_state(case, solution, fraction)
-
 
 def sample_endpoint_variables(
     case: TestCase,
@@ -641,7 +636,6 @@ def sample_endpoint_variables(
     u_guess = np.vstack([np.interp(mesh, guess.mesh, guess.u[i]) for i in range(guess.u.shape[0])])
     sigma_guess = np.vstack([np.interp(mesh, guess.mesh, guess.sigma[0])])
     return x_guess, u_guess, sigma_guess
-
 
 def solve_ocp(
     case: TestCase,
@@ -773,7 +767,6 @@ def solve_ocp(
     if last_error is not None:
         raise last_error
 
-
 def estimate_interval_defects(
     case: TestCase,
     OCPSolution: OCPSolution,
@@ -839,7 +832,6 @@ def estimate_interval_defects(
         "mass_kg": mass_error,
     }
 
-
 def refine_h_mesh(
     OCPSolution: OCPSolution,
     defects: np.ndarray,
@@ -879,11 +871,10 @@ def refine_h_mesh(
     }
     return new_mesh_array, new_degrees_array, summary
 
-
 def interpolate_OCPSolution(
     case: TestCase,
     OCPSolution: OCPSolution,
-    samples_per_interval: int = 40,
+    samples_per_interval: int = 80,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     t_days_values: list[float] = []
     x_values: list[np.ndarray] = []
@@ -922,7 +913,6 @@ def interpolate_OCPSolution(
         np.column_stack(u_values),
         np.asarray(sigma_values, dtype=float).reshape(1, -1),
     )
-
 
 def save_outputs(
     case: TestCase,
@@ -1034,7 +1024,6 @@ def save_outputs(
         mass_consumption_abs_difference_kg,
     )
     plotter.plot_interval_defect(OCPSolution.mesh, case.tof_days, defects["scaled"], options.defect_tolerance)
-
 
 def h_adaptive_method(
     case: TestCase,
