@@ -215,10 +215,32 @@ CASE_REGISTRY: dict[str, type[TestCase]] = {
 MAX_ITER = 10000
 PRINT_LEVEL = 0
 TOL = 1e-9
+FUEL_OPTIMAL_MODE = "fuel optimal"
+ENERGY_OPTIMAL_MODE = "energy optimal"
+# Set this to "fuel optimal" or "energy optimal".
+OBJECTIVE_MODE = ENERGY_OPTIMAL_MODE
 DEFAULT_OUTPUT_DIR = Path("output/cr3bp")
 DEFAULT_OUTPUT_PREFIX = ""
 INITIAL_GUESS = OCPSolution | None
 COLLOCATION_CACHE: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = {}
+
+
+def check_objective_mode(objective_mode: str) -> str:
+    if objective_mode not in (FUEL_OPTIMAL_MODE, ENERGY_OPTIMAL_MODE):
+        raise ValueError(
+            f"Unknown objective mode '{objective_mode}'. "
+            f"Use '{FUEL_OPTIMAL_MODE}' or '{ENERGY_OPTIMAL_MODE}'."
+        )
+    return objective_mode
+
+
+def format_obj_stats(diagnostics: dict[str, float], objective_mode: str) -> str:
+    if check_objective_mode(objective_mode) == FUEL_OPTIMAL_MODE:
+        return f"objective={diagnostics['objective_value']:.6f} kg"
+    return (
+        f"objective={diagnostics['objective_value']:.6e} N^2 s, "
+        f"fuel={diagnostics['fuel_consumed_kg']:.6f} kg"
+    )
 
 
 def _compute_root(function, lo: float, hi: float, iterations: int = 100, tol: float = 1e-14) -> float:
@@ -359,14 +381,17 @@ def _warm_start(
     max_iter: int,
     print_level: int,
     extra_options: dict[str, float | int | str] | None = None,
+    objective_mode: str = OBJECTIVE_MODE,
 ) -> OCPSolution:
     "Solve the optimal control problem with a Hermite-Simpson collocation method to warm-start the h-adaptive Radau refinement."
+    objective_mode = check_objective_mode(objective_mode)
     opti = casadi.Opti()
     h = case.tof_nd / nodes
     x_var = opti.variable(7, nodes + 1)
     u_var = opti.variable(3, nodes + 1)
     sigma_var = opti.variable(1, nodes + 1)
     fuel_consumed_nd = 0.0
+    energy_used_nd = 0.0
     max_thrust_nd = case.max_thrust_nd
 
     for k in range(nodes + 1):
@@ -388,11 +413,24 @@ def _warm_start(
             * (sigma_var[0, k] + 4.0 * sigma_mid + sigma_var[0, k + 1])
             / case.exhaust_velocity_nd
         )
+        energy_used_nd += (
+            h
+            / 6.0
+            * (
+                0.5 * casadi.dot(u_var[:, k], u_var[:, k])
+                + 4.0 * 0.5 * casadi.dot(u_mid, u_mid)
+                + 0.5 * casadi.dot(u_var[:, k + 1], u_var[:, k + 1])
+            )
+        )
 
     opti.subject_to(x_var[:, 0] == case.x0_augmented_state)
     opti.subject_to(x_var[0:6, nodes] == case.xf_state)
     fuel_consumed = fuel_consumed_nd * case.m0_wet
-    opti.minimize(fuel_consumed)
+    energy_objective = energy_used_nd * case.thrust_unit**2 * case.time_unit
+    if objective_mode == FUEL_OPTIMAL_MODE:
+        opti.minimize(fuel_consumed)
+    else:
+        opti.minimize(energy_used_nd)
 
     x_guess, u_guess, sigma_guess = _resample_hs_solution(sol, nodes, case)
     sigma_guess = np.minimum(np.maximum(sigma_guess, 1e-7), max_thrust_nd)
@@ -430,7 +468,12 @@ def _warm_start(
     u_sol = np.asarray(sol.value(u_var), dtype=float)
     sigma_sol = np.asarray(sol.value(sigma_var), dtype=float).reshape(1, -1)
     diagnostics = get_diagnostics(case, x_sol, u_sol, sigma_sol)
-    diagnostics["fuel_consumed_kg"] = float(sol.value(fuel_consumed))
+    diagnostics["energy_objective"] = float(sol.value(energy_objective))
+    if objective_mode == FUEL_OPTIMAL_MODE:
+        diagnostics["fuel_consumed_kg"] = float(sol.value(fuel_consumed))
+        diagnostics["objective_value"] = diagnostics["fuel_consumed_kg"]
+    else:
+        diagnostics["objective_value"] = diagnostics["energy_objective"]
     diagnostics["nodes"] = float(nodes)
     return OCPSolution(
         mesh=np.linspace(0.0, 1.0, nodes + 1),
@@ -501,8 +544,10 @@ def get_diagnostics(
 ) -> dict[str, float]:
     u_norm = np.linalg.norm(u_sol, axis=0)
     final_error = np.max(np.abs(x_sol[:6, -1] - case.xf_state))
+    fuel_consumed_kg = (x_sol[6, 0] - x_sol[6, -1]) * case.m0_wet
     return {
         "final_mass_kg": x_sol[6, -1] * case.m0_wet,
+        "fuel_consumed_kg": float(fuel_consumed_kg),
         "max_thrust": float(np.max(u_norm) * case.thrust_unit),
         "max_sigma": float(np.max(sigma_sol) * case.thrust_unit),
         "max_sigma_minus_norm_n": float(np.max(sigma_sol[0] - u_norm) * case.thrust_unit),
@@ -645,8 +690,10 @@ def solve_ocp(
     max_iter: int,
     print_level: int,
     log_prefix: str,
+    objective_mode: str = OBJECTIVE_MODE,
 ) -> OCPSolution:
 
+    objective_mode = check_objective_mode(objective_mode)
     attempts = [
         ("adaptive", {"mu_strategy": "adaptive"}),
         ("monotone", {"mu_strategy": "monotone"}),
@@ -663,6 +710,7 @@ def solve_ocp(
             sigma_var = opti.variable(1, intervals + 1)
             stage_vars: list[tuple[int, int, casadi.MX]] = []
             fuel_consumed_nd = 0.0
+            energy_used_nd = 0.0
 
             for k in range(intervals + 1):
                 opti.subject_to(casadi.dot(u_var[:, k], u_var[:, k]) <= sigma_var[0, k] ** 2)
@@ -684,6 +732,7 @@ def solve_ocp(
 
 
                 fuel_consumed_nd += h * b_vector[0] * sigma_var[0, k] / case.exhaust_velocity_nd
+                energy_used_nd += h * b_vector[0] * 0.5 * casadi.dot(u_var[:, k], u_var[:, k])
 
                 for j in range(1, degree + 1):
                     tau_j = float(tau_root[j])
@@ -698,12 +747,17 @@ def solve_ocp(
                     f_j = eom(case, x_j, u_j, sigma_j)
                     opti.subject_to(polynomial_derivative == h * f_j)
                     fuel_consumed_nd += h * b_vector[j] * sigma_j / case.exhaust_velocity_nd
+                    energy_used_nd += h * b_vector[j] * 0.5 * casadi.dot(u_j, u_j)
 
             opti.subject_to(x_var[:, 0] == case.x0_augmented_state)
             opti.subject_to(x_var[0:6, intervals] == case.xf_state)
 
             fuel_consumed = fuel_consumed_nd * case.m0_wet
-            opti.minimize(fuel_consumed)
+            energy_objective = energy_used_nd * case.thrust_unit**2 * case.time_unit
+            if objective_mode == FUEL_OPTIMAL_MODE:
+                opti.minimize(fuel_consumed)
+            else:
+                opti.minimize(energy_used_nd)
 
             x_guess, u_guess, sigma_guess = sample_endpoint_variables(case, guess, mesh)
             sigma_guess = np.maximum(sigma_guess, 1e-7)
@@ -743,7 +797,12 @@ def solve_ocp(
             }
 
             diagnostics = get_diagnostics(case, x_sol, u_sol, sigma_sol)
-            diagnostics["fuel_consumed_kg"] = float(sol.value(fuel_consumed))
+            diagnostics["energy_objective"] = float(sol.value(energy_objective))
+            if objective_mode == FUEL_OPTIMAL_MODE:
+                diagnostics["fuel_consumed_kg"] = float(sol.value(fuel_consumed))
+                diagnostics["objective_value"] = diagnostics["fuel_consumed_kg"]
+            else:
+                diagnostics["objective_value"] = diagnostics["energy_objective"]
             diagnostics["intervals"] = float(intervals)
             diagnostics["total_collocation_points"] = float(np.sum(degrees))
             diagnostics["min_degree"] = float(np.min(degrees))
@@ -1031,7 +1090,9 @@ def h_adaptive_method(
     max_iter: int,
     print_level: int,
     log_prefix: str = "",
+    objective_mode: str = OBJECTIVE_MODE,
 ) -> tuple[OCPSolution, list[dict[str, float]], dict[str, np.ndarray]]:
+    objective_mode = check_objective_mode(objective_mode)
     mesh = np.linspace(0.0, 1.0, options.initial_intervals + 1)
     degrees = np.full(options.initial_intervals, options.radau_degree, dtype=int)
     guess: INITIAL_GUESS = None
@@ -1049,11 +1110,11 @@ def h_adaptive_method(
         sol=None,
         max_iter=max_iter,
         print_level=print_level,
+        objective_mode=objective_mode,
     )
     print(
-        log_prefix
-        + "  objective={fuel_consumed_kg:.6f} kg, "
-        "terminal error={terminal_error_nd:.3e}".format(**hs_solution.diagnostics),
+        f"{log_prefix}  {format_obj_stats(hs_solution.diagnostics, objective_mode)}, "
+        f"terminal error={hs_solution.diagnostics['terminal_error_nd']:.3e}",
         flush=True,
     )
     guess = hs_solution
@@ -1072,6 +1133,7 @@ def h_adaptive_method(
             max_iter=max_iter,
             print_level=print_level,
             log_prefix=log_prefix,
+            objective_mode=objective_mode,
         )
         defects = estimate_interval_defects(case, ocp_solution, options.rk4_substeps_per_interval)
         max_defect = float(np.max(defects["scaled"]))
@@ -1086,10 +1148,10 @@ def h_adaptive_method(
         history.append(diag)
 
         print(
-            log_prefix
-            + "  objective={fuel_consumed_kg:.6f} kg, intervals={intervals:.0f}, "
-            " max defect={max_interval_defect:.3e}, "
-            "terminal_error={terminal_error_nd:.3e}".format(**diag),
+            f"{log_prefix}  {format_obj_stats(diag, objective_mode)}, "
+            f"intervals={diag['intervals']:.0f}, "
+            f"max defect={diag['max_interval_defect']:.3e}, "
+            f"terminal_error={diag['terminal_error_nd']:.3e}",
             flush=True,
         )
 
@@ -1116,8 +1178,10 @@ def run_test_case(test_case_id: str) -> str:
     case = CASE_REGISTRY[test_case_id]()
     options = HAdaptiveOptions()
     output_prefix = DEFAULT_OUTPUT_DIR / DEFAULT_OUTPUT_PREFIX / case.test_case_id
+    objective_mode = check_objective_mode(OBJECTIVE_MODE)
     
     log_prefix = f"[{case.test_case_id}] "
+    print(f"{log_prefix}Objective mode: {objective_mode}", flush=True)
 
     ocp_solution, history, defects = h_adaptive_method(
         case=case,
@@ -1125,6 +1189,7 @@ def run_test_case(test_case_id: str) -> str:
         max_iter=MAX_ITER,
         print_level=PRINT_LEVEL,
         log_prefix=log_prefix,
+        objective_mode=objective_mode,
     )
     save_outputs(case, ocp_solution, history, defects, options, output_prefix)
 
