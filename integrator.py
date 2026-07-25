@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import numpy as np
-import cr3bp
+import dirtran_cr3bp
 
 
 def rk4(
-    case: cr3bp.CR3BPEarthMoon,
+    case: dirtran_cr3bp.CR3BPEarthMoon,
     state: np.ndarray,
     control: np.ndarray,
     sigma: float,
@@ -26,8 +26,8 @@ def rk4(
 
     control_mid = 0.5 * (control + control_end)
     sigma_mid = 0.5 * (sigma + sigma_end)
-    k1 = cr3bp.eom(case, state, control, sigma)
-    k2 = cr3bp.eom(case, state + 0.5 * step_size * k1, control_mid, sigma_mid)
-    k3 = cr3bp.eom(case, state + 0.5 * step_size * k2, control_mid, sigma_mid)
-    k4 = cr3bp.eom(case, state + step_size * k3, control_end, sigma_end)
+    k1 = dirtran_cr3bp.eom(case, state, control, sigma)
+    k2 = dirtran_cr3bp.eom(case, state + 0.5 * step_size * k1, control_mid, sigma_mid)
+    k3 = dirtran_cr3bp.eom(case, state + 0.5 * step_size * k2, control_mid, sigma_mid)
+    k4 = dirtran_cr3bp.eom(case, state + step_size * k3, control_end, sigma_end)
     return state + step_size * (k1 + 2.0 * k2 + 2.0 * k3 + k4) / 6.0

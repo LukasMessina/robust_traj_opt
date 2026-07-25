@@ -40,6 +40,7 @@ INITIAL_DURATION = 2.0            # [s]
 INITIAL_STEP = INITIAL_DURATION / INTERVALS
 OPTIMALITY_TOLERANCE = 1e-8
 MAX_MAJOR_ITER = 1000
+STATE_UNCERTAINTY_PLOT_SCALE = 10.0
 
 
 @dataclass(frozen=True)
@@ -654,8 +655,14 @@ def plot_trajectory_and_controls(cfg: Config, sol: Solution, output: Path) -> No
 
 def plot_uncertainty_tube(cfg: Config, sol: Solution, output: Path) -> None:
     time = np.arange(cfg.knots) * sol.h
-    theta_radius = np.sqrt(np.maximum(sol.E[:, 0, 0], 0.0))
-    omega_radius = np.sqrt(np.maximum(sol.E[:, 1, 1], 0.0))
+    theta_radius = (
+        STATE_UNCERTAINTY_PLOT_SCALE
+        * np.sqrt(np.maximum(sol.E[:, 0, 0], 0.0))
+    )
+    omega_radius = (
+        STATE_UNCERTAINTY_PLOT_SCALE
+        * np.sqrt(np.maximum(sol.E[:, 1, 1], 0.0))
+    )
     fig, axes = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
     for ax, nominal, radius, label in (
         (axes[0], sol.x[0], theta_radius, r"$\theta$ [rad]"),
@@ -668,7 +675,7 @@ def plot_uncertainty_tube(cfg: Config, sol: Solution, output: Path) -> None:
             nominal + radius,
             color="tab:blue",
             alpha=0.25,
-            label="ellipsoid projection",
+            label=r"ellipsoid projection ($\times 10$)",
         )
         ax.set_ylabel(label)
         ax.legend(loc="best")
@@ -804,8 +811,14 @@ def plot_method_comparison(
         dirtrel.u[0] + dirtrel.input_uncertainty,
         dirtrel.u[0, -1] + dirtrel.input_uncertainty[-1],
     ]
-    theta_radius = np.sqrt(np.maximum(dirtrel.E[:, 0, 0], 0.0))
-    angular_rate_radius = np.sqrt(np.maximum(dirtrel.E[:, 1, 1], 0.0))
+    theta_radius = (
+        STATE_UNCERTAINTY_PLOT_SCALE
+        * np.sqrt(np.maximum(dirtrel.E[:, 0, 0], 0.0))
+    )
+    angular_rate_radius = (
+        STATE_UNCERTAINTY_PLOT_SCALE
+        * np.sqrt(np.maximum(dirtrel.E[:, 1, 1], 0.0))
+    )
 
     fig, axes = plt.subplots(
         1,
@@ -820,7 +833,7 @@ def plot_method_comparison(
         color=plotter.BLUE,
         alpha=0.18,
         linewidth=0.0,
-        label="uncertainty tube",
+        label=r"uncertainty tube ($\times 10$)",
     )
     axes[0].plot(
         dirtrel_time,
@@ -854,7 +867,7 @@ def plot_method_comparison(
         color=plotter.BLUE,
         alpha=0.18,
         linewidth=0.0,
-        label="uncertainty tube",
+        label=r"uncertainty tube ($\times 10$)",
     )
     axes[1].plot(
         dirtrel_time,
