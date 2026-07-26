@@ -3,6 +3,7 @@ Compute Earth-Moon CR3BP low-thrust transfers with h-adaptive Radau collocation.
 
 The continuous-time optimal control problem is discretized with a variable-size,
 fixed-degree Radau collocation mesh, formulated with CasADi, and solved with IPOPT.
+The thrust and thrust-magnitude slack are zero-order held on each mesh interval.
 """
 
 from __future__ import annotations
@@ -218,7 +219,7 @@ TOL = 1e-9
 FUEL_OPTIMAL_MODE = "fuel optimal"
 ENERGY_OPTIMAL_MODE = "energy optimal"
 # Set this to "fuel optimal" or "energy optimal".
-OBJECTIVE_MODE = ENERGY_OPTIMAL_MODE
+OBJECTIVE_MODE = FUEL_OPTIMAL_MODE
 DEFAULT_OUTPUT_DIR = Path("output/cr3bp")
 DEFAULT_OUTPUT_PREFIX = ""
 INITIAL_GUESS = OCPSolution | None
@@ -303,7 +304,6 @@ def eom(case: CR3BPEarthMoon, state, control, sigma):
         vx, vy, vz = state[3], state[4], state[5]
         mass = state[6]
         ux, uy, uz = control[0], control[1], control[2]
-        sqrt = casadi.sqrt
     else:
         rx, ry, rz, vx, vy, vz, mass = np.asarray(state, dtype=float)
         ux, uy, uz = np.asarray(control, dtype=float)
@@ -351,8 +351,8 @@ def _rollout(
     nodes: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     u_component_nd = 1e-6 / case.thrust_unit
-    u_guess = np.full((3, nodes + 1), u_component_nd, dtype=float)
-    sigma_guess = np.full((1, nodes + 1), np.linalg.norm(u_guess[:, 0]), dtype=float)
+    u_guess = np.full((3, nodes), u_component_nd, dtype=float)
+    sigma_guess = np.full((1, nodes), np.linalg.norm(u_guess[:, 0]), dtype=float)
     x_guess = np.empty((7, nodes + 1), dtype=float)
     x_guess[:, 0] = case.x0_augmented_state
     h = case.tof_nd / nodes
@@ -369,9 +369,11 @@ def _resample_hs_solution(
         return _rollout(case, nodes)
 
     new_grid = np.linspace(0.0, 1.0, nodes + 1)
+    new_midpoints = 0.5 * (new_grid[:-1] + new_grid[1:])
+    source_intervals = interval_indices(sol.mesh, new_midpoints)
     x_guess = np.column_stack([evaluate_solution_state(case, sol, fraction) for fraction in new_grid])
-    u_guess = np.vstack([np.interp(new_grid, sol.mesh, sol.u[i]) for i in range(sol.u.shape[0])])
-    sigma_guess = np.vstack([np.interp(new_grid, sol.mesh, sol.sigma[0])])
+    u_guess = sol.u[:, source_intervals]
+    sigma_guess = sol.sigma[:, source_intervals]
     return x_guess, u_guess, sigma_guess
 
 def _warm_start(
@@ -388,40 +390,26 @@ def _warm_start(
     opti = casadi.Opti()
     h = case.tof_nd / nodes
     x_var = opti.variable(7, nodes + 1)
-    u_var = opti.variable(3, nodes + 1)
-    sigma_var = opti.variable(1, nodes + 1)
+    u_var = opti.variable(3, nodes)
+    sigma_var = opti.variable(1, nodes)
     fuel_consumed_nd = 0.0
     energy_used_nd = 0.0
     max_thrust_nd = case.max_thrust_nd
 
     for k in range(nodes + 1):
-        opti.subject_to(casadi.dot(u_var[:, k], u_var[:, k]) <= sigma_var[0, k] ** 2)
-        opti.subject_to(opti.bounded(0.0, sigma_var[0, k], max_thrust_nd))
         opti.subject_to(x_var[6, k] >= case.m0_dry_nd)
 
     for k in range(nodes):
+        opti.subject_to(casadi.dot(u_var[:, k], u_var[:, k]) <= sigma_var[0, k] ** 2)
+        opti.subject_to(opti.bounded(0.0, sigma_var[0, k], max_thrust_nd))
+
         f_k = eom(case, x_var[:, k], u_var[:, k], sigma_var[0, k])
-        f_kp1 = eom(case, x_var[:, k + 1], u_var[:, k + 1], sigma_var[0, k + 1])
+        f_kp1 = eom(case, x_var[:, k + 1], u_var[:, k], sigma_var[0, k])
         x_mid = 0.5 * (x_var[:, k] + x_var[:, k + 1]) + h / 8.0 * (f_k - f_kp1)
-        u_mid = 0.5 * (u_var[:, k] + u_var[:, k + 1])
-        sigma_mid = 0.5 * (sigma_var[0, k] + sigma_var[0, k + 1])
-        f_mid = eom(case, x_mid, u_mid, sigma_mid)
+        f_mid = eom(case, x_mid, u_var[:, k], sigma_var[0, k])
         opti.subject_to(x_var[:, k + 1] - x_var[:, k] == h / 6.0 * (f_k + 4.0 * f_mid + f_kp1))
-        fuel_consumed_nd += (
-            h
-            / 6.0
-            * (sigma_var[0, k] + 4.0 * sigma_mid + sigma_var[0, k + 1])
-            / case.exhaust_velocity_nd
-        )
-        energy_used_nd += (
-            h
-            / 6.0
-            * (
-                0.5 * casadi.dot(u_var[:, k], u_var[:, k])
-                + 4.0 * 0.5 * casadi.dot(u_mid, u_mid)
-                + 0.5 * casadi.dot(u_var[:, k + 1], u_var[:, k + 1])
-            )
-        )
+        fuel_consumed_nd += h * sigma_var[0, k] / case.exhaust_velocity_nd
+        energy_used_nd += h * 0.5 * casadi.dot(u_var[:, k], u_var[:, k])
 
     opti.subject_to(x_var[:, 0] == case.x0_augmented_state)
     opti.subject_to(x_var[0:6, nodes] == case.xf_state)
@@ -490,23 +478,22 @@ def integrate_with_dense_control(
     u_values: np.ndarray,
     sigma_values: np.ndarray,
 ) -> np.ndarray:
+
+    if u_values.shape[1] != t_grid_nd.size or sigma_values.shape[1] != t_grid_nd.size:
+        raise ValueError("Dense ZOH control, sigma, and time arrays must have the same length.")
+
     x_integrated = np.empty((initial_state.size, t_grid_nd.size), dtype=float)
     x_integrated[:, 0] = initial_state
 
-    def rhs(t_nd: float, state: np.ndarray) -> np.ndarray:
-        control = np.array([np.interp(t_nd, t_grid_nd, u_values[i]) for i in range(u_values.shape[0])])
-        control_norm = np.linalg.norm(control)
-        return eom(case, state, control, control_norm)
-
     for k in range(t_grid_nd.size - 1):
-        t_k = float(t_grid_nd[k])
         h = float(t_grid_nd[k + 1] - t_grid_nd[k])
-        state = x_integrated[:, k]
-        k1 = rhs(t_k, state)
-        k2 = rhs(t_k + 0.5 * h, state + 0.5 * h * k1)
-        k3 = rhs(t_k + 0.5 * h, state + 0.5 * h * k2)
-        k4 = rhs(t_k + h, state + h * k3)
-        x_integrated[:, k + 1] = state + h * (k1 + 2.0 * k2 + 2.0 * k3 + k4) / 6.0
+        x_integrated[:, k + 1] = integrator.rk4(
+            case,
+            x_integrated[:, k],
+            u_values[:, k],
+            float(sigma_values[0, k]),
+            h,
+        )
     return x_integrated
 
 def compute_augm_state_error(
@@ -594,8 +581,8 @@ def rollout_initial_guess(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     intervals = mesh.size - 1
     u_component_nd = 1e-6 / case.thrust_unit
-    u_guess_nd = np.full((3, intervals + 1), u_component_nd, dtype=float)
-    sigma_guess_nd = np.full((1, intervals + 1), np.linalg.norm(u_guess_nd[:, 0]), dtype=float)
+    u_guess_nd = np.full((3, intervals), u_component_nd, dtype=float)
+    sigma_guess_nd = np.full((1, intervals), np.linalg.norm(u_guess_nd[:, 0]), dtype=float)
 
     x_guess = np.empty((7, intervals + 1), dtype=float)
     x_guess[:, 0] = case.x0_augmented_state
@@ -644,16 +631,12 @@ def evaluate_hs_state(case: TestCase, solution: OCPSolution, fraction: float) ->
     x_k = solution.x[:, interval]
     x_kp1 = solution.x[:, interval + 1]
     u_k = solution.u[:, interval]
-    u_kp1 = solution.u[:, interval + 1]
     sigma_k = float(solution.sigma[0, interval])
-    sigma_kp1 = float(solution.sigma[0, interval + 1])
 
     xdot_k = eom(case, x_k, u_k, sigma_k)
-    xdot_kp1 = eom(case, x_kp1, u_kp1, sigma_kp1)
+    xdot_kp1 = eom(case, x_kp1, u_k, sigma_k)
     x_c = 0.5 * (x_k + x_kp1) + h / 8.0 * (xdot_k - xdot_kp1)
-    u_c = 0.5 * (u_k + u_kp1)
-    sigma_c = 0.5 * (sigma_k + sigma_kp1)
-    xdot_c = eom(case, x_c, u_c, sigma_c)
+    xdot_c = eom(case, x_c, u_k, sigma_k)
 
     tau2 = tau * tau
     tau3 = tau2 * tau
@@ -669,6 +652,11 @@ def evaluate_solution_state(case: TestCase, solution: OCPSolution, fraction: flo
         return evaluate_hp_state(solution, fraction)
     return evaluate_hs_state(case, solution, fraction)
 
+def interval_indices(mesh: np.ndarray, fractions: np.ndarray) -> np.ndarray:
+    "Return the ZOH mesh interval containing each normalized time fraction."
+    indices = np.searchsorted(mesh, fractions, side="right") - 1
+    return np.clip(indices, 0, mesh.size - 2)
+
 def sample_endpoint_variables(
     case: TestCase,
     guess: INITIAL_GUESS,
@@ -678,8 +666,10 @@ def sample_endpoint_variables(
         return rollout_initial_guess(case, mesh)
 
     x_guess = np.column_stack([evaluate_solution_state(case, guess, fraction) for fraction in mesh])
-    u_guess = np.vstack([np.interp(mesh, guess.mesh, guess.u[i]) for i in range(guess.u.shape[0])])
-    sigma_guess = np.vstack([np.interp(mesh, guess.mesh, guess.sigma[0])])
+    midpoints = 0.5 * (mesh[:-1] + mesh[1:])
+    source_intervals = interval_indices(guess.mesh, midpoints)
+    u_guess = guess.u[:, source_intervals]
+    sigma_guess = guess.sigma[:, source_intervals]
     return x_guess, u_guess, sigma_guess
 
 def solve_ocp(
@@ -706,20 +696,21 @@ def solve_ocp(
             intervals = degrees.size
             max_thrust_nd = case.max_thrust_nd
             x_var = opti.variable(7, intervals + 1)
-            u_var = opti.variable(3, intervals + 1)
-            sigma_var = opti.variable(1, intervals + 1)
+            u_var = opti.variable(3, intervals)
+            sigma_var = opti.variable(1, intervals)
             stage_vars: list[tuple[int, int, casadi.MX]] = []
             fuel_consumed_nd = 0.0
             energy_used_nd = 0.0
 
             for k in range(intervals + 1):
-                opti.subject_to(casadi.dot(u_var[:, k], u_var[:, k]) <= sigma_var[0, k] ** 2)
-                opti.subject_to(opti.bounded(0.0, sigma_var[0, k], max_thrust_nd))
                 opti.subject_to(x_var[6, k] >= case.m0_dry_nd)
 
             for k in range(intervals):
+                opti.subject_to(casadi.dot(u_var[:, k], u_var[:, k]) <= sigma_var[0, k] ** 2)
+                opti.subject_to(opti.bounded(0.0, sigma_var[0, k], max_thrust_nd))
+
                 degree = int(degrees[k])
-                tau_root, c_matrix, _, b_vector = collocation_coefficients(degree)
+                _, c_matrix, _, _ = collocation_coefficients(degree)
                 h = case.tof_nd * float(mesh[k + 1] - mesh[k])
                 interval_states = [x_var[:, k]]
 
@@ -731,23 +722,18 @@ def solve_ocp(
                 interval_states.append(x_var[:, k + 1])
 
 
-                fuel_consumed_nd += h * b_vector[0] * sigma_var[0, k] / case.exhaust_velocity_nd
-                energy_used_nd += h * b_vector[0] * 0.5 * casadi.dot(u_var[:, k], u_var[:, k])
+                fuel_consumed_nd += h * sigma_var[0, k] / case.exhaust_velocity_nd
+                energy_used_nd += h * 0.5 * casadi.dot(u_var[:, k], u_var[:, k])
 
                 for j in range(1, degree + 1):
-                    tau_j = float(tau_root[j])
                     x_j = interval_states[j]
-                    u_j = (1.0 - tau_j) * u_var[:, k] + tau_j * u_var[:, k + 1]
-                    sigma_j = (1.0 - tau_j) * sigma_var[0, k] + tau_j * sigma_var[0, k + 1]
 
                     polynomial_derivative = c_matrix[0, j] * interval_states[0]
                     for r in range(1, degree + 1):
                         polynomial_derivative += c_matrix[r, j] * interval_states[r]
 
-                    f_j = eom(case, x_j, u_j, sigma_j)
+                    f_j = eom(case, x_j, u_var[:, k], sigma_var[0, k])
                     opti.subject_to(polynomial_derivative == h * f_j)
-                    fuel_consumed_nd += h * b_vector[j] * sigma_j / case.exhaust_velocity_nd
-                    energy_used_nd += h * b_vector[j] * 0.5 * casadi.dot(u_j, u_j)
 
             opti.subject_to(x_var[:, 0] == case.x0_augmented_state)
             opti.subject_to(x_var[0:6, intervals] == case.xf_state)
@@ -832,7 +818,6 @@ def estimate_interval_defects(
     substeps: int,
 ) -> dict[str, np.ndarray]:
     intervals = OCPSolution.degrees.size
-    substep_grid = np.arange(substeps + 1, dtype=float) / substeps
     scaled_error = np.empty(intervals, dtype=float)
     position_error = np.empty(intervals, dtype=float)              # [m]
     velocity_error = np.empty(intervals, dtype=float)              # [m/s]
@@ -841,21 +826,17 @@ def estimate_interval_defects(
     for k in range(intervals):
         h = case.tof_nd * float(OCPSolution.mesh[k + 1] - OCPSolution.mesh[k])
         dt = h / substeps
-        u0 = OCPSolution.u[:, k]
-        u1 = OCPSolution.u[:, k + 1]
-        sigma0 = float(OCPSolution.sigma[0, k])
-        sigma1 = float(OCPSolution.sigma[0, k + 1])
+        control = OCPSolution.u[:, k]
+        sigma = float(OCPSolution.sigma[0, k])
         x_integrated = OCPSolution.x[:, k].copy()
 
-        for tau_a, tau_b in zip(substep_grid[:-1], substep_grid[1:]):
+        for _ in range(substeps):
             x_integrated = integrator.rk4(
                 case,
                 x_integrated,
-                (1.0 - tau_a) * u0 + tau_a * u1,
-                (1.0 - tau_a) * sigma0 + tau_a * sigma1,
+                control,
+                sigma,
                 dt,
-                control_end=(1.0 - tau_b) * u0 + tau_b * u1,
-                sigma_end=(1.0 - tau_b) * sigma0 + tau_b * sigma1,
             )
 
         error = x_integrated - OCPSolution.x[:, k + 1]
@@ -949,22 +930,19 @@ def interpolate_OCPSolution(
         interval_states.append(OCPSolution.x[:, k + 1])
 
         theta_grid = np.linspace(0.0, 1.0, samples_per_interval + 1)
-        thetas = theta_grid if k == 0 else theta_grid[1:]
-        for theta in thetas:
+        for theta in theta_grid:
             theta = float(theta)
             basis = lagrange_basis_values(theta, tau_root)
             x_theta = np.zeros(7, dtype=float)
             for coefficient, interval_state in zip(basis, interval_states):
                 x_theta += coefficient * interval_state
 
-            u_theta = (1.0 - theta) * OCPSolution.u[:, k] + theta * OCPSolution.u[:, k + 1]
-            sigma_theta = (1.0 - theta) * OCPSolution.sigma[0, k] + theta * OCPSolution.sigma[0, k + 1]
             fraction = float(OCPSolution.mesh[k] + theta * (OCPSolution.mesh[k + 1] - OCPSolution.mesh[k]))
 
             t_days_values.append(fraction * case.tof_days)
             x_values.append(x_theta)
-            u_values.append(u_theta)
-            sigma_values.append(float(sigma_theta))
+            u_values.append(OCPSolution.u[:, k])
+            sigma_values.append(float(OCPSolution.sigma[0, k]))
 
     return (
         np.asarray(t_days_values, dtype=float),
@@ -1019,9 +997,12 @@ def save_outputs(
     npz_path = output_prefix.with_suffix(".npz")
     np.savez(
         npz_path,
+        control_parameterization=np.array("zero_order_hold"),
         mesh_fraction=OCPSolution.mesh,
         interval_degrees=OCPSolution.degrees,
         t_days=t_days,
+        u_interval_start_days=t_days[:-1],
+        u_interval_end_days=t_days[1:],
         x=OCPSolution.x,
         u=OCPSolution.u,
         sigma=OCPSolution.sigma,
@@ -1074,7 +1055,7 @@ def save_outputs(
     plotter = Plotter(output_prefix)
     plotter.plot_traj_projection(case, x_dense, u_dense, departure_orbit, target_orbit, lagrange_points)
     plotter.plot_3d_traj(case, x_dense, u_dense, departure_orbit, target_orbit, lagrange_points)
-    plotter.plot_thrust_time_evolution(t_days, u_norm_n, case.max_thrust_n)
+    plotter.plot_thrust_time_evolution(t_dense_days, u_dense_norm_n, case.max_thrust_n)
     plotter.plot_moon_distance_time_evolution(t_dense_days, moon_distance_surface_km)
     plotter.plot_collocation_approx_errors(
         t_dense_days,
