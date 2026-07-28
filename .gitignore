@@ -3,6 +3,7 @@
 *.npz
 *.csv
 *.out
+*.json
 
 # Licensed solver
 solvers/snopt/
