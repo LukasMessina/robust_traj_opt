@@ -39,6 +39,8 @@ class Plotter:
     PURPLE = "#9b6fd3"
     GREY = "#7f7f7f"
     LIGHT_GREY = "#d9d9d9"
+    THREE_D_GRID_COLOR = (0.0, 0.0, 0.0, 0.12)
+    THREE_D_GRID_LINE_WIDTH = 0.25
 
     TRAJECTORY_COLOR = BLACK
     DEPARTURE_COLOR = BLUE
@@ -72,6 +74,7 @@ class Plotter:
     MAJOR_TICK_WIDTH = 1.0
     MINOR_TICK_WIDTH = 0.8
     TRAJECTORY_LINE_WIDTH = 1.7
+    TRAJECTORY_PROJECTION_LINE_WIDTH = 1.2
     REFERENCE_LINE_WIDTH = 1.15
     GUIDE_LINE_WIDTH = 1.05
     MARKER_SIZE = 26
@@ -409,10 +412,14 @@ class Plotter:
             axis.pane.set_edgecolor(self.BLACK)
             axis.label.set_size(self.LABEL_SIZE)
             axis.label.set_color(self.BLACK)
+            axis._axinfo["grid"].update(
+                color=self.THREE_D_GRID_COLOR,
+                linewidth=self.THREE_D_GRID_LINE_WIDTH,
+            )
         ax.tick_params(axis="both", which="major", colors=self.BLACK, labelsize=self.THREE_D_TICK_SIZE, width=self.MAJOR_TICK_WIDTH)
         ax.tick_params(axis="z", which="major", pad=12.0)
         ax.zaxis.labelpad = 14.0
-        ax.grid(True, color=self.LIGHT_GREY, linewidth=0.5)
+        ax.grid(True)
         ax.view_init(azim=78, elev=15)
 
     def _plot_thrust_arrows_3d(self, ax, case: Any, x_dense: np.ndarray, u_dense: np.ndarray) -> None:
@@ -437,6 +444,23 @@ class Plotter:
             alpha=0.82,
             label="Thrust direction",
         )
+
+    def _plot_trajectory_projections_3d(self, ax, x_dense: np.ndarray) -> None:
+        """Project only the transfer trajectory onto the three visible box planes."""
+        x_min = ax.get_xlim3d()[0]
+        y_min = ax.get_ylim3d()[0]
+        z_min = ax.get_zlim3d()[0]
+        projection_style = {
+            "color": self.GREY,
+            "linestyle": "--",
+            "lw": self.TRAJECTORY_PROJECTION_LINE_WIDTH,
+            "alpha": 0.65,
+            "label": "_nolegend_",
+        }
+        point_count = x_dense.shape[1]
+        ax.plot(x_dense[0], x_dense[1], np.full(point_count, z_min), **projection_style)
+        ax.plot(x_dense[0], np.full(point_count, y_min), x_dense[2], **projection_style)
+        ax.plot(np.full(point_count, x_min), x_dense[1], x_dense[2], **projection_style)
 
     def plot_3d_traj(
         self,
@@ -486,6 +510,7 @@ class Plotter:
         ax.set_zlabel(self.AXIS_LABELS[2])
         self._style_3d_axis(ax)
         self._set_axes_equal_3d(ax)
+        self._plot_trajectory_projections_3d(ax, x_dense)
         self._legend(
             ax,
             loc="upper center",
