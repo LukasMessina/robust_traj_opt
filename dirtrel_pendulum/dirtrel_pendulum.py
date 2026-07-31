@@ -62,7 +62,7 @@ class Config:
     h_max: float = 1e-1                     # [s]
 
     output_dir: Path = RESULTS_DIR
-    major_print_level: int = 0
+    major_print_level: int = 10
     minor_print_level: int = 0
     MAX_MAJOR_ITER: int = MAX_MAJOR_ITER 
     optimality_tolerance: float = OPTIMALITY_TOLERANCE

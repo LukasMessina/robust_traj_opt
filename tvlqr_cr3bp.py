@@ -31,7 +31,7 @@ REFERENCE_DIR = Path("output/cr3bp_fuel_optimal")
 OUTPUT_DIR = Path("output/tvlqr_cr3bp")
 SUBSTEPS = 100
 SECONDS_PER_DAY = 86400.0
-MC_SAMPLES = 100
+MC_SAMPLES = 2000
 MC_SEED = 42
 _RESIDUAL_CACHE: dict[int, casadi.Function] = {}
 STD_ND: dict[str, np.ndarray] = {
@@ -298,22 +298,16 @@ def plot_ellipsoid_evolution(
     """One subplot per state channel: standard deviation (sqrt of E's
     diagonal), physical units, vs. time. Styled to match plotter.Plotter."""
 
-    labels = [r"$\sigma_{r_x}$", r"$\sigma_{r_y}$", r"$\sigma_{r_z}$", r"$\sigma_{v_x}$", r"$\sigma_{v_y}$", r"$\sigma_{v_z}$", r"$\sigma_{m}$"]
     units = ["m", "m", "m", "m/s", "m/s", "m/s", "kg"]
     uncertainty_series = np.array([get_uncertainty_bound(case, E) for E in E_seq])  # (n+1, NX)
-
-    # Same channel-type colors dirtran_cr3bp's own plots use (see
-    # Plotter.plot_collocation_approx_errors): position=BLACK, velocity=BLUE,
-    # mass=RED. No other colors are introduced.
-    channel_colors = [Plotter.BLACK] * 3 + [Plotter.BLUE] * 3 + [Plotter.RED]
 
     fig, axes = plt.subplots(4, 2, figsize=(2 * Plotter.SQUARE_DIAGNOSTIC_FIGSIZE[0], 10.0), dpi=Plotter.FIGURE_DPI)
     axes_flat = axes.flatten()
     for i in range(NX):
         ax = axes_flat[i]
-        ax.semilogy(t_days, uncertainty_series[:, i], color=channel_colors[i], lw=Plotter.TRAJECTORY_LINE_WIDTH, label="_nolegend_")
+        ax.semilogy(t_days, uncertainty_series[:, i], color=Plotter.PURPLE, lw=Plotter.TRAJECTORY_LINE_WIDTH, label="_nolegend_")
         ax.set_xlabel("time [days]")
-        ax.set_ylabel(f"{labels[i]} [{units[i]}]")
+        ax.set_ylabel(rf"$\sqrt{{E_k[{i},{i}]}}$ [{units[i]}]")
         Plotter._style_2d_axis(Plotter, ax, tick_size=Plotter.DIAGNOSTIC_TICK_SIZE, label_size=Plotter.DIAGNOSTIC_LABEL_SIZE)
     axes_flat[-1].axis("off")
     fig.tight_layout()
@@ -334,47 +328,96 @@ def plot_state_control_evolution(
     then delta_r, delta_v, delta_m each in their own subplot (they don't
     share units, so can't share an axis), all against the same time axis."""
 
-    # One color per line, drawn only from Plotter's own named palette: x/y/z
-    # components get BLUE/ORANGE/GREEN, the delta_u magnitude gets BLACK
-    # (matching Plotter.plot_thrust_time_evolution's "actual value = BLACK"
-    # convention), and delta_m gets RED (matching the mass color in
-    # Plotter.plot_collocation_approx_errors).
-    component_colors = (Plotter.BLUE, Plotter.ORANGE, Plotter.GREEN)
-    legend_kwargs = dict(loc="best", frameon=True, fancybox=False, edgecolor=Plotter.BLACK, facecolor="white", framealpha=1.0)
+    component_colors = (Plotter.BLACK, Plotter.BLUE, Plotter.GREEN, Plotter.PURPLE)
+    component_linestyles = ("-", "--", "-.", "--")
+    legend_kwargs = dict(loc="upper right", frameon=True, fancybox=False, edgecolor=Plotter.BLACK, facecolor="white", framealpha=1.0)
 
-    fig, axes = plt.subplots(4, 1, figsize=(Plotter.WIDE_FIGSIZE[0], 9.6), dpi=Plotter.FIGURE_DPI, sharex=True)
+    panel_size = Plotter.SQUARE_DIAGNOSTIC_FIGSIZE[0]
+    fig, axes = plt.subplots(
+        2,
+        2,
+        figsize=(2 * panel_size, 2 * panel_size),
+        dpi=Plotter.FIGURE_DPI,
+        sharex=True,
+    )
+    axes_flat = axes.flatten()
+    for ax in axes_flat:
+        ax.set_box_aspect(1)
+        ax.set_xlabel("time [days]")
 
-    ax = axes[0]
-    for i, (label, color) in enumerate(zip([r"$\delta u_x$", r"$\delta u_y$", r"$\delta u_z$"], component_colors)):
-        ax.plot(t_days, delta_u_history[i, :], label=label, color=color, lw=Plotter.REFERENCE_LINE_WIDTH)
-    ax.plot(t_days, np.linalg.norm(delta_u_history, axis=0), label=r"$|\delta u|$", color=Plotter.BLACK, lw=Plotter.TRAJECTORY_LINE_WIDTH)
+    ax = axes_flat[0]
+    control_series = (*delta_u_history, np.linalg.norm(delta_u_history, axis=0))
+    control_labels = (r"$\delta u_x$", r"$\delta u_y$", r"$\delta u_z$", r"$|\delta u|$")
+    for values, label, color, linestyle in zip(
+        control_series, control_labels, component_colors, component_linestyles
+    ):
+        ax.plot(
+            t_days,
+            values,
+            label=label,
+            color=color,
+            linestyle=linestyle,
+            lw=Plotter.REFERENCE_LINE_WIDTH + 1,
+        )
     ax.set_ylabel(r"$\delta u$ [N]")
-    Plotter._style_2d_axis(Plotter, ax, tick_size=Plotter.DIAGNOSTIC_TICK_SIZE, label_size=Plotter.DIAGNOSTIC_LABEL_SIZE)
+    Plotter._style_2d_axis(Plotter, ax, tick_size=Plotter.DIAGNOSTIC_TICK_SIZE + 1, label_size=Plotter.DIAGNOSTIC_LABEL_SIZE + 1)
     Plotter._legend(Plotter, ax, **legend_kwargs)
 
-    ax = axes[1]
-    for i, (label, color) in enumerate(zip([r"$\delta r_x$", r"$\delta r_y$", r"$\delta r_z$"], component_colors)):
-        ax.plot(t_days, delta_x_history[i, :], label=label, color=color, lw=Plotter.REFERENCE_LINE_WIDTH)
+    ax = axes_flat[1]
+    for i, (label, color, linestyle) in enumerate(
+        zip(
+            (r"$\delta r_x$", r"$\delta r_y$", r"$\delta r_z$"),
+            component_colors,
+            component_linestyles,
+        )
+    ):
+        ax.plot(
+            t_days,
+            delta_x_history[i, :],
+            label=label,
+            color=color,
+            linestyle=linestyle,
+            lw=Plotter.REFERENCE_LINE_WIDTH + 1,
+        )
     ax.set_ylabel(r"$\delta r$ [m]")
-    Plotter._style_2d_axis(Plotter, ax, tick_size=Plotter.DIAGNOSTIC_TICK_SIZE, label_size=Plotter.DIAGNOSTIC_LABEL_SIZE)
+    Plotter._style_2d_axis(Plotter, ax, tick_size=Plotter.DIAGNOSTIC_TICK_SIZE + 1, label_size=Plotter.DIAGNOSTIC_LABEL_SIZE + 1)
     Plotter._legend(Plotter, ax, **legend_kwargs)
 
-    ax = axes[2]
-    for i, (label, color) in enumerate(zip([r"$\delta v_x$", r"$\delta v_y$", r"$\delta v_z$"], component_colors)):
-        ax.plot(t_days, delta_x_history[3 + i, :], label=label, color=color, lw=Plotter.REFERENCE_LINE_WIDTH)
+    ax = axes_flat[2]
+    for i, (label, color, linestyle) in enumerate(
+        zip(
+            (r"$\delta v_x$", r"$\delta v_y$", r"$\delta v_z$"),
+            component_colors,
+            component_linestyles,
+        )
+    ):
+        ax.plot(
+            t_days,
+            delta_x_history[3 + i, :],
+            label=label,
+            color=color,
+            linestyle=linestyle,
+            lw=Plotter.REFERENCE_LINE_WIDTH + 1,
+    )
     ax.set_ylabel(r"$\delta v$ [m/s]")
-    Plotter._style_2d_axis(Plotter, ax, tick_size=Plotter.DIAGNOSTIC_TICK_SIZE, label_size=Plotter.DIAGNOSTIC_LABEL_SIZE)
+    Plotter._style_2d_axis(Plotter, ax, tick_size=Plotter.DIAGNOSTIC_TICK_SIZE + 1, label_size=Plotter.DIAGNOSTIC_LABEL_SIZE + 1)
     Plotter._legend(Plotter, ax, **legend_kwargs)
 
-    ax = axes[3]
-    ax.plot(t_days, delta_x_history[6, :], color=Plotter.RED, lw=Plotter.TRAJECTORY_LINE_WIDTH, label=r"$\delta m$")
+    ax = axes_flat[3]
+    ax.plot(
+        t_days,
+        delta_x_history[6, :],
+        color=component_colors[0],
+        linestyle=component_linestyles[0],
+        lw=Plotter.REFERENCE_LINE_WIDTH + 1,
+        label=r"$\delta m$",
+    )
     ax.set_ylabel(r"$\delta m$ [kg]")
-    ax.set_xlabel("time [days]")
-    Plotter._style_2d_axis(Plotter, ax, tick_size=Plotter.DIAGNOSTIC_TICK_SIZE, label_size=Plotter.DIAGNOSTIC_LABEL_SIZE)
+    Plotter._style_2d_axis(Plotter, ax, tick_size=Plotter.DIAGNOSTIC_TICK_SIZE + 1, label_size=Plotter.DIAGNOSTIC_LABEL_SIZE + 1)
     Plotter._legend(Plotter, ax, **legend_kwargs)
 
     fig.tight_layout()
-    fig.savefig(out_dir / f"{case_id}_delta_u_delta_x.png", dpi=Plotter.FIGURE_DPI, bbox_inches="tight")
+    fig.savefig(out_dir / f"{case_id}_control_state_deviation_evolution.png", dpi=Plotter.FIGURE_DPI, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -383,11 +426,7 @@ def plot_montecarlo_results(
 ) -> None:
     """Scatter the Monte Carlo samples' terminal position deviation against
     the propagated ellipsoid's projection, on all three position planes
-    (xy, xz, yz) for every case -- mirrors plotter.Plotter's own
-    multi-projection figure layout (see Plotter.plot_traj_projection). Shown
-    for both cases (not just Halo): even the "planar" Lyapunov case gets a
-    real z/vz perturbation from the Monte Carlo draw (STD_ND's z-component
-    isn't 0), so its out-of-plane response is genuinely informative too."""
+    (xy, xz, yz)."""
 
     axes_to_plot = ((0, 1), (0, 2), (1, 2))
     axis_names = "xyz"
@@ -402,11 +441,11 @@ def plot_montecarlo_results(
 
         ax.scatter(
             deltas_final[:, axis_0], deltas_final[:, axis_1],
-            color=Plotter.BLUE, s=12, alpha=0.55, zorder=3,
+            color=Plotter.PURPLE, s=12, zorder=1.7,
             label=f"Monte Carlo samples (n={deltas_final.shape[0]})",
         )
         ax.plot(
-            ellipse[0, :], ellipse[1, :], color=Plotter.RED, lw=Plotter.TRAJECTORY_LINE_WIDTH, zorder=4,
+            ellipse[0, :], ellipse[1, :], color=Plotter.BLACK, lw=Plotter.TRAJECTORY_LINE_WIDTH, zorder=4,
             label="Propagated ellipsoid boundary",
         )
         ax.set_xlabel(rf"$\delta r_{{{axis_names[axis_0]}}}$ [m]")
@@ -415,12 +454,12 @@ def plot_montecarlo_results(
 
     Plotter._figure_legend(
         Plotter, fig, list(axes), ncol=2,
-        loc="upper center", bbox_to_anchor=(0.5, 0.995),
+        loc="upper center", bbox_to_anchor=(0.5, 0.92),
         frameon=True, fancybox=False, edgecolor=Plotter.BLACK, facecolor="white", framealpha=1.0,
         fontsize=7.4, columnspacing=1.0, handlelength=1.7, borderpad=0.35,
     )
-    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.86))
-    fig.savefig(out_dir / f"{case_id}_montecarlo_ellipsoid.png", dpi=Plotter.FIGURE_DPI, bbox_inches="tight")
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.9))
+    fig.savefig(out_dir / f"{case_id}_montecarlo_ensemble.png", dpi=Plotter.FIGURE_DPI, bbox_inches="tight")
     plt.close(fig)
 
 

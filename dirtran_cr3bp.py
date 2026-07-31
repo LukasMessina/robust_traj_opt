@@ -219,7 +219,7 @@ TOL = 1e-9
 FUEL_OPTIMAL_MODE = "fuel optimal"
 ENERGY_OPTIMAL_MODE = "energy optimal"
 # Set this to "fuel optimal" or "energy optimal".
-OBJECTIVE_MODE = FUEL_OPTIMAL_MODE
+OBJECTIVE_MODE = ENERGY_OPTIMAL_MODE
 DEFAULT_OUTPUT_DIR = Path("output/cr3bp")
 DEFAULT_OUTPUT_PREFIX = ""
 INITIAL_GUESS = OCPSolution | None
