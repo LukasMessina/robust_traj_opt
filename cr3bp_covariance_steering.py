@@ -29,8 +29,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.stats import chi2
 
-import dirtran_cr3bp
-from dirtran_cr3bp import CASE_REGISTRY, TestCase
+import deterministic_cr3bp
+from deterministic_cr3bp import CASE_REGISTRY, TestCase
 from plotter import Plotter 
 
 NX = 7                       # augmented state dimension
@@ -46,8 +46,8 @@ INITIAL_STATE_STD_ND: dict[str, tuple[float, float]] = {
     "halo_l2_to_halo_l1": (1e-6, 1e-6),
     "lyapunov_l1_to_l2": (1e-6, 1e-6),
 }
-INITIAL_MASS_STD = 0.0
-MASS_SCALE_KG = 1e-3
+INITIAL_MASS_STD = 0.0      # [kg]
+MASS_SCALE = 1e-3        # [kg]
 
 # Callbacks must outlive the expression graph that references them.
 # Prevents callback objects from being destroyed by garbage collector.
@@ -59,14 +59,14 @@ class Options:
     """Solver and transcription settings."""
 
     # Keep every `mesh_stride`-th knot point of the DIRTRAN mesh. 
-
-    mesh_stride: int = 1
+    mesh_stride: int = 4
     integrator_substeps: int = 4
 
     violation_parameter: float = 0.05   
     # Covariance reduction factor  
-    covariance_reduction: float = 1e4     
+    covariance_reduction: float = 1e4    
     scaling_parameter: float = 0.0
+
     # Floors the covariance at jitter / n_x, which must stay far below the
     # terminal target while covering the negative eigenvalues of order 1e-15 that
     # round-off leaves behind once the steering contracts a direction.
@@ -82,29 +82,26 @@ class Options:
     # at the cost of tightening the requirement.
     terminal_margin_factor_floor: float = 1e-3
 
-    seed_gains: bool = True
-    gain_seed_weight_exponents: tuple[float, float] = (-2.0, 16.0)
-    gain_seed_weight_samples: int = 37
-    # The Riccati terminal weight is scanned too, not fixed at the covariance
-    # reduction factor. It matters more than the control weight: on the Lyapunov
-    # case at the full mesh, Q_f = 1e4 cannot reach the target from any control
-    # weight (best 1.85x), while Q_f = 1e6..1e8 reaches 0.024x.
-    gain_seed_terminal_exponents: tuple[float, float] = (2.0, 12.0)
-    gain_seed_terminal_samples: int = 11
-    # How many linear-model candidates to re-check with the unscented propagation
-    # before choosing. The linear model ranks well but scores badly once the gains
-    # are aggressive enough to push the covariance under the round-off floor.
-    gain_seed_shortlist: int = 15
-    gain_seed_margin: float = 0.9         # target for Psi * r after seeding
+    # Target contribution of the cl control effort margin up to a
+    # confidence level p after seeding
+    cl_control_effort_seed_margin: float = 0.9        
 
+    # IPOPT settings
     max_iter: int = 3000
+    tol: float = 1e-6
+    constr_viol_tol: float = 1e-9
+    dual_inf_tol: float = 1e-4
+    compl_inf_tol: float = 1e-6
 
-    tolerance: float = 1e-6
-    acceptable_tolerance: float = 1e-5
+    # Acceptable fallback
+    acceptable_tol: float = 1e-5
+    acceptable_constr_viol_tol: float = 1e-8
+    acceptable_dual_inf_tol: float = 1e-4
+    acceptable_compl_inf_tol: float = 1e-5
+    acceptable_iter: int = 25
     print_level: int = 5
 
-    monte_carlo_samples: int = 2000
-    thrust_violation_tolerance: float = 1e-4
+    monte_carlo_samples: int = 10000
     monte_carlo_seed: int = 42
 
 
@@ -115,9 +112,10 @@ def psi_inverse(dimension: int, beta: float) -> float:
 
 
 def control_covariance_weight(options: Options) -> float:
-    """Weight of Eq. 5.86, or its unscented-consistent counterpart."""
 
-    return 1.0 / (2.0 * (NX - 1))
+    """Weight of Eq. 5.86, or its unscented-consistent counterpart."""
+    return 1.0 / (2.0 * (NX + options.scaling_parameter))
+
 
 
 def unscented_weights(kappa: float) -> np.ndarray:
@@ -135,14 +133,18 @@ def unscented_weights(kappa: float) -> np.ndarray:
 
 @dataclass(frozen=True)
 class Normalization:
-    """Congruence scaling of the covariance by fixed reference deviations.
+    """Congruence scaling of the covariance by fixed deviations from the reference trajectory.
 
-    The code carries P = D0^-1 Sigma D0^-1 rather than Sigma, so the terminal
+    D0 is the diagonal matrix of the initial standard deviations of the augmented state, 
+    whilst D0' is the diagonal matrix of the initial standard deviations of the primed state.
+    The implememation carries P = D0^-1 Sigma D0^-1 rather than Sigma (where
+    Sigma represents the original covariance matrix), so the terminal
     requirement reads P'_N <= 1e-4 I with O(1) entries. Gains are carried as
     K_tilde = K D0' / T_max and the open-loop control as S_tilde = S / T_max, so
-    every decision variable is O(1).
+    every decision variable is approximately O(1).
 
-    `scale` is the normalising matrix D0 and must be non-zero throughout;
+    `scale` contains the strictly positive normalization scales used to form D0.
+    Every entry must be nonzero so that D0 is invertible.
     `initial_std` holds the actual initial dispersions, which may be zero on a
     channel. The two coincide except on the mass.
     """
@@ -160,37 +162,35 @@ class Normalization:
 
     @property
     def initial_covariance(self) -> np.ndarray:
-        """P_0, the normalised initial covariance. Identity only if scale == std."""
+        """P_0, the normalised initial covariance."""
 
         return np.diag((self.initial_std / self.scale) ** 2)
 
 
-def initial_standard_deviations(case: TestCase) -> np.ndarray:
+def initial_std(case: TestCase) -> np.ndarray:
     """Initial 1-sigma values of the augmented state [-]."""
 
-    if case.test_case_id not in INITIAL_STATE_STD_ND:
-        raise KeyError(f"No initial covariance defined for case '{case.test_case_id}'.")
     position_std, velocity_std = INITIAL_STATE_STD_ND[case.test_case_id]
     mass_std = INITIAL_MASS_STD / case.m0_wet
     return np.array([position_std] * 3 + [velocity_std] * 3 + [mass_std], dtype=float)
 
 
 def build_normalization(case: TestCase) -> Normalization:
-    standard_deviations = initial_standard_deviations(case)
-    scale = standard_deviations.copy()
-    scale[6] = MASS_SCALE_KG / case.m0_wet
-    return Normalization(scale=scale, initial_std=standard_deviations)
+    initial_sigma = initial_std(case)
+    scale = initial_sigma.copy()
+    scale[6] = MASS_SCALE / case.m0_wet
+    return Normalization(scale=scale, initial_std=initial_sigma)
 
 
 # --------------------------------------------------------------------------- #
-# Dynamics and the blackbox RK4 arc map
+# Dynamics and the integration arc map
 # --------------------------------------------------------------------------- #
 
 
 class Dynamics:
-    """Batched CR3BP dynamics and the RK4 arc map with its exact Jacobian.
+    """Batched CR3BP dynamics and the integration arc map with its exact Jacobian.
 
-    The state and control Jacobians of `dirtran_cr3bp.eom` are generated once with
+    The state and control Jacobians of the EOM are generated once with
     CasADi and evaluated numerically inside the blackbox; they are never exposed to
     the optimiser.
     """
@@ -198,39 +198,39 @@ class Dynamics:
     def __init__(self, case: TestCase) -> None:
         state = casadi.SX.sym("state", NX)
         control = casadi.SX.sym("control", NU)
-        derivative = dirtran_cr3bp.eom(case, state, control, 0.0)
-        self._value = casadi.Function("cr3bp_value", [state, control], [derivative])
-        self._full = casadi.Function(
-            "cr3bp_full",
+        eom = deterministic_cr3bp.eom(case, state, control)
+        self._augm_state_derivatives = casadi.Function("augm_state_derivatives", [state, control], [eom])
+        self._full_derivatives = casadi.Function(
+            "full_derivatives",
             [state, control],
             [
-                derivative,
-                casadi.reshape(casadi.jacobian(derivative, state), NX * NX, 1),
-                casadi.reshape(casadi.jacobian(derivative, control), NX * NU, 1),
+                eom,
+                casadi.reshape(casadi.jacobian(eom, state), NX * NX, 1),
+                casadi.reshape(casadi.jacobian(eom, control), NX * NU, 1),
             ],
         )
-        self._value_maps: dict[int, casadi.Function] = {}
-        self._full_maps: dict[int, casadi.Function] = {}
+        self._augm_state_derivatives_maps: dict[int, casadi.Function] = {}
+        self._full_derivatives_maps: dict[int, casadi.Function] = {}
 
     def _mapped(self, cache: dict[int, casadi.Function], base: casadi.Function, count: int) -> casadi.Function:
         if count not in cache:
             cache[count] = base.map(count)
         return cache[count]
 
-    def derivative(self, states: np.ndarray, controls: np.ndarray) -> np.ndarray:
-        mapped = self._mapped(self._value_maps, self._value, states.shape[1])
+    def augm_state_derivatives(self, states: np.ndarray, controls: np.ndarray) -> np.ndarray:
+        mapped = self._mapped(self._augm_state_derivatives_maps, self._augm_state_derivatives, states.shape[1])
         return np.asarray(mapped(states, controls).full(), dtype=float)
 
-    def derivative_and_jacobians(
+    def augm_state_derivatives_and_jacobians(
         self, states: np.ndarray, controls: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         count = states.shape[1]
-        mapped = self._mapped(self._full_maps, self._full, count)
-        value, jacobian_state, jacobian_control = mapped(states, controls)
+        mapped = self._mapped(self._full_derivatives_maps, self._full_derivatives, count)
+        dynamics, jacobian_state, jacobian_control = mapped(states, controls)
         state_blocks = np.asarray(jacobian_state.full(), dtype=float).reshape(NX, NX, count, order="F")
         control_blocks = np.asarray(jacobian_control.full(), dtype=float).reshape(NX, NU, count, order="F")
         return (
-            np.asarray(value.full(), dtype=float),
+            np.asarray(dynamics.full(), dtype=float),
             np.moveaxis(state_blocks, 2, 0),
             np.moveaxis(control_blocks, 2, 0),
         )
@@ -260,10 +260,10 @@ class Dynamics:
 
         for _ in range(substeps):
             if with_jacobian:
-                k1, a1, b1 = self.derivative_and_jacobians(propagated, controls)
-                k2, a2, b2 = self.derivative_and_jacobians(propagated + 0.5 * substep * k1, controls)
-                k3, a3, b3 = self.derivative_and_jacobians(propagated + 0.5 * substep * k2, controls)
-                k4, a4, b4 = self.derivative_and_jacobians(propagated + substep * k3, controls)
+                k1, a1, b1 = self.augm_state_derivatives_and_jacobians(propagated, controls)
+                k2, a2, b2 = self.augm_state_derivatives_and_jacobians(propagated + 0.5 * substep * k1, controls)
+                k3, a3, b3 = self.augm_state_derivatives_and_jacobians(propagated + 0.5 * substep * k2, controls)
+                k4, a4, b4 = self.augm_state_derivatives_and_jacobians(propagated + substep * k3, controls)
 
                 d1_state, d1_control = a1, b1
                 d2_state = a2 @ (identity + 0.5 * substep * d1_state)
@@ -280,10 +280,10 @@ class Dynamics:
                 control_sensitivity = step_state @ control_sensitivity + step_control
                 state_sensitivity = step_state @ state_sensitivity
             else:
-                k1 = self.derivative(propagated, controls)
-                k2 = self.derivative(propagated + 0.5 * substep * k1, controls)
-                k3 = self.derivative(propagated + 0.5 * substep * k2, controls)
-                k4 = self.derivative(propagated + substep * k3, controls)
+                k1 = self.augm_state_derivatives(propagated, controls)
+                k2 = self.augm_state_derivatives(propagated + 0.5 * substep * k1, controls)
+                k3 = self.augm_state_derivatives(propagated + 0.5 * substep * k2, controls)
+                k4 = self.augm_state_derivatives(propagated + substep * k3, controls)
 
             propagated = propagated + (substep / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
 
@@ -469,12 +469,6 @@ def determinant(matrix, dimension: int):
     return expand(0, tuple(range(dimension)))
 
 
-def leading_minors(matrix, dimension: int) -> list:
-    """Leading principal minors, i.e. Sylvester's criterion for `matrix >= 0`."""
-
-    return [determinant(matrix[: index + 1, : index + 1], index + 1) for index in range(dimension)]
-
-
 def largest_eigenvalue_symmetric_3(matrix, relative_floor: float = 1e-14):
     """Closed-form largest eigenvalue of a symmetric 3x3 matrix.
 
@@ -507,7 +501,7 @@ def spectral_radius_expression(matrix, floor: float):
     """rho(A) = sqrt(lambda_max(A)), floored so the gradient stays bounded at A = 0.
 
     `sqrt` alone is non-smooth at the origin, which is reached whenever a gain
-    vanishes. With the floor the derivative behaves like `K / floor` as `K -> 0`
+    vanishes. With the floor the augm_state_derivatives behaves like `K / floor` as `K -> 0`
     and therefore tends to zero rather than diverging.
     """
 
@@ -591,26 +585,26 @@ def build_arc_function(
 
 
 # --------------------------------------------------------------------------- #
-# Reference trajectory
+# Reference Trajectory
 # --------------------------------------------------------------------------- #
 
 
 @dataclass
-class Reference:
+class ReferenceTraj:
     """Fuel-optimal DIRTRAN solution restricted to a subset of its knot points."""
 
     node_times: np.ndarray   # [-] non-dimensional, first entry zero
     steps: np.ndarray        # [-] arc durations, generally non-uniform
     states: np.ndarray       # [-] (NX, N + 1)
     controls: np.ndarray     # [-] (NU, N) thrust, zero-order hold
-    fuel_kg: float
+    fuel_consumed: float     # [kg]
 
     @property
     def n_arcs(self) -> int:
         return self.steps.size
 
 
-def load_reference(case: TestCase, options: Options) -> Reference:
+def load_ref_traj(case: TestCase, options: Options) -> ReferenceTraj:
     data = np.load(REFERENCE_DIR / f"{case.test_case_id}.npz", allow_pickle=True)
     mesh = np.asarray(data["mesh_fraction"], dtype=float)
     states = np.asarray(data["x"], dtype=float)
@@ -629,13 +623,13 @@ def load_reference(case: TestCase, options: Options) -> Reference:
         coarse_controls[:, k] = controls[:, window] @ weights / weights.sum()
 
     history = data["history"]
-    fuel_kg = float(history[-1]["fuel_consumed_kg"]) if history.size else float("nan")
-    return Reference(
+    fuel_consumed = float(history[-1]["fuel_consumed_kg"]) if history.size else float("nan")
+    return ReferenceTraj(
         node_times=node_times,
         steps=np.diff(node_times),
         states=states[:, kept],
         controls=coarse_controls,
-        fuel_kg=fuel_kg,
+        fuel_consumed=fuel_consumed,
     )
 
 
@@ -766,54 +760,45 @@ def seed_gains(
     options: Options,
     state_matrices: list[np.ndarray],
     control_matrices: list[np.ndarray],
-    initial_covariance: np.ndarray,
-) -> list[tuple[np.ndarray, tuple[float, float]]]:
-    """Shortlist of candidate warm-start gains, ranked by the linear model.
+) -> tuple[np.ndarray, tuple[float, float]]:
+    """Warm-start gains from a Riccati recursion with Bryson-rule weights.
 
-    The Riccati control and terminal weights are both scanned rather than fixed.
-    Neither is obvious a priori: the state is normalised by `sigma_0` and the
-    control by `T_max`, and correcting a 1-sigma deviation costs a negligible
-    fraction of `T_max`, so the balanced control weight is of order `1e10` rather
-    than the `O(1)` a Bryson-rule intuition suggests. The terminal weight matters
-    even more -- at the full mesh, `Q_f = 1e4` cannot reach the target from any
-    control weight.
+    Bryson's rule weights each channel by the inverse square of its largest
+    acceptable deviation. In physical units, with `c` the sigma factor,
 
-    This returns a *ranked shortlist* rather than a single winner, because the
-    linear closed-loop model is only a proxy. It agrees with the unscented
-    propagation for moderate gains and disagrees by orders of magnitude for
-    aggressive ones, since aggressive gains contract the covariance below the
-    round-off floor where the sigma-point differencing loses precision but
-    `Phi P Phi^T` does not. Minimising the proxy therefore selects exactly the
-    region where the proxy is wrong. The caller re-evaluates the shortlist with
-    the unscented propagation -- the model the NLP actually uses -- and picks
-    from that.
+        Q_ii = 1 / (c sigma_0,i)^2,  R_jj = 1 / T_max^2,  Qf_ii = 1 / (c sigma_f,i)^2
+
+    taking the initial dispersion as the acceptable state deviation, the thrust
+    bound as the acceptable control, and the *terminal requirement* for `Qf`.
+    Transforming into the normalised coordinates the recursion runs in
+    (`dx = D0 dx~`, `dT = T_max du~`) turns the cost `dx' Q dx + du' R du` into
+    `dx~' (D0 Q D0) dx~ + T_max^2 du~' R du~`, so
+
+        Q~  = D0 Q D0  = (1/c^2) I,   R~ = T_max^2 R = I,   Qf~ = (1/c^2) reduction I
+
+    because `sigma_f = sigma_0 / sqrt(reduction)` makes `Qf/Q = reduction` exactly.
+    Only ratios matter -- scaling all three by a constant leaves the gains
+    unchanged -- so this is equivalent to `Q = I`, `R = c^2`, `Qf = reduction`,
+    which is how it is passed below. Note `Qf/Q` is not a tuning constant: it is
+    the covariance reduction factor itself.
+
+    This replaced a 407-point scan over `(R, Qf)`. The scan ranked candidates by a
+    linear closed-loop model, which agrees with the unscented propagation for
+    moderate gains and disagrees by orders of magnitude for aggressive ones, so it
+    selected exactly the region where its own ranking was invalid. Measured at the
+    full mesh, Bryson matches the linear and unscented models to four digits
+    (ratio 1.000 on the Lyapunov case) where the scanned optimum showed a 10 %
+    gap -- the scanned policy contracts the covariance far enough to reach the
+    round-off floor of the sigma-point differencing. Bryson is nominally 11x
+    worse on that case and indistinguishable on the Halo case, but both are two
+    orders inside the requirement, so the difference is irrelevant for a warm
+    start and the better-conditioned one is preferable.
     """
 
-    candidates: list[tuple[float, np.ndarray, tuple[float, float]]] = []
-    control_weights = np.logspace(
-        options.gain_seed_weight_exponents[0],
-        options.gain_seed_weight_exponents[1],
-        options.gain_seed_weight_samples,
-    )
-    terminal_weights = np.logspace(
-        options.gain_seed_terminal_exponents[0],
-        options.gain_seed_terminal_exponents[1],
-        options.gain_seed_terminal_samples,
-    )
-    for terminal_weight in terminal_weights:
-        for weight in control_weights:
-            gains = _riccati_gains(
-                float(weight), float(terminal_weight), state_matrices, control_matrices
-            )
-            value = _linear_terminal_covariance(
-                gains, state_matrices, control_matrices, initial_covariance
-            )
-            if np.isfinite(value):
-                candidates.append((value, gains, (float(weight), float(terminal_weight))))
-
-    candidates.sort(key=lambda item: item[0])
-    shortlist = candidates[: max(int(options.gain_seed_shortlist), 1)]
-    return [(gains, weights) for _, gains, weights in shortlist]
+    control_weight = 3.0 ** 2
+    terminal_weight = float(options.covariance_reduction)
+    gains = _riccati_gains(control_weight, terminal_weight, state_matrices, control_matrices)
+    return gains, (control_weight, terminal_weight)
 
 
 @dataclass
@@ -847,9 +832,9 @@ def build_initial_guess(
     options: Options,
     dynamics: Dynamics,
     normalization: Normalization,
-    reference: Reference,
+    ref_traj: ReferenceTraj,
     arc_functions: list[casadi.Function],
-    psi: float,
+    psi_inv: float,
 ) -> InitialGuess:
     """Warm start that already satisfies the thrust chance constraint.
 
@@ -859,13 +844,13 @@ def build_initial_guess(
     magnitudes are trimmed to fit under what remains.
     """
 
-    means = np.array(reference.states, dtype=float)
+    means = np.array(ref_traj.states, dtype=float)
     means[:, 0] = case.x0_augmented_state
-    open_loop = np.array(reference.controls, dtype=float) / case.max_thrust_nd
+    open_loop = np.array(ref_traj.controls, dtype=float) / case.max_thrust_nd
 
     state_matrices, control_matrices = closed_loop_transition(
-        case, dynamics, normalization, reference.states, reference.controls,
-        reference.steps, options.integrator_substeps,
+        case, dynamics, normalization, ref_traj.states, ref_traj.controls,
+        ref_traj.steps, options.integrator_substeps,
     )
     # Variable scaling for the gains. In normalised units ||B_tilde|| ~ 5e5,
     # because correcting a 1-sigma deviation costs a negligible fraction of
@@ -877,50 +862,45 @@ def build_initial_guess(
     gain_scale = np.array(
         [1.0 / max(np.linalg.norm(matrix, 2), 1e-300) for matrix in control_matrices]
     )
-    if options.seed_gains:
-        shortlist = seed_gains(
-            options, state_matrices, control_matrices, normalization.initial_covariance
-        )
-        gains = shortlist[0][0]
-        seed_weights = shortlist[0][1]
-        best_terminal = float("inf")
-        for candidate_gains, candidate_weights in shortlist:
-            _, candidate_covariances, _ = propagate_moments(
-                arc_functions, means, open_loop, candidate_gains, normalization.initial_covariance
-            )
-            terminal = float(
-                np.linalg.eigvalsh(candidate_covariances[-1][0:NP, 0:NP])[-1]
-            )
-            if np.isfinite(terminal) and terminal < best_terminal:
-                gains, seed_weights, best_terminal = candidate_gains, candidate_weights, terminal
-        linear_terminal = _linear_terminal_covariance(
-            gains, state_matrices, control_matrices, normalization.initial_covariance
-        )
-        print(
-            f"    seed LQR weights R={seed_weights[0]:.2e} Qf={seed_weights[1]:.2e}; "
-            f"terminal lambda_max = {best_terminal * options.covariance_reduction:.4f} x target "
-            f"(linear model {linear_terminal * options.covariance_reduction:.4f})",
-            flush=True,
-        )
-    else:
-        gains = np.zeros((reference.n_arcs, NU, NP), dtype=float)
+    gains, seed_weights = seed_gains(options, state_matrices, control_matrices)
+    _, seeded_covariances, _ = propagate_moments(
+        arc_functions, means, open_loop, gains, normalization.initial_covariance
+    )
+    unscented_terminal = float(
+        np.linalg.eigvalsh(seeded_covariances[-1][0:NP, 0:NP])[-1]
+    )
+    linear_terminal = _linear_terminal_covariance(
+        gains, state_matrices, control_matrices, normalization.initial_covariance
+    )
+    # The two models agreeing is the check that the seed is not sitting on the
+    # round-off floor of the sigma-point differencing; a large gap means the
+    # unscented number is noise rather than a tighter covariance.
+    print(
+        f"    Bryson seed (Q=I, R={seed_weights[0]:.4g}, Qf={seed_weights[1]:.4g}): "
+        f"terminal lambda_max = {unscented_terminal * options.covariance_reduction:.4f} "
+        f"x target (linear model "
+        f"{linear_terminal * options.covariance_reduction:.4f})",
+        flush=True,
+    )
 
-    radius = np.zeros(reference.n_arcs, dtype=float)
-    covariances = np.tile(normalization.initial_covariance, (reference.n_arcs + 1, 1, 1))
+
+    radius = np.zeros(ref_traj.n_arcs, dtype=float)
+    covariances = np.tile(normalization.initial_covariance, (ref_traj.n_arcs + 1, 1, 1))
     for _ in range(30):
         _, covariances, control_covariances = propagate_moments(
             arc_functions, means, open_loop, gains, normalization.initial_covariance
         )
         radius = spectral_radii(control_covariances)
-        worst = float(np.max(psi * radius))
+        worst = float(np.max(psi_inv * radius))
+        print(worst)
         if not np.isfinite(worst):
             gains *= 0.5
             continue
-        if worst <= options.gain_seed_margin:
+        if worst <= options.cl_control_effort_seed_margin:
             break
-        gains *= np.sqrt(options.gain_seed_margin / worst)
+        gains *= np.sqrt(options.cl_control_effort_seed_margin / worst)
 
-    headroom = np.clip(1.0 - psi * radius, 0.0, None)
+    headroom = np.clip(1.0 - psi_inv * radius, 0.0, None)
     magnitudes = np.linalg.norm(open_loop, axis=0)
     factor = np.ones_like(magnitudes)
     active = magnitudes > 1e-12
@@ -958,16 +938,16 @@ class SteeringSolution:
 def solve_steering_problem(
     case: TestCase,
     options: Options,
-    reference: Reference,
+    ref_traj: ReferenceTraj,
     arc_functions: list[casadi.Function],
     guess: InitialGuess,
     normalization: Normalization,
-    psi: float,
+    psi_inv: float,
     log_prefix: str,
 ) -> SteeringSolution:
     """Transcribe and solve Eq. 5.66."""
 
-    n_arcs = reference.n_arcs
+    n_arcs = ref_traj.n_arcs
     target = 1.0 / options.covariance_reduction
 
     opti = casadi.Opti()
@@ -995,7 +975,7 @@ def solve_steering_problem(
         # Multiple shooting on the mean, single shooting on the covariance.
         opti.subject_to(means[:, k + 1] == mean_next)
 
-        # ||S_k|| via a slack, as in dirtran_cr3bp, so the cost stays smooth at
+        # ||S_k|| via a slack, as in deterministic_cr3bp, so the cost stays smooth at
         # the coast arcs where S_k vanishes.
         opti.subject_to(casadi.dot(open_loop[:, k], open_loop[:, k]) <= slack[0, k] ** 2)
 
@@ -1003,10 +983,10 @@ def solve_steering_problem(
         radius = spectral_radius_expression(control_covariance, options.spectral_radius_floor)
 
         # Eq. 5.64, normalised by T_max.
-        opti.subject_to(slack[0, k] + psi * radius <= 1.0)
+        opti.subject_to(slack[0, k] + psi_inv * radius <= 1.0)
 
         # Eq. 5.65, weighted by the arc duration because the mesh is not uniform.
-        objective = objective + float(reference.steps[k]) * (slack[0, k] + psi * radius)
+        objective = objective + float(ref_traj.steps[k]) * (slack[0, k] + psi_inv * radius)
 
     opti.subject_to(means[0:NP, n_arcs] == case.xf_state)
 
@@ -1040,17 +1020,19 @@ def solve_steering_problem(
 
     ipopt_options = {
         "max_iter": options.max_iter,
-        "tol": options.tolerance,
-        "constr_viol_tol": options.tolerance,
-        "acceptable_tol": options.acceptable_tolerance,
-        "acceptable_constr_viol_tol": options.acceptable_tolerance,
+        "tol": options.tol,
+        "acceptable_tol": options.acceptable_tol,
+        "constr_viol_tol": options.constr_viol_tol,
+        "acceptable_constr_viol_tol": options.acceptable_constr_viol_tol,
         "acceptable_iter": 25,
-        "dual_inf_tol": options.tolerance,
-        "compl_inf_tol": options.tolerance,
+        "dual_inf_tol": options.dual_inf_tol,
+        "acceptable_dual_inf_tol": options.acceptable_dual_inf_tol,
+        "compl_inf_tol": options.compl_inf_tol,
+        "acceptable_compl_inf_tol": options.acceptable_compl_inf_tol,
         "mu_strategy": "monotone",
         # The arc map is a first-order blackbox, so no exact Hessian is available.
         "hessian_approximation": "limited-memory",
-        "limited_memory_max_history": 25,
+        "limited_memory_max_history": options.acceptable_iter,
         "print_level": options.print_level,
         "sb": "yes",
     }
@@ -1141,7 +1123,12 @@ def monte_carlo(
     solution: SteeringSolution,
     steps: np.ndarray,
 ) -> dict[str, np.ndarray | float]:
-    """Apply the converged policy (Eq. 5.69) to samples of the true dynamics."""
+    """Apply the converged policy (Eq. 5.69) with thrust saturation.
+
+    Violation statistics use the unsaturated commanded thrust so they still test
+    the chance constraint.  Propagation, accumulated effort and peak applied
+    thrust use the command clipped to ``T_max``, matching the physical actuator.
+    """
 
     generator = np.random.default_rng(options.monte_carlo_seed)
     samples = options.monte_carlo_samples
@@ -1155,20 +1142,34 @@ def monte_carlo(
 
     for k in range(steps.size):
         deviation = (states[0:NP] - solution.means[0:NP, k : k + 1]) / normalization.scale[0:NP, None]
-        control = case.max_thrust_nd * (solution.open_loop[:, k : k + 1] + solution.gains[k] @ deviation)
-        magnitudes = np.linalg.norm(control, axis=0)
+        commanded_control = case.max_thrust_nd * (
+            solution.open_loop[:, k : k + 1] + solution.gains[k] @ deviation
+        )
+        commanded_magnitudes = np.linalg.norm(commanded_control, axis=0)
         # A bare `>` test is misleading when the open-loop magnitude sits within
         # solver tolerance of the bound: a 1e-5 residual infeasibility then reads
         # as a 100 % chance-constraint violation. Report both the strict fraction
         # and one with a relative tolerance, plus the worst exceedance, so the
         # magnitude of any breach is visible alongside its frequency.
-        violation_fraction[k] = float(np.mean(magnitudes > case.max_thrust_nd))
-        tolerant_violation_fraction[k] = float(
-            np.mean(magnitudes > case.max_thrust_nd * (1.0 + options.thrust_violation_tolerance))
+        violation_fraction[k] = float(np.mean(commanded_magnitudes > case.max_thrust_nd))
+        worst_exceedance = max(
+            worst_exceedance,
+            float(np.max(commanded_magnitudes) - case.max_thrust_nd),
         )
-        worst_exceedance = max(worst_exceedance, float(np.max(magnitudes) - case.max_thrust_nd))
-        peak_thrust = np.maximum(peak_thrust, magnitudes)
-        cumulative += float(steps[k]) * magnitudes
+
+        # Radially project each over-limit command onto the thrust ball, preserving
+        # its direction. Diagnostics above retain the original command so actuator
+        # saturation cannot hide a chance-constraint violation.
+        saturation_scale = np.ones_like(commanded_magnitudes)
+        saturated = commanded_magnitudes > case.max_thrust_nd
+        saturation_scale[saturated] = (
+            case.max_thrust_nd / commanded_magnitudes[saturated]
+        )
+        control = commanded_control * saturation_scale[None, :]
+        applied_magnitudes = np.minimum(commanded_magnitudes, case.max_thrust_nd)
+
+        peak_thrust = np.maximum(peak_thrust, applied_magnitudes)
+        cumulative += float(steps[k]) * applied_magnitudes
         states, _, _ = dynamics.propagate(states, control, float(steps[k]), options.integrator_substeps)
 
     terminal_deviation = (states - solution.means[:, -1:]) / normalization.scale[:, None]
@@ -1180,8 +1181,6 @@ def monte_carlo(
         "mean_cost": float(np.mean(cumulative)),
         "violation_fraction": violation_fraction,
         "max_violation_fraction": float(np.max(violation_fraction)),
-        "tolerant_violation_fraction": tolerant_violation_fraction,
-        "max_tolerant_violation_fraction": float(np.max(tolerant_violation_fraction)),
         "worst_exceedance_n": float(worst_exceedance) * case.thrust_unit,
         "peak_thrust_n": peak_thrust * case.thrust_unit,
         "terminal_covariance": empirical_covariance,
@@ -1197,25 +1196,21 @@ def monte_carlo(
 def compute_diagnostics(
     case: TestCase,
     options: Options,
-    reference: Reference,
+    ref_traj: ReferenceTraj,
     solution: SteeringSolution,
     normalization: Normalization,
     linear_covariances: np.ndarray,
     monte_carlo_result: dict,
-    psi: float,
+    psi_inv: float,
 ) -> dict[str, float]:
     target = 1.0 / options.covariance_reduction
-    steps = reference.steps
+    steps = ref_traj.steps
 
     open_loop_magnitude = np.linalg.norm(solution.open_loop, axis=0)
     deterministic_effort = float(np.sum(steps * open_loop_magnitude))
-    feedback_effort = float(np.sum(steps * psi * solution.radius))
+    feedback_effort = float(np.sum(steps * psi_inv * solution.radius))
     total_effort = deterministic_effort + feedback_effort
     to_kg = case.m0_wet * case.max_thrust_nd / case.exhaust_velocity_nd
-
-    # The alternative Eq. 5.86 normalisation, for the 7/6 comparison of the notes.
-    alternative_scale = np.sqrt((NX - 1) / (NX + options.scaling_parameter))
-    alternative_feedback = feedback_effort * alternative_scale
 
     terminal_normalized = solution.covariances[-1][0:NP, 0:NP] / target
     terminal_eigenvalues = np.linalg.eigvalsh(terminal_normalized)
@@ -1226,13 +1221,13 @@ def compute_diagnostics(
     covariance_mismatch = float(np.max(np.abs(unscented_terminal - linear_terminal)) / scale)
 
     mean_error = float(np.max(np.abs(solution.means[0:NP, -1] - case.xf_state)))
-    budget = open_loop_magnitude + psi * solution.radius
+    budget = open_loop_magnitude + psi_inv * solution.radius
 
     empirical = monte_carlo_result["terminal_covariance"][0:NP, 0:NP] / target
     empirical_eigenvalues = np.linalg.eigvalsh(empirical)
 
     return {
-        "n_arcs": float(reference.n_arcs),
+        "n_arcs": float(ref_traj.n_arcs),
         "mesh_stride": float(options.mesh_stride),
         "converged": solution.diagnostics["converged"],
         "matching_defect_nd": solution.diagnostics["matching_defect_nd"],
@@ -1243,11 +1238,12 @@ def compute_diagnostics(
         "deterministic_effort_kg": deterministic_effort * to_kg,
         "feedback_effort_kg": feedback_effort * to_kg,
         "total_effort_kg": total_effort * to_kg,
-        "feedback_effort_kg_alternative_weight": alternative_feedback * to_kg,
-        "dirtran_fuel_kg": reference.fuel_kg,
+        "dirtran_fuel_kg": ref_traj.fuel_consumed,
         "max_thrust_budget": float(np.max(budget)),
         "max_open_loop_n": float(np.max(open_loop_magnitude) * case.max_thrust_nd * case.thrust_unit),
-        "max_feedback_n": float(np.max(psi * solution.radius) * case.max_thrust_nd * case.thrust_unit),
+        "max_feedback_n": float(
+            np.max(psi_inv * solution.radius) * case.max_thrust_nd * case.thrust_unit
+        ),
         "terminal_mean_error_nd": mean_error,
         "terminal_covariance_max_eigenvalue": float(terminal_eigenvalues[-1]),
         "terminal_covariance_satisfied": float(terminal_eigenvalues[-1] <= 1.0 + 1e-6),
@@ -1267,15 +1263,17 @@ def compute_diagnostics(
         "monte_carlo_mean_nd": float(monte_carlo_result["mean_cost"]),
         "monte_carlo_percentile_kg": float(monte_carlo_result["percentile"]) * case.m0_wet / case.exhaust_velocity_nd,
         "monte_carlo_max_violation_fraction": float(monte_carlo_result["max_violation_fraction"]),
-        "monte_carlo_max_tolerant_violation_fraction": float(
-            monte_carlo_result["max_tolerant_violation_fraction"]
-        ),
         "monte_carlo_worst_exceedance_n": float(monte_carlo_result["worst_exceedance_n"]),
         "monte_carlo_terminal_max_eigenvalue": float(empirical_eigenvalues[-1]),
     }
 
 
-def print_summary(case: TestCase, diagnostics: dict[str, float], psi: float, log_prefix: str) -> None:
+def print_summary(
+    case: TestCase,
+    diagnostics: dict[str, float],
+    psi_inv: float,
+    log_prefix: str,
+) -> None:
     to_n = case.max_thrust_nd * case.thrust_unit
     lines = [
         "",
@@ -1286,15 +1284,13 @@ def print_summary(case: TestCase, diagnostics: dict[str, float], psi: float, log
         f"(mesh stride {diagnostics['mesh_stride']:.0f})",
         f"{log_prefix}IPOPT converged           : {'yes' if diagnostics['converged'] else 'NO'}",
         f"{log_prefix}max matching defect       : {diagnostics['matching_defect_nd']:.3e} [-]",
-        f"{log_prefix}Psi_3^-1(beta)            : {psi:.6f}",
+        f"{log_prefix}Psi_3^-1(beta)            : {psi_inv:.6f}",
         f"{log_prefix}",
         f"{log_prefix}objective J (Eq. 5.65)    : {diagnostics['total_effort_nd']:.6e} [-]"
         f"   (NLP slack value {diagnostics['objective_nd']:.6e})",
         f"{log_prefix}  open-loop  T_d          : {diagnostics['deterministic_effort_kg']:.6f} kg",
         f"{log_prefix}  closed-loop T_s         : {diagnostics['feedback_effort_kg']:.6f} kg",
         f"{log_prefix}  total                   : {diagnostics['total_effort_kg']:.6f} kg",
-        f"{log_prefix}  T_s with 1/(2 n_x)      : {diagnostics['feedback_effort_kg_alternative_weight']:.6f} kg"
-        f"   (Eq. 5.86 is 7/6 conservative)",
         f"{log_prefix}DIRTRAN nominal fuel      : {diagnostics['dirtran_fuel_kg']:.6f} kg",
         f"{log_prefix}",
         f"{log_prefix}max ||S|| + Psi rho       : {diagnostics['max_thrust_budget']:.6f} "
@@ -1316,7 +1312,6 @@ def print_summary(case: TestCase, diagnostics: dict[str, float], psi: float, log
         f"(must be <= 0.05); worst exceedance "
         f"{diagnostics['monte_carlo_worst_exceedance_n']:+.3e} N",
         f"{log_prefix}  same, 1e-4 relative tol : "
-        f"{diagnostics['monte_carlo_max_tolerant_violation_fraction']:.4f}",
         f"{log_prefix}MC terminal max eigval    : {diagnostics['monte_carlo_terminal_max_eigenvalue']:.6f}",
         f"{log_prefix}{'=' * 68}",
     ]
@@ -1344,14 +1339,14 @@ def standard_deviations_physical(
 def plot_outputs(
     case: TestCase,
     options: Options,
-    reference: Reference,
+    ref_traj: ReferenceTraj,
     solution: SteeringSolution,
     normalization: Normalization,
     monte_carlo_result: dict,
-    psi: float,
+    psi_inv: float,
     output_prefix: Path,
 ) -> None:
-    node_days = reference.node_times * case.time_unit / 86400.0
+    node_days = ref_traj.node_times * case.time_unit / 86400.0
     arc_days = node_days[:-1]
     target = 1.0 / options.covariance_reduction
     sigma_physical = standard_deviations_physical(case, normalization, solution.covariances)
@@ -1382,7 +1377,7 @@ def plot_outputs(
 
     # 2 - thrust budget: open loop, feedback allowance and their sum against T_max.
     open_loop_n = np.linalg.norm(solution.open_loop, axis=0) * case.max_thrust_nd * case.thrust_unit
-    feedback_n = psi * solution.radius * case.max_thrust_nd * case.thrust_unit
+    feedback_n = psi_inv * solution.radius * case.max_thrust_nd * case.thrust_unit
     # Two panels: the closed-loop allowance is ~1e-4 N against a 0.5 N budget, so
     # it is invisible next to the open-loop term on a shared linear axis.
     figure, axes = plt.subplots(1, 2, figsize=Plotter.WIDE_FIGSIZE, dpi=Plotter.FIGURE_DPI)
@@ -1454,7 +1449,10 @@ def plot_outputs(
     # built on the slack sigma_k >= ||S_k||, which only coincides with ||S_k|| at
     # full convergence and otherwise plots a bound that is not one.
     predicted = float(
-        np.sum(reference.steps * (np.linalg.norm(solution.open_loop, axis=0) + psi * solution.radius))
+        np.sum(
+            ref_traj.steps
+            * (np.linalg.norm(solution.open_loop, axis=0) + psi_inv * solution.radius)
+        )
     )
     axis.axvline(predicted * case.max_thrust_nd * to_kg, color=Plotter.RED, ls="--", lw=1.1,
                  label=r"optimised bound (Eq. 5.65)")
@@ -1479,17 +1477,17 @@ def _ellipse_points(block: np.ndarray, scale: float, samples: int = 120) -> np.n
 def save_outputs(
     case: TestCase,
     options: Options,
-    reference: Reference,
+    ref_traj: ReferenceTraj,
     solution: SteeringSolution,
     normalization: Normalization,
     linear_covariances: np.ndarray,
     monte_carlo_result: dict,
     diagnostics: dict[str, float],
-    psi: float,
+    psi_inv: float,
     output_prefix: Path,
 ) -> None:
     output_prefix.parent.mkdir(parents=True, exist_ok=True)
-    node_days = reference.node_times * case.time_unit / 86400.0
+    node_days = ref_traj.node_times * case.time_unit / 86400.0
 
     # Physical gains, undoing the normalisation: K = T_max * K_tilde * inv(D0').
     physical_gains = (
@@ -1499,9 +1497,9 @@ def save_outputs(
 
     np.savez(
         output_prefix.with_suffix(".npz"),
-        node_times_nd=reference.node_times,
+        node_times_nd=ref_traj.node_times,
         node_days=node_days,
-        steps_nd=reference.steps,
+        steps_nd=ref_traj.steps,
         means=solution.means,
         open_loop_normalized=solution.open_loop,
         open_loop_n=solution.open_loop * case.max_thrust_nd * case.thrust_unit,
@@ -1515,7 +1513,7 @@ def save_outputs(
         normalization_scale_nd=normalization.scale,
         INITIAL_STATE_STD_ND=normalization.initial_std,
         target_ratio=1.0 / options.covariance_reduction,
-        psi=psi,
+        psi_inv=psi_inv,
         monte_carlo_cumulative=monte_carlo_result["cumulative"],
         monte_carlo_violation_fraction=monte_carlo_result["violation_fraction"],
         monte_carlo_terminal_covariance=monte_carlo_result["terminal_covariance"],
@@ -1523,11 +1521,11 @@ def save_outputs(
     )
 
     open_loop_n = np.linalg.norm(solution.open_loop, axis=0) * case.max_thrust_nd * case.thrust_unit
-    feedback_n = psi * solution.radius * case.max_thrust_nd * case.thrust_unit
+    feedback_n = psi_inv * solution.radius * case.max_thrust_nd * case.thrust_unit
     table = np.column_stack(
         [
             node_days[:-1],
-            reference.steps,
+            ref_traj.steps,
             solution.means[:, :-1].T,
             solution.open_loop.T * case.max_thrust_nd * case.thrust_unit,
             open_loop_n,
@@ -1544,7 +1542,16 @@ def save_outputs(
     )
     np.savetxt(output_prefix.with_suffix(".csv"), table, delimiter=",", header=header, comments="")
 
-    plot_outputs(case, options, reference, solution, normalization, monte_carlo_result, psi, output_prefix)
+    plot_outputs(
+        case,
+        options,
+        ref_traj,
+        solution,
+        normalization,
+        monte_carlo_result,
+        psi_inv,
+        output_prefix,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -1553,44 +1560,57 @@ def save_outputs(
 
 
 def run_test_case(test_case_id: str, options: Options | None = None) -> dict[str, float]:
-    options = options or Options()
     case = CASE_REGISTRY[test_case_id]()
     log_prefix = f"[{test_case_id}] "
-    psi = psi_inverse(NU, options.violation_parameter)
+    psi_inv = psi_inverse(NU, options.violation_parameter)
 
-    print(f"\n{log_prefix}Loading fuel-optimal reference from {REFERENCE_DIR}", flush=True)
-    reference = load_reference(case, options)
+    ref_traj = load_ref_traj(case, options)
     normalization = build_normalization(case)
     dynamics = Dynamics(case)
 
-    print(f"{log_prefix}Building {reference.n_arcs} arc functions "
+    print(f"{log_prefix}Building {ref_traj.n_arcs} arc functions "
           f"({options.integrator_substeps} RK4 substeps each)", flush=True)
-    arc_functions = _build_arc_functions(case, options, dynamics, normalization, reference)
+    arc_functions = _build_arc_functions(case, options, dynamics, normalization, ref_traj)
 
     print(f"{log_prefix}Building the initial guess", flush=True)
-    guess = build_initial_guess(case, options, dynamics, normalization, reference, arc_functions, psi)
+    guess = build_initial_guess(
+        case,
+        options,
+        dynamics,
+        normalization,
+        ref_traj,
+        arc_functions,
+        psi_inv,
+    )
 
     solution = solve_steering_problem(
-        case, options, reference, arc_functions, guess, normalization, psi, log_prefix
+        case, options, ref_traj, arc_functions, guess, normalization, psi_inv, log_prefix
     )
 
     print(f"{log_prefix}Cross-checking the covariance against linear propagation", flush=True)
     linear_covariances = linear_covariance_check(
-        case, options, dynamics, normalization, solution, reference.steps
+        case, options, dynamics, normalization, solution, ref_traj.steps
     )
 
     print(f"{log_prefix}Running {options.monte_carlo_samples} Monte Carlo samples", flush=True)
-    monte_carlo_result = monte_carlo(case, options, dynamics, normalization, solution, reference.steps)
+    monte_carlo_result = monte_carlo(case, options, dynamics, normalization, solution, ref_traj.steps)
 
     diagnostics = compute_diagnostics(
-        case, options, reference, solution, normalization, linear_covariances, monte_carlo_result, psi
+        case,
+        options,
+        ref_traj,
+        solution,
+        normalization,
+        linear_covariances,
+        monte_carlo_result,
+        psi_inv,
     )
-    print_summary(case, diagnostics, psi, log_prefix)
+    print_summary(case, diagnostics, psi_inv, log_prefix)
 
     output_prefix = OUTPUT_DIR / case.test_case_id
     save_outputs(
-        case, options, reference, solution, normalization, linear_covariances,
-        monte_carlo_result, diagnostics, psi, output_prefix,
+        case, options, ref_traj, solution, normalization, linear_covariances,
+        monte_carlo_result, diagnostics, psi_inv, output_prefix,
     )
     print(f"{log_prefix}Wrote {output_prefix.with_suffix('.npz')} and companions", flush=True)
     return diagnostics
@@ -1608,18 +1628,18 @@ def regenerate_outputs(test_case_id: str, options: Options | None = None) -> dic
     options = options or Options()
     case = CASE_REGISTRY[test_case_id]()
     log_prefix = f"[{test_case_id}] "
-    psi = psi_inverse(NU, options.violation_parameter)
+    psi_inv = psi_inverse(NU, options.violation_parameter)
 
     archive = np.load(OUTPUT_DIR / f"{case.test_case_id}.npz", allow_pickle=True)
     stored = dict(archive["diagnostics"].item())
-    reference = load_reference(case, options)
+    ref_traj = load_ref_traj(case, options)
     normalization = build_normalization(case)
     dynamics = Dynamics(case)
 
-    if archive["steps_nd"].size != reference.n_arcs:
+    if archive["steps_nd"].size != ref_traj.n_arcs:
         raise ValueError(
             f"Saved solution has {archive['steps_nd'].size} arcs but the current "
-            f"mesh_stride={options.mesh_stride} gives {reference.n_arcs}."
+            f"mesh_stride={options.mesh_stride} gives {ref_traj.n_arcs}."
         )
 
     solution = SteeringSolution(
@@ -1638,16 +1658,23 @@ def regenerate_outputs(test_case_id: str, options: Options | None = None) -> dic
 
     print(f"{log_prefix}Regenerating outputs from the saved solution", flush=True)
     linear_covariances = linear_covariance_check(
-        case, options, dynamics, normalization, solution, reference.steps
+        case, options, dynamics, normalization, solution, ref_traj.steps
     )
-    monte_carlo_result = monte_carlo(case, options, dynamics, normalization, solution, reference.steps)
+    monte_carlo_result = monte_carlo(case, options, dynamics, normalization, solution, ref_traj.steps)
     diagnostics = compute_diagnostics(
-        case, options, reference, solution, normalization, linear_covariances, monte_carlo_result, psi
+        case,
+        options,
+        ref_traj,
+        solution,
+        normalization,
+        linear_covariances,
+        monte_carlo_result,
+        psi_inv,
     )
-    print_summary(case, diagnostics, psi, log_prefix)
+    print_summary(case, diagnostics, psi_inv, log_prefix)
     save_outputs(
-        case, options, reference, solution, normalization, linear_covariances,
-        monte_carlo_result, diagnostics, psi, OUTPUT_DIR / case.test_case_id,
+        case, options, ref_traj, solution, normalization, linear_covariances,
+        monte_carlo_result, diagnostics, psi_inv, OUTPUT_DIR / case.test_case_id,
     )
     return diagnostics
 
@@ -1657,7 +1684,7 @@ def _build_arc_functions(
     options: Options,
     dynamics: Dynamics,
     normalization: Normalization,
-    reference: Reference,
+    ref_traj: ReferenceTraj,
 ) -> list[casadi.Function]:
     """One arc function per *distinct* duration, reused across arcs.
 
@@ -1667,18 +1694,17 @@ def _build_arc_functions(
 
     cache: dict[float, casadi.Function] = {}
     functions: list[casadi.Function] = []
-    for k, step in enumerate(reference.steps):
+    for k, step in enumerate(ref_traj.steps):
         key = float(np.round(step, 14))
         if key not in cache:
             cache[key] = build_arc_function(case, options, dynamics, normalization, float(step), len(cache))
         functions.append(cache[key])
-    print(f"    {len(cache)} distinct arc durations across {reference.steps.size} arcs", flush=True)
+    print(f"    {len(cache)} distinct arc durations across {ref_traj.steps.size} arcs", flush=True)
     return functions
 
 
 def main() -> None:
     options = Options()
-    # The better-conditioned case first; see the notes on why.
     for test_case_id in ("lyapunov_l1_to_l2", "halo_l2_to_halo_l1"):
         run_test_case(test_case_id, options)
 

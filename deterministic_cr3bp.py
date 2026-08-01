@@ -298,7 +298,7 @@ def get_collinear_lagrange_points(case: CR3BPEarthMoon) -> dict[str, float]:
         "L3": _compute_root(equilibrium_condition, -1.5, -case.mu - eps),
     }
 
-def eom(case: CR3BPEarthMoon, state, control, sigma):
+def eom(case: CR3BPEarthMoon, state, control, sigma = 0.0):
     if any(isinstance(v, (casadi.MX, casadi.SX, casadi.DM)) for v in (state, control, sigma)):        
         rx, ry, rz = state[0], state[1], state[2]
         vx, vy, vz = state[3], state[4], state[5]

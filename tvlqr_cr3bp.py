@@ -15,7 +15,7 @@ import casadi
 import matplotlib.pyplot as plt
 import numpy as np
 
-from dirtran_cr3bp import (
+from deterministic_cr3bp import (
     CR3BPEarthMoon,
     TestCase,
     OCPSolution,
@@ -441,7 +441,7 @@ def plot_montecarlo_results(
 
         ax.scatter(
             deltas_final[:, axis_0], deltas_final[:, axis_1],
-            color=Plotter.PURPLE, s=12, zorder=1.7,
+            color=Plotter.PURPLE, s=7, zorder=1.7,
             label=f"Monte Carlo samples (n={deltas_final.shape[0]})",
         )
         ax.plot(
