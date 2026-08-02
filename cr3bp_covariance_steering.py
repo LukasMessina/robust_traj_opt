@@ -59,7 +59,7 @@ class Options:
     """Solver and transcription settings."""
 
     # Keep every `mesh_stride`-th knot point of the DIRTRAN mesh. 
-    mesh_stride: int = 4
+    mesh_stride: int = 1
     integrator_substeps: int = 4
 
     violation_parameter: float = 0.05   
@@ -90,15 +90,16 @@ class Options:
     max_iter: int = 3000
     tol: float = 1e-6
     constr_viol_tol: float = 1e-9
-    dual_inf_tol: float = 1e-4
+    dual_inf_tol: float = 1e-3
     compl_inf_tol: float = 1e-6
 
     # Acceptable fallback
     acceptable_tol: float = 1e-5
     acceptable_constr_viol_tol: float = 1e-8
-    acceptable_dual_inf_tol: float = 1e-4
+    acceptable_dual_inf_tol: float = 1e-3
     acceptable_compl_inf_tol: float = 1e-5
     acceptable_iter: int = 25
+    limited_memory_max_history: int = 50
     print_level: int = 5
 
     monte_carlo_samples: int = 10000
@@ -245,10 +246,8 @@ class Dynamics:
     ) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None]:
         """Fixed-step RK4 over one arc, zero-order hold on the control.
 
-        Mirrors `integrator.rk4` exactly. When `with_jacobian` is set, the partial
-        derivatives of the *discrete* map are accumulated through the four stages,
-        so they are consistent with the propagation to machine precision rather
-        than being an approximation of the variational equations.
+        When `with_jacobian` is set, the partial
+        derivatives of the discrete map are accumulated through the four stages.
         """
 
         count = states.shape[1]
@@ -1024,7 +1023,7 @@ def solve_steering_problem(
         "acceptable_tol": options.acceptable_tol,
         "constr_viol_tol": options.constr_viol_tol,
         "acceptable_constr_viol_tol": options.acceptable_constr_viol_tol,
-        "acceptable_iter": 25,
+        "acceptable_iter": options.acceptable_iter,
         "dual_inf_tol": options.dual_inf_tol,
         "acceptable_dual_inf_tol": options.acceptable_dual_inf_tol,
         "compl_inf_tol": options.compl_inf_tol,
@@ -1032,7 +1031,7 @@ def solve_steering_problem(
         "mu_strategy": "monotone",
         # The arc map is a first-order blackbox, so no exact Hessian is available.
         "hessian_approximation": "limited-memory",
-        "limited_memory_max_history": options.acceptable_iter,
+        "limited_memory_max_history": options.limited_memory_max_history,
         "print_level": options.print_level,
         "sb": "yes",
     }
