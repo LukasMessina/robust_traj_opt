@@ -219,8 +219,15 @@ TOL = 1e-9
 FUEL_OPTIMAL_MODE = "fuel optimal"
 ENERGY_OPTIMAL_MODE = "energy optimal"
 # Set this to "fuel optimal" or "energy optimal".
-OBJECTIVE_MODE = ENERGY_OPTIMAL_MODE
-DEFAULT_OUTPUT_DIR = Path("output/cr3bp")
+OBJECTIVE_MODE = FUEL_OPTIMAL_MODE
+DEFECT_TOLERANCE_BY_CASE: dict[str, float] = {
+    "lyapunov_l1_to_l2": 1e-11,
+    "halo_l2_to_halo_l1": 1e-11,
+}
+OUTPUT_DIR_BY_OBJECTIVE_MODE: dict[str, Path] = {
+    FUEL_OPTIMAL_MODE: Path("output/cr3bp_fuel_optimal"),
+    ENERGY_OPTIMAL_MODE: Path("output/cr3bp_energy_optimal"),
+}
 DEFAULT_OUTPUT_PREFIX = ""
 INITIAL_GUESS = OCPSolution | None
 COLLOCATION_CACHE: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = {}
@@ -1157,12 +1164,13 @@ def h_adaptive_method(
 
 def run_test_case(test_case_id: str) -> str:
     case = CASE_REGISTRY[test_case_id]()
-    options = HAdaptiveOptions()
-    output_prefix = DEFAULT_OUTPUT_DIR / DEFAULT_OUTPUT_PREFIX / case.test_case_id
     objective_mode = check_objective_mode(OBJECTIVE_MODE)
+    options = HAdaptiveOptions(defect_tolerance=DEFECT_TOLERANCE_BY_CASE[case.test_case_id])
+    output_prefix = OUTPUT_DIR_BY_OBJECTIVE_MODE[objective_mode] / DEFAULT_OUTPUT_PREFIX / case.test_case_id
     
     log_prefix = f"[{case.test_case_id}] "
     print(f"{log_prefix}Objective mode: {objective_mode}", flush=True)
+    print(f"{log_prefix}Defect tolerance: {options.defect_tolerance:.1e}", flush=True)
 
     ocp_solution, history, defects = h_adaptive_method(
         case=case,

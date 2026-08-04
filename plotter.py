@@ -32,10 +32,10 @@ class Plotter:
     }
 
     BLACK = "#000000"
-    BLUE = "#1f77b4"
+    BLUE = "#0088ab"
     ORANGE = "#ff7f0e"
     GREEN = "#2ca02c"
-    RED = "#d62728"
+    RED = "#d61b1b"
     PURPLE = "#9b6fd3"
     GREY = "#7f7f7f"
     LIGHT_GREY = "#d9d9d9"

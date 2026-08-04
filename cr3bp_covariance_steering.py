@@ -27,6 +27,7 @@ from pathlib import Path
 import casadi
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.ticker import FormatStrFormatter, LinearLocator
 from scipy.stats import chi2
 
 import deterministic_cr3bp
@@ -59,12 +60,12 @@ class Options:
     """Solver and transcription settings."""
 
     # Keep every `mesh_stride`-th knot point of the DIRTRAN mesh. 
-    mesh_stride: int = 1
+    mesh_stride: int = 4
     integrator_substeps: int = 4
 
     violation_parameter: float = 0.05   
     # Covariance reduction factor  
-    covariance_reduction: float = 1e4    
+    covariance_reduction: float = 2e4    
     scaling_parameter: float = 0.0
 
     # Floors the covariance at jitter / n_x, which must stay far below the
@@ -84,22 +85,22 @@ class Options:
 
     # Target contribution of the cl control effort margin up to a
     # confidence level p after seeding
-    cl_control_effort_seed_margin: float = 0.9        
+    cl_control_effort_seed_margin: float = 0.2        
 
     # IPOPT settings
     max_iter: int = 3000
-    tol: float = 1e-6
+    tol: float = 1e-5
     constr_viol_tol: float = 1e-9
-    dual_inf_tol: float = 1e-3
-    compl_inf_tol: float = 1e-6
+    dual_inf_tol: float = 1e-5
+    compl_inf_tol: float = 1e-5
 
     # Acceptable fallback
-    acceptable_tol: float = 1e-5
+    acceptable_tol: float = 1e-4
     acceptable_constr_viol_tol: float = 1e-8
-    acceptable_dual_inf_tol: float = 1e-3
-    acceptable_compl_inf_tol: float = 1e-5
+    acceptable_dual_inf_tol: float = 1e-4
+    acceptable_compl_inf_tol: float = 1e-4
     acceptable_iter: int = 25
-    limited_memory_max_history: int = 50
+    limited_memory_max_history: int = 25
     print_level: int = 5
 
     monte_carlo_samples: int = 10000
@@ -116,7 +117,6 @@ def control_covariance_weight(options: Options) -> float:
 
     """Weight of Eq. 5.86, or its unscented-consistent counterpart."""
     return 1.0 / (2.0 * (NX + options.scaling_parameter))
-
 
 
 def unscented_weights(kappa: float) -> np.ndarray:
@@ -308,7 +308,7 @@ def _block_index_map(sparsity: casadi.Sparsity, block_rows: int, block_columns: 
 
 
 class ArcPropagatorJacobian(casadi.Callback):
-    """Exact Jacobian of the blackbox arc map, block-diagonal over sigma points."""
+    """Exact Jacobian of the blackbox arc integration map, block-diagonal over sigma points."""
 
     def __init__(self, name: str, parent: "ArcPropagator", input_names, output_names) -> None:
         casadi.Callback.__init__(self)
@@ -359,7 +359,7 @@ class ArcPropagatorJacobian(casadi.Callback):
 
 
 class ArcPropagator(casadi.Callback):
-    """Blackbox RK4 propagation of the whole sigma-point ensemble over one arc."""
+    """Blackbox numerical propagation of the whole sigma-point ensemble over one arc."""
 
     def __init__(self, name: str, dynamics: Dynamics, n_sigma: int, step: float, substeps: int) -> None:
         casadi.Callback.__init__(self)
@@ -367,7 +367,7 @@ class ArcPropagator(casadi.Callback):
         self.n_sigma = n_sigma
         self.step = float(step)
         self.substeps = int(substeps)
-        self._jacobians: dict[str, ArcPropagatorJacobian] = {}
+        self.jacobians: dict[str, ArcPropagatorJacobian] = {}
         self.construct(name, {})
 
     def get_n_in(self) -> int:
@@ -380,6 +380,7 @@ class ArcPropagator(casadi.Callback):
         return ("x", "u")[index]
 
     def get_name_out(self, index: int) -> str:
+        # NOTE:The index is always unused, but the signature must be a function of it to satisfy CasADi.
         return "z"
 
     def get_sparsity_in(self, index: int) -> casadi.Sparsity:
@@ -398,11 +399,11 @@ class ArcPropagator(casadi.Callback):
         return True
 
     def get_jacobian(self, name, input_names, output_names, options):
-        if name not in self._jacobians:
+        if name not in self.jacobians:
             jacobian = ArcPropagatorJacobian(name, self, input_names, output_names)
-            self._jacobians[name] = jacobian
+            self.jacobians[name] = jacobian
             _CALLBACK_KEEPALIVE.append(jacobian)
-        return self._jacobians[name]
+        return self.jacobians[name]
 
 
 # --------------------------------------------------------------------------- #
@@ -410,7 +411,7 @@ class ArcPropagator(casadi.Callback):
 # --------------------------------------------------------------------------- #
 
 
-def cholesky_lower(matrix, dimension: int, pivot_floor: float = 0.0):
+def cholesky_lower_triangular_matrix(matrix, dimension: int, pivot_floor: float = 0.0):                     
     """Lower-triangular Cholesky factor, built from scalar operations.
 
     Lower-triangularity is required, not merely convenient: it confines all
@@ -426,13 +427,12 @@ def cholesky_lower(matrix, dimension: int, pivot_floor: float = 0.0):
             for inner in range(column):
                 total = total - factor[row][inner] * factor[column][inner]
             if row == column:
-                # Floor the pivot, not merely the square root. A trial point where
+                # NOTE: Floor the pivot, not merely the square root. A trial point where
                 # the propagated covariance is numerically indefinite gives a
                 # negative pivot; clamping it to something infinitesimal avoids the
-                # NaN but the *next* line divides by it, so an infinitesimal clamp
-                # produces factor entries of order 1e150 and the covariance
-                # recursion detonates. `pivot_floor` is the jitter already added to
-                # the matrix, which is exactly the smallest pivot an exactly
+                # NaN but the next line divides by it, so an infinitesimal clamp
+                # produces factor entries of order 1e150. `pivot_floor` is the jitter
+                # already added to the matrix, which is exactly the smallest pivot an exactly
                 # positive semi-definite input could have, so the clamp only ever
                 # activates on round-off.
                 factor[row][column] = casadi.sqrt(casadi.fmax(total, pivot_floor))
@@ -446,8 +446,7 @@ def determinant(matrix, dimension: int):
 
     `casadi.det` builds a `Determinant` node that MX graphs cannot evaluate
     numerically, so the expansion is written out. Sharing the sub-determinants
-    turns the factorial expansion into `O(2^n n)`, which is negligible at the
-    sizes used here (3 for the epigraph, 6 for the terminal constraint).
+    turns the factorial expansion into `O(2^n n)`.
     """
 
     cache: dict[tuple[int, tuple[int, ...]], object] = {}
@@ -468,13 +467,10 @@ def determinant(matrix, dimension: int):
     return expand(0, tuple(range(dimension)))
 
 
-def largest_eigenvalue_symmetric_3(matrix, relative_floor: float = 1e-14):
-    """Closed-form largest eigenvalue of a symmetric 3x3 matrix.
-
-    Used instead of an epigraph slack constrained by Sylvester's criterion: the
-    minors of `r^2 I - Sigma^T` scale as `r^2`, `r^4` and `r^6`, and with
-    `r ~ 1e-5` here the second and third fall below any usable solver tolerance,
-    which leaves the epigraph vacuous. The closed form is scale-free instead: its
+def max_eigval_sym_3by3(matrix, relative_floor: float = 1e-14):
+    """Closed-form largest eigenvalue of a symmetric 3x3 matrix, trigonometric/Cardano closed-form solution.
+    
+    The closed form is scale-free instead: its
     relative accuracy does not depend on the magnitude of the matrix.
 
     `p` is floored relative to the trace rather than by an absolute constant, so
@@ -504,10 +500,10 @@ def spectral_radius_expression(matrix, floor: float):
     and therefore tends to zero rather than diverging.
     """
 
-    return casadi.sqrt(largest_eigenvalue_symmetric_3(matrix) + floor ** 2)
+    return casadi.sqrt(max_eigval_sym_3by3(matrix) + floor ** 2)
 
 
-def build_arc_function(
+def get_arc_function(
     case: TestCase,
     options: Options,
     dynamics: Dynamics,
@@ -515,43 +511,45 @@ def build_arc_function(
     step: float,
     index: int,
 ) -> casadi.Function:
-    """One arc of Eq. 5.63: (mu, P, S_tilde, K_tilde) -> (mu_next, P_next, SigmaT_tilde).
+    """
+    Build a function for propagating the state and covariance through one arc.
 
     Everything around the integration is symbolic, so the chain rule assembles
-    itself; only the RK4 propagation is opaque.
+    itself; only the propagation is opaque, since is evaluated numerically.
     """
 
-    propagator = ArcPropagator(f"arc_rk4_{index}", dynamics, N_SIGMA, step, options.integrator_substeps)
+    propagator = ArcPropagator(f"propagator_arc_{index}", dynamics, N_SIGMA, step, options.integrator_substeps)
     _CALLBACK_KEEPALIVE.append(propagator)
 
     mean = casadi.MX.sym("mu", NX)
     covariance = casadi.MX.sym("P", NX, NX)
-    open_loop = casadi.MX.sym("S", NU)
+    feedforward = casadi.MX.sym("S", NU)
     gain = casadi.MX.sym("K", NU, NP)
 
     weights = unscented_weights(options.scaling_parameter)
     scale = casadi.DM(normalization.matrix)
     inverse_scale = casadi.DM(normalization.inverse_matrix)
 
-    # Sigma points, Eq. 5.80-5.81 with R_bar = 0 so that Y_j = X_j.
-    spread = cholesky_lower(
+    # Sigma points
+    normalized_spread = cholesky_lower_triangular_matrix(
         NX * covariance + options.cholesky_jitter * casadi.DM.eye(NX),
         NX,
         pivot_floor=options.cholesky_jitter,
     )
-    physical_spread = scale @ spread
-    primed_spread = spread[0:NP, :]
+    spread = scale @ normalized_spread
+    primed_normalized_spread = normalized_spread[0:NP, :]
 
+    # NOTE: The mean state is in original units, not normalised. Whilst the nominal thrust is normalised.
     states = [mean]
-    controls = [open_loop]
+    controls = [feedforward]
     for column in range(NX):
-        deviation = gain @ primed_spread[:, column]
-        states.append(mean + physical_spread[:, column])
-        controls.append(open_loop + deviation)
+        deviation = gain @ primed_normalized_spread[:, column]
+        states.append(mean + spread[:, column])
+        controls.append(feedforward + deviation)
     for column in range(NX):
-        deviation = gain @ primed_spread[:, column]
-        states.append(mean - physical_spread[:, column])
-        controls.append(open_loop - deviation)
+        deviation = gain @ primed_normalized_spread[:, column]
+        states.append(mean - spread[:, column])
+        controls.append(feedforward - deviation)
 
     sigma_states = casadi.horzcat(*states)
     sigma_controls = case.max_thrust_nd * casadi.horzcat(*controls)
@@ -562,6 +560,7 @@ def build_arc_function(
     for j in range(N_SIGMA):
         residual = inverse_scale @ (propagated[:, j] - mean_next)
         covariance_next = covariance_next + weights[j] * residual @ residual.T
+    # NOTE: Enforces exact numerical symmetry.
     covariance_next = 0.5 * (covariance_next + covariance_next.T)
 
     # Eq. 5.86. Columns 1..6 of the factor carry the position-velocity directions;
@@ -569,14 +568,14 @@ def build_arc_function(
     # The plus and minus points of a pair contribute identically, hence the 2.
     control_covariance = casadi.MX.zeros(NU, NU)
     for column in range(NP):
-        deviation = gain @ primed_spread[:, column]
+        deviation = gain @ primed_normalized_spread[:, column]
         control_covariance = control_covariance + deviation @ deviation.T
     control_covariance = 2.0 * control_covariance_weight(options) * control_covariance
     control_covariance = 0.5 * (control_covariance + control_covariance.T)
 
     return casadi.Function(
         f"arc_{index}",
-        [mean, covariance, open_loop, gain],
+        [mean, covariance, feedforward, gain],
         [mean_next, covariance_next, control_covariance],
         ["mu", "P", "S", "K"],
         ["mu_next", "P_next", "SigmaT"],
@@ -637,10 +636,10 @@ def load_ref_traj(case: TestCase, options: Options) -> ReferenceTraj:
 # --------------------------------------------------------------------------- #
 
 
-def propagate_moments(
+def propagate_stochastic_moments(
     arc_functions: list[casadi.Function],
     means: np.ndarray,
-    open_loop: np.ndarray,
+    feedforward: np.ndarray,
     gains: np.ndarray,
     initial_covariance: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -649,7 +648,7 @@ def propagate_moments(
     Calls the very same arc functions used by the NLP, so no logic is duplicated.
     """
 
-    n_arcs = open_loop.shape[1]
+    n_arcs = feedforward.shape[1]
     covariances = np.empty((n_arcs + 1, NX, NX), dtype=float)
     control_covariances = np.empty((n_arcs, NU, NU), dtype=float)
     propagated_means = np.empty((NX, n_arcs + 1), dtype=float)
@@ -658,7 +657,7 @@ def propagate_moments(
 
     for k in range(n_arcs):
         mean_next, covariance_next, control_covariance = arc_functions[k](
-            means[:, k], covariances[k], open_loop[:, k], gains[k]
+            means[:, k], covariances[k], feedforward[:, k], gains[k]
         )
         propagated_means[:, k + 1] = np.asarray(mean_next.full(), dtype=float).ravel()
         covariances[k + 1] = np.asarray(covariance_next.full(), dtype=float)
@@ -667,14 +666,14 @@ def propagate_moments(
     return propagated_means, covariances, control_covariances
 
 
-def spectral_radii(matrices: np.ndarray) -> np.ndarray:
+def psqrt_spectral_radii(matrices: np.ndarray) -> np.ndarray:
     """rho(A) = sqrt(lambda_max(A)) for a stack of symmetric matrices."""
 
     eigenvalues = np.linalg.eigvalsh(matrices)
     return np.sqrt(np.clip(eigenvalues[..., -1], 0.0, None))
 
 
-def closed_loop_transition(
+def normalized_arc_jacobians(
     case: TestCase,
     dynamics: Dynamics,
     normalization: Normalization,
@@ -702,57 +701,32 @@ def closed_loop_transition(
     return state_matrices, control_matrices
 
 
-def _riccati_gains(
+def tvlqr_gains(
     control_weight: float,
     terminal_weight: float,
     state_matrices: list[np.ndarray],
     control_matrices: list[np.ndarray],
 ) -> np.ndarray:
-    """Backward Riccati recursion on the normalised linearisation.
+    """Backward Riccati recursion on the normalised linearisation."""
 
-    The LQR convention is `delta_u = -K delta_x`, whereas Eq. 5.62 uses
-    `T_k = S_k + K_k delta_x`, hence the sign flip; the mass column is dropped
-    because the policy is driven by position and velocity only.
-    """
-
-    state_weight = np.eye(NX)
-    weight = control_weight * np.eye(NU)
-    riccati = terminal_weight * np.eye(NX)
+    Q_normalized = np.eye(NX)
+    R_normalized = control_weight * np.eye(NU)
+    P_normalized = terminal_weight * np.eye(NX)
     gains = np.zeros((len(state_matrices), NU, NP), dtype=float)
 
     for k in reversed(range(len(state_matrices))):
         state_matrix = state_matrices[k]
         control_matrix = control_matrices[k]
         gain = np.linalg.solve(
-            weight + control_matrix.T @ riccati @ control_matrix,
-            control_matrix.T @ riccati @ state_matrix,
+            R_normalized + control_matrix.T @ P_normalized @ control_matrix,
+            control_matrix.T @ P_normalized @ state_matrix,
         )
         gains[k] = -gain[:, 0:NP]
-        closed_loop = state_matrix - control_matrix @ gain
-        riccati = state_weight + gain.T @ weight @ gain + closed_loop.T @ riccati @ closed_loop
-        riccati = 0.5 * (riccati + riccati.T)
+        closed_loop_matrix = state_matrix - control_matrix @ gain
+        P_normalized = Q_normalized + gain.T @ R_normalized @ gain + closed_loop_matrix.T @ P_normalized @ closed_loop_matrix
+        P_normalized = 0.5 * (P_normalized + P_normalized.T)
 
     return gains
-
-
-def _linear_terminal_covariance(
-    gains: np.ndarray,
-    state_matrices: list[np.ndarray],
-    control_matrices: list[np.ndarray],
-    initial_covariance: np.ndarray,
-) -> float:
-    """Terminal lambda_max(P'_N) under the linear closed-loop model."""
-
-    covariance = np.array(initial_covariance, dtype=float)
-    for k in range(len(state_matrices)):
-        extended = np.zeros((NU, NX))
-        extended[:, 0:NP] = gains[k]
-        transition = state_matrices[k] + control_matrices[k] @ extended
-        covariance = transition @ covariance @ transition.T
-        covariance = 0.5 * (covariance + covariance.T)
-        if not np.all(np.isfinite(covariance)):
-            return float("inf")
-    return float(np.linalg.eigvalsh(covariance[0:NP, 0:NP])[-1])
 
 
 def seed_gains(
@@ -768,42 +742,30 @@ def seed_gains(
         Q_ii = 1 / (c sigma_0,i)^2,  R_jj = 1 / T_max^2,  Qf_ii = 1 / (c sigma_f,i)^2
 
     taking the initial dispersion as the acceptable state deviation, the thrust
-    bound as the acceptable control, and the *terminal requirement* for `Qf`.
+    bound as the acceptable control, and the terminal requirement for `Qf`.
     Transforming into the normalised coordinates the recursion runs in
     (`dx = D0 dx~`, `dT = T_max du~`) turns the cost `dx' Q dx + du' R du` into
     `dx~' (D0 Q D0) dx~ + T_max^2 du~' R du~`, so
 
-        Q~  = D0 Q D0  = (1/c^2) I,   R~ = T_max^2 R = I,   Qf~ = (1/c^2) reduction I
+        Q~  = D0 Q D0  = (1/c^2) I,   R~ = T_max^2 R = I,   Qf~ = (1/c^2) reduction_factor I
 
     because `sigma_f = sigma_0 / sqrt(reduction)` makes `Qf/Q = reduction` exactly.
-    Only ratios matter -- scaling all three by a constant leaves the gains
-    unchanged -- so this is equivalent to `Q = I`, `R = c^2`, `Qf = reduction`,
-    which is how it is passed below. Note `Qf/Q` is not a tuning constant: it is
-    the covariance reduction factor itself.
+    Only ratios matter, scaling all three by a constant leaves the gains
+    unchanged, thus this is equivalent to `Q = I`, `R = c^2`, `Qf = reduction`,
+    which is how it is passed below. 
 
-    This replaced a 407-point scan over `(R, Qf)`. The scan ranked candidates by a
-    linear closed-loop model, which agrees with the unscented propagation for
-    moderate gains and disagrees by orders of magnitude for aggressive ones, so it
-    selected exactly the region where its own ranking was invalid. Measured at the
-    full mesh, Bryson matches the linear and unscented models to four digits
-    (ratio 1.000 on the Lyapunov case) where the scanned optimum showed a 10 %
-    gap -- the scanned policy contracts the covariance far enough to reach the
-    round-off floor of the sigma-point differencing. Bryson is nominally 11x
-    worse on that case and indistinguishable on the Halo case, but both are two
-    orders inside the requirement, so the difference is irrelevant for a warm
-    start and the better-conditioned one is preferable.
     """
 
     control_weight = 3.0 ** 2
     terminal_weight = float(options.covariance_reduction)
-    gains = _riccati_gains(control_weight, terminal_weight, state_matrices, control_matrices)
+    gains = tvlqr_gains(control_weight, terminal_weight, state_matrices, control_matrices)
     return gains, (control_weight, terminal_weight)
 
 
 @dataclass
 class InitialGuess:
     means: np.ndarray
-    open_loop: np.ndarray
+    feedforward: np.ndarray
     slack: np.ndarray
     gains: np.ndarray
     radius: np.ndarray
@@ -837,7 +799,7 @@ def build_initial_guess(
 ) -> InitialGuess:
     """Warm start that already satisfies the thrust chance constraint.
 
-    The DIRTRAN solution is bang-bang at exactly T_max, so Eq. 5.64 is violated at
+    The fuel optimal solution is bang-bang at exactly T_max, so the probabilistic thrust constraint is violated at
     every thrust arc as soon as any feedback is present. The seed gains are scaled
     down until the closed-loop share of the budget leaves room, then the open-loop
     magnitudes are trimmed to fit under what remains.
@@ -845,16 +807,16 @@ def build_initial_guess(
 
     means = np.array(ref_traj.states, dtype=float)
     means[:, 0] = case.x0_augmented_state
-    open_loop = np.array(ref_traj.controls, dtype=float) / case.max_thrust_nd
+    feedforward = np.array(ref_traj.controls, dtype=float) / case.max_thrust_nd
 
-    state_matrices, control_matrices = closed_loop_transition(
+    state_matrices, control_matrices = normalized_arc_jacobians(
         case, dynamics, normalization, ref_traj.states, ref_traj.controls,
         ref_traj.steps, options.integrator_substeps,
     )
-    # Variable scaling for the gains. In normalised units ||B_tilde|| ~ 5e5,
-    # because correcting a 1-sigma deviation costs a negligible fraction of
+    # Variable scaling for the gains. In normalised units the control matrix norm ||B_tilde|| 
+    # can be very large, because correcting a 1-sigma deviation costs a negligible fraction of
     # T_max; a unit step in K_tilde would therefore change the closed-loop
-    # transition by half a million and every IPOPT step overshoots by orders of
+    # transition drastically and every optimizer step overshoots by orders of
     # magnitude. Scaling by 1 / ||B_tilde|| makes a unit step in the decision
     # variable an O(1) change in the closed-loop dynamics, which is the condition
     # the solver implicitly assumes.
@@ -862,54 +824,50 @@ def build_initial_guess(
         [1.0 / max(np.linalg.norm(matrix, 2), 1e-300) for matrix in control_matrices]
     )
     gains, seed_weights = seed_gains(options, state_matrices, control_matrices)
-    _, seeded_covariances, _ = propagate_moments(
-        arc_functions, means, open_loop, gains, normalization.initial_covariance
+    _, seeded_covariances, _ = propagate_stochastic_moments(
+        arc_functions, means, feedforward, gains, normalization.initial_covariance
     )
-    unscented_terminal = float(
+    unscented_terminal_eigval = float(
         np.linalg.eigvalsh(seeded_covariances[-1][0:NP, 0:NP])[-1]
     )
-    linear_terminal = _linear_terminal_covariance(
-        gains, state_matrices, control_matrices, normalization.initial_covariance
-    )
-    # The two models agreeing is the check that the seed is not sitting on the
-    # round-off floor of the sigma-point differencing; a large gap means the
-    # unscented number is noise rather than a tighter covariance.
+
+    log_prefix = f"[{case.test_case_id}] "
     print(
-        f"    Bryson seed (Q=I, R={seed_weights[0]:.4g}, Qf={seed_weights[1]:.4g}): "
-        f"terminal lambda_max = {unscented_terminal * options.covariance_reduction:.4f} "
-        f"x target (linear model "
-        f"{linear_terminal * options.covariance_reduction:.4f})",
+        f" Bryson seed (Q=I, R={seed_weights[0]:.4g}, Qf={seed_weights[1]:.4g}): "
+        f"terminal lambda_max = {unscented_terminal_eigval * options.covariance_reduction:.4f} "
+        f"x target",
         flush=True,
     )
 
 
     radius = np.zeros(ref_traj.n_arcs, dtype=float)
     covariances = np.tile(normalization.initial_covariance, (ref_traj.n_arcs + 1, 1, 1))
-    for _ in range(30):
-        _, covariances, control_covariances = propagate_moments(
-            arc_functions, means, open_loop, gains, normalization.initial_covariance
+    for iteration in range(30):
+        _, covariances, control_covariances = propagate_stochastic_moments(
+            arc_functions, means, feedforward, gains, normalization.initial_covariance
         )
-        radius = spectral_radii(control_covariances)
+        radius = psqrt_spectral_radii(control_covariances)
         worst = float(np.max(psi_inv * radius))
-        print(worst)
         if not np.isfinite(worst):
-            gains *= 0.5
-            continue
+            raise FloatingPointError(
+                "Non-finite closed-loop control-effort seed margin at gain-scaling "
+                f"iteration {iteration + 1}."
+            )
         if worst <= options.cl_control_effort_seed_margin:
             break
         gains *= np.sqrt(options.cl_control_effort_seed_margin / worst)
 
     headroom = np.clip(1.0 - psi_inv * radius, 0.0, None)
-    magnitudes = np.linalg.norm(open_loop, axis=0)
+    magnitudes = np.linalg.norm(feedforward, axis=0)
     factor = np.ones_like(magnitudes)
     active = magnitudes > 1e-12
     factor[active] = np.minimum(1.0, headroom[active] / magnitudes[active])
-    open_loop = open_loop * factor
+    feedforward = feedforward * factor
 
     return InitialGuess(
         means=means,
-        open_loop=open_loop,
-        slack=np.linalg.norm(open_loop, axis=0),
+        feedforward=feedforward,
+        slack=np.linalg.norm(feedforward, axis=0),
         gains=gains,
         radius=radius,
         terminal_covariance=covariances[-1],
@@ -923,77 +881,69 @@ def build_initial_guess(
 
 
 @dataclass
-class SteeringSolution:
+class RobustSolution:
     means: np.ndarray
-    open_loop: np.ndarray          # S_tilde, normalised by T_max
-    gains: np.ndarray              # K_tilde, normalised
-    radius: np.ndarray             # r_tilde
-    covariances: np.ndarray        # P, normalised
-    control_covariances: np.ndarray
+    feedforward: np.ndarray            # S_tilde, normalised 
+    gains: np.ndarray                  # K_tilde, normalised
+    radius: np.ndarray                 # r_tilde
+    covariances: np.ndarray            # P, normalised
+    control_covariances: np.ndarray    # SigmaT, normalised
     objective: float
+    # Every instance will have a different set of diagnostics.
     diagnostics: dict[str, float] = field(default_factory=dict)
 
 
-def solve_steering_problem(
+def solve_rocp(
     case: TestCase,
     options: Options,
     ref_traj: ReferenceTraj,
     arc_functions: list[casadi.Function],
-    guess: InitialGuess,
+    initial_guess: InitialGuess,
     normalization: Normalization,
     psi_inv: float,
-    log_prefix: str,
-) -> SteeringSolution:
-    """Transcribe and solve Eq. 5.66."""
+) -> RobustSolution:
+    """Transcribe and solve the robust optimal control problem."""
 
     n_arcs = ref_traj.n_arcs
     target = 1.0 / options.covariance_reduction
 
     opti = casadi.Opti()
     means = opti.variable(NX, n_arcs + 1)
-    open_loop = opti.variable(NU, n_arcs)
+    feedforward = opti.variable(NU, n_arcs)
     slack = opti.variable(1, n_arcs)
-    # One matrix variable per arc rather than a flattened block: `casadi.reshape`
-    # is column-major while NumPy defaults to row-major, and silently transposing
-    # the gains is easy to do and hard to notice.
     gains = [opti.variable(NU, NP) for _ in range(n_arcs)]
-    # Cholesky factor of the terminal covariance margin; see below.
+    # Cholesky factor of the terminal covariance margin.
     margin_factor = opti.variable(NP * (NP + 1) // 2)
 
     opti.subject_to(means[:, 0] == case.x0_augmented_state)
     opti.subject_to(casadi.vec(slack) >= 0.0)
-    for gain in gains:
-        opti.subject_to(opti.bounded(-options.gain_bound, casadi.vec(gain), options.gain_bound))
 
     covariance = casadi.DM(normalization.initial_covariance)
     objective = 0.0
     for k in range(n_arcs):
         mean_next, covariance, control_covariance = arc_functions[k](
-            means[:, k], covariance, open_loop[:, k], float(guess.gain_scale[k]) * gains[k]
+            means[:, k], covariance, feedforward[:, k], float(initial_guess.gain_scale[k]) * gains[k]
         )
         # Multiple shooting on the mean, single shooting on the covariance.
         opti.subject_to(means[:, k + 1] == mean_next)
 
-        # ||S_k|| via a slack, as in deterministic_cr3bp, so the cost stays smooth at
+        # ||S_k|| via a slack, as in deterministic case, so the cost stays smooth at
         # the coast arcs where S_k vanishes.
-        opti.subject_to(casadi.dot(open_loop[:, k], open_loop[:, k]) <= slack[0, k] ** 2)
+        opti.subject_to(casadi.dot(feedforward[:, k], feedforward[:, k]) <= slack[0, k] ** 2)
 
-        # rho(SigmaT_k) in closed form rather than as a constrained slack.
+        # rho(SigmaT_k) in closed form 
         radius = spectral_radius_expression(control_covariance, options.spectral_radius_floor)
 
-        # Eq. 5.64, normalised by T_max.
+        # Transcription of the control chance constraint
         opti.subject_to(slack[0, k] + psi_inv * radius <= 1.0)
 
-        # Eq. 5.65, weighted by the arc duration because the mesh is not uniform.
+        # weighted by the arc duration because the mesh is not uniform.
         objective = objective + float(ref_traj.steps[k]) * (slack[0, k] + psi_inv * radius)
 
     opti.subject_to(means[0:NP, n_arcs] == case.xf_state)
 
-    # Eq. 5.56 after the congruence scaling of the note. Written as a Cholesky
-    # residual rather than through leading principal minors: the sixth minor is a
-    # degree-6 polynomial that reaches 1e41 when the terminal covariance starts
-    # three orders of magnitude above target, whereas the residual below never
-    # exceeds the norm of the matrix itself. G lower triangular with a
+    # Terminal covariance constraint. Written as a Cholesky
+    # residual. G lower triangular with a
     # non-negative diagonal exists if and only if the left-hand side is PSD.
     lower_triangular = casadi.MX.zeros(NP, NP)
     entry = 0
@@ -1010,12 +960,12 @@ def solve_steering_problem(
 
     opti.minimize(objective)
 
-    opti.set_initial(means, guess.means)
-    opti.set_initial(open_loop, guess.open_loop)
-    opti.set_initial(slack, np.maximum(guess.slack, 1e-9).reshape(1, -1))
+    opti.set_initial(means, initial_guess.means)
+    opti.set_initial(feedforward, initial_guess.feedforward)
+    opti.set_initial(slack, np.maximum(initial_guess.slack, 1e-9).reshape(1, -1))
     for k in range(n_arcs):
-        opti.set_initial(gains[k], guess.gains[k] / guess.gain_scale[k])
-    opti.set_initial(margin_factor, _initial_margin_factor(guess.terminal_covariance, target))
+        opti.set_initial(gains[k], initial_guess.gains[k] / initial_guess.gain_scale[k])
+    opti.set_initial(margin_factor, _initial_margin_factor(initial_guess.terminal_covariance, target))
 
     ipopt_options = {
         "max_iter": options.max_iter,
@@ -1038,37 +988,35 @@ def solve_steering_problem(
     # `expand` must stay off: an MX graph containing Callbacks cannot be expanded.
     opti.solver("ipopt", {"expand": False, "print_time": True}, ipopt_options)
 
-    print(f"{log_prefix}  Solving: {n_arcs} arcs, "
-          f"{(n_arcs + 1) * NX + n_arcs * (NU + 1 + NU * NP + 1)} variables", flush=True)
     try:
         solution = opti.solve()
         converged = True
     except RuntimeError as error:
-        print(f"{log_prefix}  IPOPT did not converge ({error}); returning the last iterate.", flush=True)
+        print(f"  IPOPT did not converge ({error}); returning the last iterate.", flush=True)
         solution = opti.debug
         converged = False
 
     solved_means = np.asarray(solution.value(means), dtype=float)
-    solved_open_loop = np.asarray(solution.value(open_loop), dtype=float).reshape(NU, n_arcs)
+    solved_feedforward = np.asarray(solution.value(feedforward), dtype=float).reshape(NU, n_arcs)
     solved_gains = np.stack(
         [
-            guess.gain_scale[k] * np.asarray(solution.value(gain), dtype=float).reshape(NU, NP)
+            initial_guess.gain_scale[k] * np.asarray(solution.value(gain), dtype=float).reshape(NU, NP)
             for k, gain in enumerate(gains)
         ]
     )
 
-    propagated_means, covariances, control_covariances = propagate_moments(
-        arc_functions, solved_means, solved_open_loop, solved_gains, normalization.initial_covariance
+    propagated_means, covariances, control_covariances = propagate_stochastic_moments(
+        arc_functions, solved_means, solved_feedforward, solved_gains, normalization.initial_covariance
     )
     matching_defect = float(np.max(np.abs(propagated_means[:, 1:] - solved_means[:, 1:])))
     # rho is an expression, so recover it exactly from the propagated moments.
     solved_radius = np.sqrt(
-        spectral_radii(control_covariances) ** 2 + options.spectral_radius_floor ** 2
+        psqrt_spectral_radii(control_covariances) ** 2 + options.spectral_radius_floor ** 2
     )
 
-    return SteeringSolution(
+    return RobustSolution(
         means=solved_means,
-        open_loop=solved_open_loop,
+        feedforward=solved_feedforward,
         gains=solved_gains,
         radius=solved_radius,
         covariances=covariances,
@@ -1083,46 +1031,15 @@ def solve_steering_problem(
 # --------------------------------------------------------------------------- #
 
 
-def linear_covariance_check(
+def monte_carlo_rollouts(
     case: TestCase,
     options: Options,
     dynamics: Dynamics,
     normalization: Normalization,
-    solution: SteeringSolution,
-    steps: np.ndarray,
-) -> np.ndarray:
-    """Re-propagate the covariance linearly through the closed-loop transition.
-
-    Linear propagation forms no differences of nearby O(1) numbers, so it does not
-    suffer the cancellation described in the notes. Because the dispersions are
-    tiny the dynamics are effectively linear across them, so any disagreement with
-    the unscented result measures the round-off floor rather than a modelling gap.
-    """
-
-    reference_controls = case.max_thrust_nd * solution.open_loop
-    state_matrices, control_matrices = closed_loop_transition(
-        case, dynamics, normalization, solution.means, reference_controls, steps, options.integrator_substeps
-    )
-    covariances = np.empty_like(solution.covariances)
-    covariances[0] = normalization.initial_covariance
-    for k in range(steps.size):
-        extended_gain = np.zeros((NU, NX))
-        extended_gain[:, 0:NP] = solution.gains[k]
-        transition = state_matrices[k] + control_matrices[k] @ extended_gain
-        propagated = transition @ covariances[k] @ transition.T
-        covariances[k + 1] = 0.5 * (propagated + propagated.T)
-    return covariances
-
-
-def monte_carlo(
-    case: TestCase,
-    options: Options,
-    dynamics: Dynamics,
-    normalization: Normalization,
-    solution: SteeringSolution,
+    solution: RobustSolution,
     steps: np.ndarray,
 ) -> dict[str, np.ndarray | float]:
-    """Apply the converged policy (Eq. 5.69) with thrust saturation.
+    """Apply the converged policy with thrust saturation.
 
     Violation statistics use the unsaturated commanded thrust so they still test
     the chance constraint.  Propagation, accumulated effort and peak applied
@@ -1142,7 +1059,7 @@ def monte_carlo(
     for k in range(steps.size):
         deviation = (states[0:NP] - solution.means[0:NP, k : k + 1]) / normalization.scale[0:NP, None]
         commanded_control = case.max_thrust_nd * (
-            solution.open_loop[:, k : k + 1] + solution.gains[k] @ deviation
+            solution.feedforward[:, k : k + 1] + solution.gains[k] @ deviation
         )
         commanded_magnitudes = np.linalg.norm(commanded_control, axis=0)
         # A bare `>` test is misleading when the open-loop magnitude sits within
@@ -1196,16 +1113,15 @@ def compute_diagnostics(
     case: TestCase,
     options: Options,
     ref_traj: ReferenceTraj,
-    solution: SteeringSolution,
+    solution: RobustSolution,
     normalization: Normalization,
-    linear_covariances: np.ndarray,
     monte_carlo_result: dict,
     psi_inv: float,
 ) -> dict[str, float]:
     target = 1.0 / options.covariance_reduction
     steps = ref_traj.steps
 
-    open_loop_magnitude = np.linalg.norm(solution.open_loop, axis=0)
+    open_loop_magnitude = np.linalg.norm(solution.feedforward, axis=0)
     deterministic_effort = float(np.sum(steps * open_loop_magnitude))
     feedback_effort = float(np.sum(steps * psi_inv * solution.radius))
     total_effort = deterministic_effort + feedback_effort
@@ -1214,10 +1130,8 @@ def compute_diagnostics(
     terminal_normalized = solution.covariances[-1][0:NP, 0:NP] / target
     terminal_eigenvalues = np.linalg.eigvalsh(terminal_normalized)
 
-    unscented_terminal = solution.covariances[-1]
-    linear_terminal = linear_covariances[-1]
-    scale = max(np.max(np.abs(unscented_terminal)), 1e-300)
-    covariance_mismatch = float(np.max(np.abs(unscented_terminal - linear_terminal)) / scale)
+    unscented_terminal_eigval = solution.covariances[-1]
+    scale = max(np.max(np.abs(unscented_terminal_eigval)), 1e-300)
 
     mean_error = float(np.max(np.abs(solution.means[0:NP, -1] - case.xf_state)))
     budget = open_loop_magnitude + psi_inv * solution.radius
@@ -1252,7 +1166,6 @@ def compute_diagnostics(
         "terminal_velocity_std_ms": float(
             np.sqrt(solution.covariances[-1][3, 3]) * normalization.scale[3] * case.velocity_unit * 1e3
         ),
-        "unscented_vs_linear_mismatch": covariance_mismatch,
         # J of Eq. 5.65 re-evaluated from ||S_k|| rather than from the slack
         # sigma_k >= ||S_k||. The two coincide only at convergence, so comparing
         # the Monte Carlo percentile against the raw NLP objective is misleading
@@ -1276,43 +1189,41 @@ def print_summary(
     to_n = case.max_thrust_nd * case.thrust_unit
     lines = [
         "",
-        f"{log_prefix}{'=' * 68}",
-        f"{log_prefix}{case.display_name}  --  covariance steering summary",
-        f"{log_prefix}{'=' * 68}",
-        f"{log_prefix}arcs                      : {diagnostics['n_arcs']:.0f} "
+        f"{'=' * 68}",
+        f"{case.display_name}  --  covariance steering summary",
+        f"{'=' * 68}",
+        f"arcs                      : {diagnostics['n_arcs']:.0f} "
         f"(mesh stride {diagnostics['mesh_stride']:.0f})",
-        f"{log_prefix}IPOPT converged           : {'yes' if diagnostics['converged'] else 'NO'}",
-        f"{log_prefix}max matching defect       : {diagnostics['matching_defect_nd']:.3e} [-]",
-        f"{log_prefix}Psi_3^-1(beta)            : {psi_inv:.6f}",
-        f"{log_prefix}",
-        f"{log_prefix}objective J (Eq. 5.65)    : {diagnostics['total_effort_nd']:.6e} [-]"
+        f"IPOPT converged           : {'yes' if diagnostics['converged'] else 'NO'}",
+        f"max matching defect       : {diagnostics['matching_defect_nd']:.3e} [-]",
+        f"Psi_3^-1(beta)            : {psi_inv:.6f}",
+        f"",
+        f"objective J (Eq. 5.65)    : {diagnostics['total_effort_nd']:.6e} [-]"
         f"   (NLP slack value {diagnostics['objective_nd']:.6e})",
-        f"{log_prefix}  open-loop  T_d          : {diagnostics['deterministic_effort_kg']:.6f} kg",
-        f"{log_prefix}  closed-loop T_s         : {diagnostics['feedback_effort_kg']:.6f} kg",
-        f"{log_prefix}  total                   : {diagnostics['total_effort_kg']:.6f} kg",
-        f"{log_prefix}DIRTRAN nominal fuel      : {diagnostics['dirtran_fuel_kg']:.6f} kg",
-        f"{log_prefix}",
-        f"{log_prefix}max ||S|| + Psi rho       : {diagnostics['max_thrust_budget']:.6f} "
+        f"  open-loop  T_d          : {diagnostics['deterministic_effort_kg']:.6f} kg",
+        f"  closed-loop T_s         : {diagnostics['feedback_effort_kg']:.6f} kg",
+        f"  total                   : {diagnostics['total_effort_kg']:.6f} kg",
+        f"DIRTRAN nominal fuel      : {diagnostics['dirtran_fuel_kg']:.6f} kg",
+        f"",
+        f"max ||S|| + Psi rho       : {diagnostics['max_thrust_budget']:.6f} "
         f"(must be <= 1, i.e. {to_n:.4f} N)",
-        f"{log_prefix}  peak open-loop thrust   : {diagnostics['max_open_loop_n']:.6f} N",
-        f"{log_prefix}  peak feedback margin    : {diagnostics['max_feedback_n']:.6f} N",
-        f"{log_prefix}",
-        f"{log_prefix}terminal mean error       : {diagnostics['terminal_mean_error_nd']:.3e} [-]",
-        f"{log_prefix}terminal cov. max eigval  : {diagnostics['terminal_covariance_max_eigenvalue']:.6f} "
+        f"  peak open-loop thrust   : {diagnostics['max_open_loop_n']:.6f} N",
+        f"  peak feedback margin    : {diagnostics['max_feedback_n']:.6f} N",
+        f"",
+        f"terminal mean error       : {diagnostics['terminal_mean_error_nd']:.3e} [-]",
+        f"terminal cov. max eigval  : {diagnostics['terminal_covariance_max_eigenvalue']:.6f} "
         f"(must be <= 1)",
-        f"{log_prefix}  terminal 1-sigma pos.   : {diagnostics['terminal_position_std_m']:.6e} m",
-        f"{log_prefix}  terminal 1-sigma vel.   : {diagnostics['terminal_velocity_std_ms']:.6e} m/s",
-        f"{log_prefix}unscented vs linear cov.  : {diagnostics['unscented_vs_linear_mismatch']:.3e} relative",
-        f"{log_prefix}",
-        f"{log_prefix}Monte Carlo 95th pct.     : {diagnostics['monte_carlo_percentile_nd']:.6e} [-] "
+        f"  terminal 1-sigma pos.   : {diagnostics['terminal_position_std_m']:.6e} m",
+        f"  terminal 1-sigma vel.   : {diagnostics['terminal_velocity_std_ms']:.6e} m/s",
+        f"Monte Carlo 95th pct.     : {diagnostics['monte_carlo_percentile_nd']:.6e} [-] "
         f"vs predicted {diagnostics['predicted_percentile_nd']:.6e}",
-        f"{log_prefix}Monte Carlo mean          : {diagnostics['monte_carlo_mean_nd']:.6e} [-]",
-        f"{log_prefix}worst-arc P(||T|| > Tmax) : {diagnostics['monte_carlo_max_violation_fraction']:.4f} "
+        f"Monte Carlo mean          : {diagnostics['monte_carlo_mean_nd']:.6e} [-]",
+        f"worst-arc P(||T|| > Tmax) : {diagnostics['monte_carlo_max_violation_fraction']:.4f} "
         f"(must be <= 0.05); worst exceedance "
         f"{diagnostics['monte_carlo_worst_exceedance_n']:+.3e} N",
-        f"{log_prefix}  same, 1e-4 relative tol : "
-        f"{log_prefix}MC terminal max eigval    : {diagnostics['monte_carlo_terminal_max_eigenvalue']:.6f}",
-        f"{log_prefix}{'=' * 68}",
+        f"  same, 1e-4 relative tol : "
+        f"MC terminal max eigval    : {diagnostics['monte_carlo_terminal_max_eigenvalue']:.6f}",
+        f"{'=' * 68}",
     ]
     print("\n".join(lines), flush=True)
 
@@ -1335,134 +1246,599 @@ def standard_deviations_physical(
     return physical * scale[None, :]
 
 
+def _plotting_rollouts(
+    case: TestCase,
+    options: Options,
+    normalization: Normalization,
+    solution: RobustSolution,
+    steps: np.ndarray,
+    count: int = 160,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Plot-only Monte Carlo subset: saturated state histories and applied thrust norms."""
+
+    count = min(max(int(count), 1), options.monte_carlo_samples)
+    generator = np.random.default_rng(options.monte_carlo_seed)
+    # Draw the full initial ensemble before subsetting so these are exactly the
+    # first `count` samples used by `monte_carlo`, despite NumPy's row-major fill.
+    noise = generator.standard_normal((NX, options.monte_carlo_samples))[:, :count]
+    states = solution.means[:, 0:1] + normalization.initial_std[:, None] * noise
+    histories = np.empty((NX, count, steps.size + 1), dtype=float)
+    histories[:, :, 0] = states
+    applied_magnitudes = np.empty((steps.size, count), dtype=float)
+    dynamics = Dynamics(case)
+
+    for k, step in enumerate(steps):
+        deviation = (states[0:NP] - solution.means[0:NP, k : k + 1]) / normalization.scale[0:NP, None]
+        commanded = case.max_thrust_nd * (
+            solution.feedforward[:, k : k + 1] + solution.gains[k] @ deviation
+        )
+        magnitudes = np.linalg.norm(commanded, axis=0)
+        saturation = np.ones_like(magnitudes)
+        over_limit = magnitudes > case.max_thrust_nd
+        saturation[over_limit] = case.max_thrust_nd / magnitudes[over_limit]
+        applied = commanded * saturation[None, :]
+        applied_magnitudes[k] = np.minimum(magnitudes, case.max_thrust_nd) * case.thrust_unit
+        states, _, _ = dynamics.propagate(
+            states, applied, float(step), options.integrator_substeps
+        )
+        histories[:, :, k + 1] = states
+
+    return histories, applied_magnitudes
+
+
+def _step_plot_data(node_times: np.ndarray, values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Expand zero-order-hold arc values so the trace reaches the final node."""
+
+    return np.repeat(node_times, 2)[1:-1], np.repeat(np.asarray(values), 2, axis=0)
+
+
+def _projection_magnification(solution: RobustSolution, normalization: Normalization) -> float:
+    """Common visual magnification that makes the small dispersions legible."""
+
+    path_span = float(np.max(np.ptp(solution.means[0:3], axis=1)))
+    position_scale = normalization.scale[0:3]
+    largest_sigma = 0.0
+    for covariance in solution.covariances:
+        physical = covariance[0:3, 0:3] * np.outer(position_scale, position_scale)
+        largest_sigma = max(
+            largest_sigma,
+            float(np.sqrt(max(np.linalg.eigvalsh(physical)[-1], 0.0))),
+        )
+    if path_span <= 0.0 or largest_sigma <= 0.0:
+        return 1.0
+    # Make the largest three-sigma cross-section about 3.5 % of the transfer span.
+    return float(np.clip(0.035 * path_span / (3.0 * largest_sigma), 1.0, 1e6))
+
+
+def _thrust_deviation_magnification(feedback_n: np.ndarray, maximum_thrust_n: float) -> float:
+    """Scale the largest predicted thrust deviation to 3.5 % of the plotting range."""
+
+    finite_deviations = np.abs(np.asarray(feedback_n, dtype=float))
+    finite_deviations = finite_deviations[np.isfinite(finite_deviations)]
+    largest_deviation = float(np.max(finite_deviations)) if finite_deviations.size else 0.0
+    if largest_deviation <= np.finfo(float).eps or maximum_thrust_n <= 0.0:
+        return 1.0
+    return float(np.clip(0.035 * maximum_thrust_n / largest_deviation, 1.0, 1e4))
+
+
+def _magnification_label(magnification: float) -> str:
+    """Compact, explicit legend text such as ``x10`` or ``x2.5e+03``."""
+
+    rounded = round(magnification)
+    if np.isclose(magnification, rounded, rtol=5e-3, atol=5e-3):
+        return f"x{rounded:d}"
+    if magnification >= 1e3:
+        return f"x{magnification:.2e}"
+    return f"x{magnification:.1f}"
+
+
+def _gaussian_density(values: np.ndarray, mean: float, variance: float) -> np.ndarray:
+    standard_deviation = np.sqrt(max(float(variance), np.finfo(float).tiny))
+    normalized = (values - mean) / standard_deviation
+    return np.exp(-0.5 * normalized**2) / (np.sqrt(2.0 * np.pi) * standard_deviation)
+
+
+def _plot_terminal_distribution(
+    case: TestCase,
+    options: Options,
+    solution: RobustSolution,
+    normalization: Normalization,
+    monte_carlo_result: dict,
+    plotter: Plotter,
+    output_prefix: Path,
+) -> None:
+    """Six-state terminal corner plot: samples, predicted, fitted and target Gaussians."""
+
+    units = np.array(
+        [case.length_unit * 1e3] * 3
+        + [case.velocity_unit * 1e3] * 3,
+        dtype=float,
+    )
+    physical_scale = normalization.scale[:NP] * units
+    samples = monte_carlo_result["terminal_deviation"][0:NP].T * physical_scale[None, :]
+    predicted_covariance = solution.covariances[-1][0:NP, 0:NP] * np.outer(
+        physical_scale, physical_scale
+    )
+    sample_mean = np.mean(samples, axis=0)
+    sample_covariance = np.cov(samples, rowvar=False)
+    target_covariance = (1.0 / options.covariance_reduction) * np.diag(physical_scale**2)
+    labels = (
+        r"$x$ [m]",
+        r"$y$ [m]",
+        r"$z$ [m]",
+        r"$\dot{x}$ [m/s]",
+        r"$\dot{y}$ [m/s]",
+        r"$\dot{z}$ [m/s]",
+    )
+
+    limits: list[tuple[float, float]] = []
+    for index in range(NP):
+        standard_deviations = [
+            np.sqrt(max(predicted_covariance[index, index], 0.0)),
+            np.sqrt(max(sample_covariance[index, index], 0.0)),
+            np.sqrt(target_covariance[index, index]),
+        ]
+        radius = max(
+            abs(float(np.percentile(samples[:, index], 0.1))),
+            abs(float(np.percentile(samples[:, index], 99.9))),
+            abs(float(sample_mean[index])) + 3.5 * max(standard_deviations),
+            3.5 * max(standard_deviations),
+        )
+        limits.append((-max(radius, np.finfo(float).eps), max(radius, np.finfo(float).eps)))
+
+    figure, axes = plt.subplots(
+        NP,
+        NP,
+        figsize=(12.0, 12.0),
+        dpi=Plotter.FIGURE_DPI,
+        gridspec_kw={"width_ratios": [1.0] * NP, "height_ratios": [1.0] * NP},
+    )
+    legend_handles = None
+    for row in range(NP):
+        for column in range(NP):
+            axis = axes[row, column]
+            if column > row:
+                axis.set_visible(False)
+                continue
+
+            axis.set_box_aspect(1.0)
+            plotter._style_2d_axis(
+                axis,
+                grid=True,
+                grid_which="major",
+                tick_size=7.0,
+                label_size=9.0,
+            )
+            axis.tick_params(axis="both", which="major", pad=2.0)
+            axis.xaxis.set_major_locator(LinearLocator(3))
+            axis.xaxis.set_major_formatter(FormatStrFormatter("%.1e"))
+            axis.yaxis.set_major_locator(LinearLocator(3))
+            axis.yaxis.set_major_formatter(FormatStrFormatter("%.1e"))
+
+            if row == column:
+                histogram = axis.hist(
+                    samples[:, row],
+                    bins=20,
+                    density=True,
+                    color=Plotter.GREY,
+                    alpha=0.48,
+                    edgecolor=Plotter.BLACK,
+                    linewidth=0.25,
+                    label="Samples",
+                )
+                domain = np.linspace(*limits[row], 320)
+                predicted_line, = axis.plot(
+                    domain,
+                    _gaussian_density(domain, 0.0, predicted_covariance[row, row]),
+                    color=Plotter.RED,
+                    lw=1.1,
+                    label="Predicted distribution",
+                )
+                sample_line, = axis.plot(
+                    domain,
+                    _gaussian_density(domain, sample_mean[row], sample_covariance[row, row]),
+                    color=Plotter.BLUE,
+                    lw=0.95,
+                    ls="--",
+                    label="Sample distribution",
+                )
+                target_line, = axis.plot(
+                    domain,
+                    _gaussian_density(domain, 0.0, target_covariance[row, row]),
+                    color=Plotter.GREEN,
+                    lw=0.95,
+                    label="Target distribution",
+                )
+                axis.set_xlim(limits[row])
+                axis.set_yticks([])
+                if row == 0:
+                    legend_handles = [histogram[2][0], predicted_line, sample_line, target_line]
+            else:
+                axis.scatter(
+                    samples[:, column],
+                    samples[:, row],
+                    s=1.0,
+                    color=Plotter.GREY,
+                    alpha=0.12,
+                    linewidths=0.0,
+                    rasterized=True,
+                )
+                pairs = (
+                    (predicted_covariance, np.zeros(NP), Plotter.RED, "-"),
+                    (sample_covariance, sample_mean, Plotter.BLUE, "--"),
+                    (target_covariance, np.zeros(NP), Plotter.GREEN, "-"),
+                )
+                indices = [column, row]
+                for covariance, center, color, linestyle in pairs:
+                    points = _ellipse_points(covariance[np.ix_(indices, indices)], 3.0)
+                    axis.plot(
+                        center[column] + points[0],
+                        center[row] + points[1],
+                        color=color,
+                        ls=linestyle,
+                        lw=0.95,
+                    )
+                axis.set_xlim(limits[column])
+                axis.set_ylim(limits[row])
+
+            if column == 0:
+                axis.set_ylabel(labels[row], fontsize=9.0)
+            if row == NP - 1:
+                axis.set_xlabel(labels[column], fontsize=9.0)
+            if column > 0:
+                axis.tick_params(labelleft=False)
+            if row < NP - 1:
+                axis.tick_params(labelbottom=False)
+
+    if legend_handles is not None:
+        figure.legend(
+            legend_handles,
+            ("Samples", "Predicted distribution", "Sample distribution", "Target distribution"),
+            loc="upper right",
+            bbox_to_anchor=(0.99, 0.99),
+            frameon=True,
+            fancybox=False,
+            edgecolor=Plotter.BLACK,
+            facecolor="white",
+            framealpha=1.0,
+            fontsize=8.5,
+        )
+    figure.subplots_adjust(left=0.085, right=0.985, bottom=0.075, top=0.94, wspace=0.24, hspace=0.24)
+    figure.savefig(
+        output_prefix.parent / f"{output_prefix.name}_terminal_distribution.png",
+        dpi=Plotter.FIGURE_DPI,
+        bbox_inches="tight",
+    )
+    plt.close(figure)
+
+
 def plot_outputs(
     case: TestCase,
     options: Options,
     ref_traj: ReferenceTraj,
-    solution: SteeringSolution,
+    solution: RobustSolution,
     normalization: Normalization,
     monte_carlo_result: dict,
     psi_inv: float,
     output_prefix: Path,
 ) -> None:
     node_days = ref_traj.node_times * case.time_unit / 86400.0
-    arc_days = node_days[:-1]
     target = 1.0 / options.covariance_reduction
     sigma_physical = standard_deviations_physical(case, normalization, solution.covariances)
     target_sigma = standard_deviations_physical(
         case, normalization, (target * np.eye(NX))[None, :, :]
     )[0]
-
-    # 1 - dispersion envelopes.
-    figure, axes = plt.subplots(1, 3, figsize=Plotter.THREE_PANEL_FIGSIZE, dpi=Plotter.FIGURE_DPI)
-    panels = (
-        (slice(0, 3), r"position $1\sigma$ [m]", ("x", "y", "z")),
-        (slice(3, 6), r"velocity $1\sigma$ [m/s]", (r"$\dot{x}$", r"$\dot{y}$", r"$\dot{z}$")),
-        (slice(6, 7), r"mass $1\sigma$ [kg]", ("m",)),
+    plotter = Plotter(output_prefix)
+    rollout_history, rollout_thrust_n = _plotting_rollouts(
+        case, options, normalization, solution, ref_traj.steps
     )
-    for axis, (columns, label, names) in zip(axes, panels):
-        for offset, name in enumerate(names):
-            axis.semilogy(node_days, sigma_physical[:, columns][:, offset], lw=1.0, label=name)
+
+    # 1 - dispersion evolution, with equal square panels and the deterministic legend style.
+    figure, axes = plt.subplots(
+        1,
+        3,
+        figsize=Plotter.THREE_PANEL_FIGSIZE,
+        dpi=Plotter.FIGURE_DPI,
+        gridspec_kw={"width_ratios": (1.0, 1.0, 1.0)},
+    )
+    panels = (
+        (slice(0, 3), r"$\sigma$ [m]", (r"$x$", r"$y$", r"$z$"), (Plotter.BLUE, Plotter.RED, Plotter.GREY)),
+        (
+            slice(3, 6),
+            r"$\sigma$ [m/s]",
+            (r"$\dot{x}$", r"$\dot{y}$", r"$\dot{z}$"),
+            (Plotter.BLUE, Plotter.RED, Plotter.GREY),
+        ),
+        (slice(6, 7), r"$\sigma$ [kg]", (r"$m$",), (Plotter.GREY,)),
+    )
+    for axis, (columns, label, names, colors) in zip(axes, panels):
+        axis.set_box_aspect(1.0)
+        for offset, (name, color) in enumerate(zip(names, colors)):
+            values = np.maximum(sigma_physical[:, columns][:, offset], 1e-16)
+            axis.semilogy(
+                node_days,
+                values,
+                lw=Plotter.REFERENCE_LINE_WIDTH,
+                color=color,
+                label=name,
+            )
         if columns.start < NP:
-            axis.axhline(target_sigma[columns.start], color=Plotter.RED, ls="--", lw=0.8, label="target")
+            axis.axhline(
+                target_sigma[columns.start],
+                color=Plotter.BLACK,
+                ls="--",
+                lw=Plotter.GUIDE_LINE_WIDTH,
+                label="Target",
+            )
         axis.set_xlabel("time [days]")
         axis.set_ylabel(label)
-        axis.legend(fontsize=6, frameon=False)
-        axis.grid(True, which="both", alpha=0.25, lw=0.4)
+        plotter._style_2d_axis(
+            axis,
+            grid=True,
+            grid_which="both",
+            tick_size=Plotter.VERIFICATION_TICK_SIZE,
+            label_size=Plotter.VERIFICATION_LABEL_SIZE,
+        )
+        plotter._legend(
+            axis,
+            loc="best",
+            fontsize=7.0,
+            frameon=True,
+            fancybox=False,
+            edgecolor=Plotter.BLACK,
+            facecolor="white",
+            framealpha=1.0,
+            borderpad=0.28,
+            handlelength=1.4,
+        )
+    figure.align_ylabels(axes)
     figure.tight_layout()
-    figure.savefig(output_prefix.parent / f"{output_prefix.name}_dispersion.png",
-                   dpi=Plotter.FIGURE_DPI, bbox_inches="tight")
+    figure.savefig(
+        output_prefix.parent / f"{output_prefix.name}_dispersion_evolution.png",
+        dpi=Plotter.FIGURE_DPI,
+        bbox_inches="tight",
+    )
     plt.close(figure)
 
-    # 2 - thrust budget: open loop, feedback allowance and their sum against T_max.
-    open_loop_n = np.linalg.norm(solution.open_loop, axis=0) * case.max_thrust_nd * case.thrust_unit
+    # 2 - thrust magnitude, Monte Carlo values and covariance-predicted envelope.
+    nominal_thrust_n = np.linalg.norm(solution.feedforward, axis=0) * case.max_thrust_nd * case.thrust_unit
     feedback_n = psi_inv * solution.radius * case.max_thrust_nd * case.thrust_unit
-    # Two panels: the closed-loop allowance is ~1e-4 N against a 0.5 N budget, so
-    # it is invisible next to the open-loop term on a shared linear axis.
+    lower_bound_n = np.maximum(nominal_thrust_n - feedback_n, 0.0)
+    upper_bound_n = nominal_thrust_n + feedback_n
+    thrust_magnification = _thrust_deviation_magnification(feedback_n, case.max_thrust_n)
+    thrust_scale_label = _magnification_label(thrust_magnification)
+    displayed_lower_n = nominal_thrust_n + thrust_magnification * (
+        lower_bound_n - nominal_thrust_n
+    )
+    displayed_upper_n = nominal_thrust_n + thrust_magnification * (
+        upper_bound_n - nominal_thrust_n
+    )
+    displayed_rollout_n = nominal_thrust_n[:, None] + thrust_magnification * (
+        rollout_thrust_n - nominal_thrust_n[:, None]
+    )
+    step_days, nominal_step = _step_plot_data(node_days, nominal_thrust_n)
+    _, lower_step = _step_plot_data(node_days, displayed_lower_n)
+    _, upper_step = _step_plot_data(node_days, displayed_upper_n)
+    _, rollout_step = _step_plot_data(node_days, displayed_rollout_n)
+
     figure, axes = plt.subplots(1, 2, figsize=Plotter.WIDE_FIGSIZE, dpi=Plotter.FIGURE_DPI)
     axis = axes[0]
-    axis.step(arc_days, open_loop_n + feedback_n, where="post", lw=1.1, color=Plotter.RED, label="total")
-    axis.step(arc_days, open_loop_n, where="post", lw=0.9, ls="--", color=Plotter.BLACK,
-              label=r"$\|S_k\|$")
-    axis.axhline(case.max_thrust_n, color=Plotter.GREY, ls="--", lw=0.9, label=r"$T_{\max}$")
+    rollout_lines = axis.plot(
+        step_days,
+        rollout_step,
+        color="#4a4a4a",
+        alpha=0.14,
+        lw=0.34,
+        zorder=1,
+    )
+    if rollout_lines:
+        rollout_lines[0].set_label(f"Monte Carlo ({thrust_scale_label})")
+    axis.plot(
+        step_days,
+        lower_step,
+        color=Plotter.BLUE,
+        ls="--",
+        lw=0.62,
+        label=f"Predicted bound ({thrust_scale_label})",
+        zorder=2,
+    )
+    axis.plot(step_days, upper_step, color=Plotter.BLUE, ls="--", lw=0.62, zorder=2)
+    axis.plot(
+        step_days,
+        nominal_step,
+        color=Plotter.BLACK,
+        lw=1.18,
+        label="Thrust magnitude",
+        zorder=4,
+    )
+    axis.axhline(
+        case.max_thrust_n,
+        color=Plotter.RED,
+        ls=":",
+        lw=0.88,
+        label="Maximum thrust",
+    )
     axis.set_xlabel("time [days]")
     axis.set_ylabel("thrust [N]")
-    axis.set_ylim(0.0, 1.08 * case.max_thrust_n)
-    axis.legend(fontsize=6, frameon=False)
-    axis.grid(True, alpha=0.25, lw=0.4)
+    plotted_peak = max(case.max_thrust_n, float(np.max(displayed_upper_n)))
+    axis.set_ylim(0.0, 1.06 * plotted_peak)
+    plotter._style_2d_axis(
+        axis,
+        tick_size=Plotter.DIAGNOSTIC_TICK_SIZE,
+        label_size=Plotter.DIAGNOSTIC_LABEL_SIZE,
+    )
+    plotter._legend(
+        axis,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 1.02),
+        ncol=2,
+        frameon=True,
+        fancybox=False,
+        edgecolor=Plotter.BLACK,
+        facecolor="white",
+        framealpha=1.0,
+        fontsize=6.2,
+        borderaxespad=0.0,
+    )
 
     axis = axes[1]
-    axis.step(arc_days, np.maximum(feedback_n, 1e-16), where="post", lw=0.9, color=Plotter.BLUE)
+    _, feedback_step = _step_plot_data(node_days, np.maximum(feedback_n, 1e-16))
+    axis.plot(
+        step_days,
+        feedback_step,
+        lw=0.95,
+        color=Plotter.BLACK,
+        label="Feedback allowance",
+    )
     axis.set_yscale("log")
     axis.set_xlabel("time [days]")
     axis.set_ylabel(r"$\Psi^{-1}_{n_T}(\beta)\,\rho(\Sigma^T_k)$ [N]")
-    axis.set_title("closed-loop allowance", fontsize=7)
-    axis.grid(True, which="both", alpha=0.25, lw=0.4)
-    figure.tight_layout()
-    figure.savefig(output_prefix.parent / f"{output_prefix.name}_thrust_budget.png",
-                   dpi=Plotter.FIGURE_DPI, bbox_inches="tight")
-    plt.close(figure)
-
-    # 3 - covariance ellipses along the transfer, and the terminal one vs target.
-    figure, axes = plt.subplots(1, 2, figsize=Plotter.TRIPLE_FIGSIZE[0:2], dpi=Plotter.FIGURE_DPI)
-    axis = axes[0]
-    axis.plot(solution.means[0], solution.means[1], color=Plotter.BLACK, lw=0.9, label="mean")
-    stride = max(solution.covariances.shape[0] // 25, 1)
-    length_scale = case.length_unit
-    for k in range(0, solution.covariances.shape[0], stride):
-        block = solution.covariances[k][0:2, 0:2] * np.outer(normalization.scale[0:2], normalization.scale[0:2])
-        points = _ellipse_points(block, 3.0)
-        axis.plot(solution.means[0, k] + points[0], solution.means[1, k] + points[1],
-                  color=Plotter.BLUE, lw=0.5, alpha=0.7)
-    axis.set_xlabel("x [-]")
-    axis.set_ylabel("y [-]")
-    axis.set_title(r"$3\sigma$ ellipses (xy)", fontsize=8)
-    axis.grid(True, alpha=0.25, lw=0.4)
-
-    axis = axes[1]
-    terminal = solution.covariances[-1][0:2, 0:2] * np.outer(normalization.scale[0:2], normalization.scale[0:2])
-    target_block = target * np.eye(2) * np.outer(normalization.scale[0:2], normalization.scale[0:2])
-    for block, colour, label in ((terminal, Plotter.BLUE, "achieved"), (target_block, Plotter.RED, "target")):
-        points = _ellipse_points(block, 3.0) * length_scale * 1e3
-        axis.plot(points[0], points[1], color=colour, lw=1.0, label=label)
-    scatter = monte_carlo_result["terminal_deviation"][0:2] * normalization.scale[0:2, None] * length_scale * 1e3
-    axis.scatter(scatter[0], scatter[1], s=1.0, color=Plotter.GREY, alpha=0.35, label="Monte Carlo")
-    axis.set_xlabel("x [m]")
-    axis.set_ylabel("y [m]")
-    axis.set_title(r"terminal $3\sigma$", fontsize=8)
-    axis.legend(fontsize=6, frameon=False)
-    axis.grid(True, alpha=0.25, lw=0.4)
-    axis.set_aspect("equal", adjustable="datalim")
-    figure.tight_layout()
-    figure.savefig(output_prefix.parent / f"{output_prefix.name}_ellipses.png",
-                   dpi=Plotter.FIGURE_DPI, bbox_inches="tight")
-    plt.close(figure)
-
-    # 4 - Monte Carlo cost distribution against the optimised percentile.
-    to_kg = case.m0_wet / case.exhaust_velocity_nd
-    figure, axis = plt.subplots(figsize=Plotter.SQUARE_DIAGNOSTIC_FIGSIZE, dpi=Plotter.FIGURE_DPI)
-    axis.hist(monte_carlo_result["cumulative"] * to_kg, bins=60, color=Plotter.GREY, alpha=0.75)
-    axis.axvline(monte_carlo_result["percentile"] * to_kg, color=Plotter.BLUE, lw=1.1,
-                 label="Monte Carlo 95th pct.")
-    # Eq. 5.65 recomputed from ||S_k||, not the raw NLP objective: the latter is
-    # built on the slack sigma_k >= ||S_k||, which only coincides with ||S_k|| at
-    # full convergence and otherwise plots a bound that is not one.
-    predicted = float(
-        np.sum(
-            ref_traj.steps
-            * (np.linalg.norm(solution.open_loop, axis=0) + psi_inv * solution.radius)
-        )
+    plotter._style_2d_axis(
+        axis,
+        grid=True,
+        grid_which="both",
+        tick_size=Plotter.DIAGNOSTIC_TICK_SIZE,
+        label_size=Plotter.DIAGNOSTIC_LABEL_SIZE,
     )
-    axis.axvline(predicted * case.max_thrust_nd * to_kg, color=Plotter.RED, ls="--", lw=1.1,
-                 label=r"optimised bound (Eq. 5.65)")
-    axis.set_xlabel("propellant [kg]")
-    axis.set_ylabel("samples")
-    axis.legend(fontsize=7, frameon=False)
-    axis.grid(True, alpha=0.25, lw=0.4)
+    plotter._legend(
+        axis,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 1.02),
+        frameon=True,
+        fancybox=False,
+        edgecolor=Plotter.BLACK,
+        facecolor="white",
+        framealpha=1.0,
+        fontsize=6.2,
+        borderaxespad=0.0,
+    )
     figure.tight_layout()
-    figure.savefig(output_prefix.parent / f"{output_prefix.name}_monte_carlo.png",
-                   dpi=Plotter.FIGURE_DPI, bbox_inches="tight")
+    figure.savefig(
+        output_prefix.parent / f"{output_prefix.name}_thrust_budget.png",
+        dpi=Plotter.FIGURE_DPI,
+        bbox_inches="tight",
+    )
     plt.close(figure)
+
+    # 3 - deterministic-style transfer projections with scaled uncertainty layers.
+    axes_to_plot = plotter._projection_axes_for_case(case)
+    if len(axes_to_plot) == 1:
+        figure, axis = plt.subplots(figsize=Plotter.SINGLE_FIGSIZE, dpi=Plotter.FIGURE_DPI)
+        projection_axes = [axis]
+    else:
+        figure, axes = plt.subplots(
+            1, len(axes_to_plot), figsize=Plotter.TRIPLE_FIGSIZE, dpi=Plotter.FIGURE_DPI
+        )
+        projection_axes = list(np.atleast_1d(axes))
+
+    lagrange = deterministic_cr3bp.get_collinear_lagrange_points(case)
+    departure_orbit = None
+    target_orbit = None
+    if case.departure_period_nd is not None:
+        departure_orbit = deterministic_cr3bp.propagate_periodic_orbit(
+            case, case.x0_augmented_state, case.departure_period_nd
+        )
+    if case.target_period_nd is not None:
+        target_orbit = deterministic_cr3bp.propagate_periodic_orbit(
+            case, case.xf_augmented_state, case.target_period_nd
+        )
+
+    magnification = _projection_magnification(solution, normalization)
+    projection_scale_label = _magnification_label(magnification)
+    covariance_stride = max(solution.covariances.shape[0] // 24, 1)
+    covariance_nodes = list(range(0, solution.covariances.shape[0], covariance_stride))
+    if covariance_nodes[-1] != solution.covariances.shape[0] - 1:
+        covariance_nodes.append(solution.covariances.shape[0] - 1)
+    control_nd = case.max_thrust_nd * solution.feedforward
+
+    for projection_index, (axis, (axis_0, axis_1)) in enumerate(zip(projection_axes, axes_to_plot)):
+        plotter._plot_projection(
+            axis,
+            case,
+            solution.means,
+            control_nd,
+            departure_orbit,
+            target_orbit,
+            lagrange,
+            axis_0,
+            axis_1,
+        )
+        displayed_0 = solution.means[axis_0, None, :] + magnification * (
+            rollout_history[axis_0] - solution.means[axis_0, None, :]
+        )
+        displayed_1 = solution.means[axis_1, None, :] + magnification * (
+            rollout_history[axis_1] - solution.means[axis_1, None, :]
+        )
+        rollout_lines = axis.plot(
+            displayed_0.T,
+            displayed_1.T,
+            color="#4a4a4a",
+            alpha=0.14,
+            lw=0.28,
+            zorder=1,
+        )
+        if projection_index == 0 and rollout_lines:
+            rollout_lines[0].set_label(f"Monte Carlo ({projection_scale_label})")
+
+        indices = [axis_0, axis_1]
+        physical_scale = normalization.scale[indices]
+        for covariance_index, node in enumerate(covariance_nodes):
+            block = solution.covariances[node][np.ix_(indices, indices)]
+            block = block * np.outer(physical_scale, physical_scale)
+            points = magnification * _ellipse_points(block, 3.0)
+            axis.plot(
+                solution.means[axis_0, node] + points[0],
+                solution.means[axis_1, node] + points[1],
+                color="#005b73",
+                lw=0.62,
+                alpha=0.90,
+                zorder=2,
+                label=f"Predicted covariance ({projection_scale_label})"
+                if projection_index == 0 and covariance_index == 0
+                else "_nolegend_",
+            )
+
+    is_single_projection = len(axes_to_plot) == 1
+    plotter._figure_legend(
+        figure,
+        projection_axes,
+        ncol=4,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 0.90 if is_single_projection else 0.995),
+        frameon=True,
+        fancybox=False,
+        edgecolor=Plotter.BLACK,
+        facecolor="white",
+        framealpha=1.0,
+        fontsize=6.7,
+        columnspacing=0.85,
+        handlelength=1.5,
+        borderpad=0.30,
+    )
+    figure.tight_layout(rect=(0.0, 0.0, 1.0, 0.70 if is_single_projection else 0.80))
+    figure.savefig(
+        output_prefix.parent / f"{output_prefix.name}_projections.png",
+        dpi=Plotter.FIGURE_DPI,
+        bbox_inches="tight",
+    )
+    plt.close(figure)
+
+    # 4 - six-dimensional terminal position-velocity distribution matrix.
+    _plot_terminal_distribution(
+        case,
+        options,
+        solution,
+        normalization,
+        monte_carlo_result,
+        plotter,
+        output_prefix,
+    )
+
+    # Remove superseded products only after all replacement figures were written.
+    for obsolete_suffix in ("dispersion", "ellipses", "monte_carlo"):
+        obsolete = output_prefix.parent / f"{output_prefix.name}_{obsolete_suffix}.png"
+        if obsolete.exists():
+            obsolete.unlink()
 
 
 def _ellipse_points(block: np.ndarray, scale: float, samples: int = 120) -> np.ndarray:
@@ -1477,9 +1853,8 @@ def save_outputs(
     case: TestCase,
     options: Options,
     ref_traj: ReferenceTraj,
-    solution: SteeringSolution,
+    solution: RobustSolution,
     normalization: Normalization,
-    linear_covariances: np.ndarray,
     monte_carlo_result: dict,
     diagnostics: dict[str, float],
     psi_inv: float,
@@ -1500,13 +1875,12 @@ def save_outputs(
         node_days=node_days,
         steps_nd=ref_traj.steps,
         means=solution.means,
-        open_loop_normalized=solution.open_loop,
-        open_loop_n=solution.open_loop * case.max_thrust_nd * case.thrust_unit,
+        open_loop_normalized=solution.feedforward,
+        open_loop_n=solution.feedforward * case.max_thrust_nd * case.thrust_unit,
         gains_normalized=solution.gains,
         gains=physical_gains,
         radius_normalized=solution.radius,
         covariance_normalized=solution.covariances,
-        covariance_linear_check=linear_covariances,
         control_covariance_normalized=solution.control_covariances,
         sigma_physical=sigma_physical,
         normalization_scale_nd=normalization.scale,
@@ -1519,14 +1893,14 @@ def save_outputs(
         diagnostics=np.array(diagnostics, dtype=object),
     )
 
-    open_loop_n = np.linalg.norm(solution.open_loop, axis=0) * case.max_thrust_nd * case.thrust_unit
+    open_loop_n = np.linalg.norm(solution.feedforward, axis=0) * case.max_thrust_nd * case.thrust_unit
     feedback_n = psi_inv * solution.radius * case.max_thrust_nd * case.thrust_unit
     table = np.column_stack(
         [
             node_days[:-1],
             ref_traj.steps,
             solution.means[:, :-1].T,
-            solution.open_loop.T * case.max_thrust_nd * case.thrust_unit,
+            solution.feedforward.T * case.max_thrust_nd * case.thrust_unit,
             open_loop_n,
             feedback_n,
             open_loop_n + feedback_n,
@@ -1567,12 +1941,9 @@ def run_test_case(test_case_id: str, options: Options | None = None) -> dict[str
     normalization = build_normalization(case)
     dynamics = Dynamics(case)
 
-    print(f"{log_prefix}Building {ref_traj.n_arcs} arc functions "
-          f"({options.integrator_substeps} RK4 substeps each)", flush=True)
     arc_functions = _build_arc_functions(case, options, dynamics, normalization, ref_traj)
 
-    print(f"{log_prefix}Building the initial guess", flush=True)
-    guess = build_initial_guess(
+    initial_guess = build_initial_guess(
         case,
         options,
         dynamics,
@@ -1582,17 +1953,12 @@ def run_test_case(test_case_id: str, options: Options | None = None) -> dict[str
         psi_inv,
     )
 
-    solution = solve_steering_problem(
-        case, options, ref_traj, arc_functions, guess, normalization, psi_inv, log_prefix
+    solution = solve_rocp(
+        case, options, ref_traj, arc_functions, initial_guess, normalization, psi_inv
     )
 
-    print(f"{log_prefix}Cross-checking the covariance against linear propagation", flush=True)
-    linear_covariances = linear_covariance_check(
-        case, options, dynamics, normalization, solution, ref_traj.steps
-    )
 
-    print(f"{log_prefix}Running {options.monte_carlo_samples} Monte Carlo samples", flush=True)
-    monte_carlo_result = monte_carlo(case, options, dynamics, normalization, solution, ref_traj.steps)
+    monte_carlo_result = monte_carlo_rollouts(case, options, dynamics, normalization, solution, ref_traj.steps)
 
     diagnostics = compute_diagnostics(
         case,
@@ -1600,7 +1966,6 @@ def run_test_case(test_case_id: str, options: Options | None = None) -> dict[str
         ref_traj,
         solution,
         normalization,
-        linear_covariances,
         monte_carlo_result,
         psi_inv,
     )
@@ -1608,72 +1973,8 @@ def run_test_case(test_case_id: str, options: Options | None = None) -> dict[str
 
     output_prefix = OUTPUT_DIR / case.test_case_id
     save_outputs(
-        case, options, ref_traj, solution, normalization, linear_covariances,
+        case, options, ref_traj, solution, normalization,
         monte_carlo_result, diagnostics, psi_inv, output_prefix,
-    )
-    print(f"{log_prefix}Wrote {output_prefix.with_suffix('.npz')} and companions", flush=True)
-    return diagnostics
-
-
-def regenerate_outputs(test_case_id: str, options: Options | None = None) -> dict[str, float]:
-    """Rebuild the summary, plots and archives from a saved solution.
-
-    Re-runs only the post-processing -- the Monte Carlo, the linear covariance
-    cross-check, the diagnostics and the figures -- reading the converged
-    trajectory back from the `.npz`. Useful when a reporting or plotting defect is
-    found after a long solve, since it avoids repeating the solve itself.
-    """
-
-    options = options or Options()
-    case = CASE_REGISTRY[test_case_id]()
-    log_prefix = f"[{test_case_id}] "
-    psi_inv = psi_inverse(NU, options.violation_parameter)
-
-    archive = np.load(OUTPUT_DIR / f"{case.test_case_id}.npz", allow_pickle=True)
-    stored = dict(archive["diagnostics"].item())
-    ref_traj = load_ref_traj(case, options)
-    normalization = build_normalization(case)
-    dynamics = Dynamics(case)
-
-    if archive["steps_nd"].size != ref_traj.n_arcs:
-        raise ValueError(
-            f"Saved solution has {archive['steps_nd'].size} arcs but the current "
-            f"mesh_stride={options.mesh_stride} gives {ref_traj.n_arcs}."
-        )
-
-    solution = SteeringSolution(
-        means=np.asarray(archive["means"], dtype=float),
-        open_loop=np.asarray(archive["open_loop_normalized"], dtype=float),
-        gains=np.asarray(archive["gains_normalized"], dtype=float),
-        radius=np.asarray(archive["radius_normalized"], dtype=float),
-        covariances=np.asarray(archive["covariance_normalized"], dtype=float),
-        control_covariances=np.asarray(archive["control_covariance_normalized"], dtype=float),
-        objective=float(stored["objective_nd"]),
-        diagnostics={
-            "converged": float(stored["converged"]),
-            "matching_defect_nd": float(stored["matching_defect_nd"]),
-        },
-    )
-
-    print(f"{log_prefix}Regenerating outputs from the saved solution", flush=True)
-    linear_covariances = linear_covariance_check(
-        case, options, dynamics, normalization, solution, ref_traj.steps
-    )
-    monte_carlo_result = monte_carlo(case, options, dynamics, normalization, solution, ref_traj.steps)
-    diagnostics = compute_diagnostics(
-        case,
-        options,
-        ref_traj,
-        solution,
-        normalization,
-        linear_covariances,
-        monte_carlo_result,
-        psi_inv,
-    )
-    print_summary(case, diagnostics, psi_inv, log_prefix)
-    save_outputs(
-        case, options, ref_traj, solution, normalization, linear_covariances,
-        monte_carlo_result, diagnostics, psi_inv, OUTPUT_DIR / case.test_case_id,
     )
     return diagnostics
 
@@ -1685,26 +1986,25 @@ def _build_arc_functions(
     normalization: Normalization,
     ref_traj: ReferenceTraj,
 ) -> list[casadi.Function]:
-    """One arc function per *distinct* duration, reused across arcs.
+    """One arc function is built per distinct duration, reused across arcs.
 
-    The DIRTRAN mesh is refined by bisection, so only a handful of distinct step
+    The deterministic mesh is refined by h-adaptive method, so only a handful of distinct step
     sizes occur; sharing the functions keeps the expression graph small.
     """
 
     cache: dict[float, casadi.Function] = {}
-    functions: list[casadi.Function] = []
-    for k, step in enumerate(ref_traj.steps):
+    arc_functions: list[casadi.Function] = []
+    for step in ref_traj.steps:
         key = float(np.round(step, 14))
         if key not in cache:
-            cache[key] = build_arc_function(case, options, dynamics, normalization, float(step), len(cache))
-        functions.append(cache[key])
-    print(f"    {len(cache)} distinct arc durations across {ref_traj.steps.size} arcs", flush=True)
-    return functions
+            cache[key] = get_arc_function(case, options, dynamics, normalization, float(step), len(cache))
+        arc_functions.append(cache[key])
+    return arc_functions
 
 
 def main() -> None:
     options = Options()
-    for test_case_id in ("lyapunov_l1_to_l2", "halo_l2_to_halo_l1"):
+    for test_case_id in ("halo_l2_to_halo_l1", "lyapunov_l1_to_l2"):
         run_test_case(test_case_id, options)
 
 
