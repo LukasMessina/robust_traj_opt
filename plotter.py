@@ -8,6 +8,7 @@ from typing import Any, Iterable, Mapping
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.ticker import FormatStrFormatter, LinearLocator
 
 
 mpl.rcParams.update(
@@ -33,11 +34,13 @@ class Plotter:
 
     BLACK = "#000000"
     BLUE = "#0088ab"
+    DARK_PURPLE = "#5c0056"
     ORANGE = "#ff7f0e"
     GREEN = "#2ca02c"
     RED = "#d61b1b"
     PURPLE = "#9b6fd3"
     GREY = "#7f7f7f"
+    DARK_GREY = "#333333"
     LIGHT_GREY = "#d9d9d9"
     THREE_D_GRID_COLOR = (0.0, 0.0, 0.0, 0.12)
     THREE_D_GRID_LINE_WIDTH = 0.25
@@ -599,6 +602,445 @@ class Plotter:
         output_path = self._path("verification_errors")
         fig.savefig(output_path, dpi=self.FIGURE_DPI, bbox_inches="tight")
         plt.close(fig)
+        return output_path
+
+    def plot_monte_carlo_rollouts(
+        self,
+        case: Any,
+        options: Any,
+        dynamics: Any,
+        normalization: Any,
+        solution: Any,
+        steps: np.ndarray,
+        count: int = 160,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Generate the saturated Monte Carlo subset used only in figures."""
+
+        count = min(max(int(count), 1), options.monte_carlo_samples)
+        generator = np.random.default_rng(options.monte_carlo_seed)
+        state_dimension = solution.means.shape[0]
+        policy_state_dimension = solution.gains.shape[2]
+        # Draw the full initial ensemble before subsetting so these are exactly
+        # the first `count` samples used by the full Monte Carlo analysis.
+        noise = generator.standard_normal(
+            (state_dimension, options.monte_carlo_samples)
+        )[:, :count]
+        states = (
+            solution.means[:, 0:1]
+            + normalization.initial_std[:, None] * noise
+        )
+        histories = np.empty(
+            (state_dimension, count, steps.size + 1), dtype=float
+        )
+        histories[:, :, 0] = states
+        applied_magnitudes = np.empty((steps.size, count), dtype=float)
+
+        for k, step in enumerate(steps):
+            deviation = (
+                states[0:policy_state_dimension]
+                - solution.means[0:policy_state_dimension, k : k + 1]
+            ) / normalization.scale[0:policy_state_dimension, None]
+            commanded = case.max_thrust_nd * (
+                solution.feedforward[:, k : k + 1]
+                + solution.gains[k] @ deviation
+            )
+            magnitudes = np.linalg.norm(commanded, axis=0)
+            saturation = np.ones_like(magnitudes)
+            over_limit = magnitudes > case.max_thrust_nd
+            saturation[over_limit] = (
+                case.max_thrust_nd / magnitudes[over_limit]
+            )
+            applied = commanded * saturation[None, :]
+            applied_magnitudes[k] = (
+                np.minimum(magnitudes, case.max_thrust_nd) * case.thrust_unit
+            )
+            states, _, _ = dynamics.propagate(
+                states,
+                applied,
+                float(step),
+                options.integrator_substeps,
+            )
+            histories[:, :, k + 1] = states
+
+        return histories, applied_magnitudes
+
+    def plot_zero_order_hold_data(
+        self,
+        node_times: np.ndarray,
+        values: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Expand arc values into a zero-order-hold trace ending at the last node."""
+
+        return (
+            np.repeat(node_times, 2)[1:-1],
+            np.repeat(np.asarray(values), 2, axis=0),
+        )
+
+    def plot_projection_magnification(
+        self,
+        solution: Any,
+        normalization: Any,
+    ) -> float:
+        """Return a common magnification that makes position dispersion legible."""
+
+        path_span = float(np.max(np.ptp(solution.means[0:3], axis=1)))
+        position_scale = normalization.scale[0:3]
+        largest_sigma = 0.0
+        for covariance in solution.covariances:
+            physical = covariance[0:3, 0:3] * np.outer(
+                position_scale, position_scale
+            )
+            largest_sigma = max(
+                largest_sigma,
+                float(
+                    np.sqrt(
+                        max(np.linalg.eigvalsh(physical)[-1], 0.0)
+                    )
+                ),
+            )
+        if path_span <= 0.0 or largest_sigma <= 0.0:
+            return 1.0
+        # Make the largest three-sigma cross-section about 3.5 % of the path span.
+        return float(
+            np.clip(
+                0.035 * path_span / (3.0 * largest_sigma),
+                1.0,
+                1e6,
+            )
+        )
+
+    def plot_thrust_deviation_magnification(
+        self,
+        feedback_n: np.ndarray,
+        maximum_thrust_n: float,
+    ) -> float:
+        """Scale the largest thrust deviation to 3.5 % of the plotting range."""
+
+        finite_deviations = np.abs(np.asarray(feedback_n, dtype=float))
+        finite_deviations = finite_deviations[
+            np.isfinite(finite_deviations)
+        ]
+        largest_deviation = (
+            float(np.max(finite_deviations))
+            if finite_deviations.size
+            else 0.0
+        )
+        if (
+            largest_deviation <= np.finfo(float).eps
+            or maximum_thrust_n <= 0.0
+        ):
+            return 1.0
+        return float(
+            np.clip(
+                0.035 * maximum_thrust_n / largest_deviation,
+                1.0,
+                1e4,
+            )
+        )
+
+    def plot_magnification_label(self, magnification: float) -> str:
+        """Return compact legend text such as ``x10`` or ``x2.5e+03``."""
+
+        rounded = round(magnification)
+        if np.isclose(
+            magnification,
+            rounded,
+            rtol=5e-3,
+            atol=5e-3,
+        ):
+            return f"x{rounded:d}"
+        if magnification >= 1e3:
+            return f"x{magnification:.2e}"
+        return f"x{magnification:.1f}"
+
+    def plot_gaussian_density(
+        self,
+        values: np.ndarray,
+        mean: float,
+        variance: float,
+    ) -> np.ndarray:
+        """Evaluate a univariate Gaussian density with a safe variance floor."""
+
+        standard_deviation = np.sqrt(
+            max(float(variance), np.finfo(float).tiny)
+        )
+        normalized = (values - mean) / standard_deviation
+        return np.exp(-0.5 * normalized**2) / (
+            np.sqrt(2.0 * np.pi) * standard_deviation
+        )
+
+    def plot_covariance_ellipse_points(
+        self,
+        covariance: np.ndarray,
+        sigma_scale: float,
+        samples: int = 120,
+    ) -> np.ndarray:
+        """Return points on a covariance ellipse at the requested sigma scale."""
+
+        eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+        radii = sigma_scale * np.sqrt(
+            np.clip(eigenvalues, 0.0, None)
+        )
+        angles = np.linspace(0.0, 2.0 * np.pi, samples)
+        circle = np.vstack([np.cos(angles), np.sin(angles)])
+        return eigenvectors @ (radii[:, None] * circle)
+
+    def plot_terminal_distribution(
+        self,
+        case: Any,
+        options: Any,
+        solution: Any,
+        normalization: Any,
+        monte_carlo_result: Mapping[str, Any],
+    ) -> Path:
+        """Plot terminal samples and predicted, fitted and target Gaussians."""
+
+        primed_dimension = solution.gains.shape[2]
+        units = np.array(
+            [case.length_unit * 1e3] * 3
+            + [case.velocity_unit * 1e3] * 3,
+            dtype=float,
+        )
+        if primed_dimension != units.size:
+            raise ValueError(
+                "Terminal distribution plotting expects three position and "
+                "three velocity states."
+            )
+        physical_scale = (
+            normalization.scale[:primed_dimension] * units
+        )
+        terminal_deviation = np.asarray(
+            monte_carlo_result["terminal_deviation"], dtype=float
+        )
+        samples = (
+            terminal_deviation[0:primed_dimension].T
+            * physical_scale[None, :]
+        )
+        predicted_covariance = (
+            solution.covariances[-1][
+                0:primed_dimension, 0:primed_dimension
+            ]
+            * np.outer(physical_scale, physical_scale)
+        )
+        sample_mean = np.mean(samples, axis=0)
+        sample_covariance = np.cov(samples, rowvar=False)
+        target_covariance = (
+            (1.0 / options.covariance_reduction)
+            * np.diag(physical_scale**2)
+        )
+        labels = (
+            r"$x$ [m]",
+            r"$y$ [m]",
+            r"$z$ [m]",
+            r"$\dot{x}$ [m/s]",
+            r"$\dot{y}$ [m/s]",
+            r"$\dot{z}$ [m/s]",
+        )
+
+        limits: list[tuple[float, float]] = []
+        for index in range(primed_dimension):
+            standard_deviations = [
+                np.sqrt(
+                    max(predicted_covariance[index, index], 0.0)
+                ),
+                np.sqrt(max(sample_covariance[index, index], 0.0)),
+                np.sqrt(target_covariance[index, index]),
+            ]
+            radius = max(
+                abs(float(np.percentile(samples[:, index], 0.1))),
+                abs(float(np.percentile(samples[:, index], 99.9))),
+                abs(float(sample_mean[index]))
+                + 3.5 * max(standard_deviations),
+                3.5 * max(standard_deviations),
+            )
+            limits.append(
+                (
+                    -max(radius, np.finfo(float).eps),
+                    max(radius, np.finfo(float).eps),
+                )
+            )
+
+        figure, axes = plt.subplots(
+            primed_dimension,
+            primed_dimension,
+            figsize=(12.0, 12.0),
+            dpi=self.FIGURE_DPI,
+            gridspec_kw={
+                "width_ratios": [1.0] * primed_dimension,
+                "height_ratios": [1.0] * primed_dimension,
+            },
+        )
+        legend_handles = None
+        for row in range(primed_dimension):
+            for column in range(primed_dimension):
+                axis = axes[row, column]
+                if column > row:
+                    axis.set_visible(False)
+                    continue
+
+                axis.set_box_aspect(1.0)
+                self._style_2d_axis(
+                    axis,
+                    grid=True,
+                    grid_which="major",
+                    tick_size=7.0,
+                    label_size=9.0,
+                )
+                axis.tick_params(
+                    axis="both", which="major", pad=2.0
+                )
+                axis.xaxis.set_major_locator(LinearLocator(3))
+                axis.xaxis.set_major_formatter(
+                    FormatStrFormatter("%.1e")
+                )
+                axis.yaxis.set_major_locator(LinearLocator(3))
+                axis.yaxis.set_major_formatter(
+                    FormatStrFormatter("%.1e")
+                )
+
+                if row == column:
+                    histogram = axis.hist(
+                        samples[:, row],
+                        bins=20,
+                        density=True,
+                        color=self.GREY,
+                        alpha=0.48,
+                        edgecolor=self.BLACK,
+                        linewidth=0.25,
+                        label="Samples",
+                    )
+                    domain = np.linspace(*limits[row], 320)
+                    predicted_line, = axis.plot(
+                        domain,
+                        self.plot_gaussian_density(
+                            domain,
+                            0.0,
+                            predicted_covariance[row, row],
+                        ),
+                        color=self.RED,
+                        lw=1.1,
+                        label="Predicted distribution",
+                    )
+                    sample_line, = axis.plot(
+                        domain,
+                        self.plot_gaussian_density(
+                            domain,
+                            sample_mean[row],
+                            sample_covariance[row, row],
+                        ),
+                        color=self.BLUE,
+                        lw=0.95,
+                        ls="--",
+                        label="Sample distribution",
+                    )
+                    target_line, = axis.plot(
+                        domain,
+                        self.plot_gaussian_density(
+                            domain,
+                            0.0,
+                            target_covariance[row, row],
+                        ),
+                        color=self.GREEN,
+                        lw=0.95,
+                        label="Target distribution",
+                    )
+                    axis.set_xlim(limits[row])
+                    axis.set_yticks([])
+                    if row == 0:
+                        legend_handles = [
+                            histogram[2][0],
+                            predicted_line,
+                            sample_line,
+                            target_line,
+                        ]
+                else:
+                    axis.scatter(
+                        samples[:, column],
+                        samples[:, row],
+                        s=1.0,
+                        color=self.GREY,
+                        alpha=0.12,
+                        linewidths=0.0,
+                        rasterized=True,
+                    )
+                    pairs = (
+                        (
+                            predicted_covariance,
+                            np.zeros(primed_dimension),
+                            self.RED,
+                            "-",
+                        ),
+                        (
+                            sample_covariance,
+                            sample_mean,
+                            self.BLUE,
+                            "--",
+                        ),
+                        (
+                            target_covariance,
+                            np.zeros(primed_dimension),
+                            self.GREEN,
+                            "-",
+                        ),
+                    )
+                    indices = [column, row]
+                    for covariance, center, color, linestyle in pairs:
+                        points = self.plot_covariance_ellipse_points(
+                            covariance[np.ix_(indices, indices)],
+                            3.0,
+                        )
+                        axis.plot(
+                            center[column] + points[0],
+                            center[row] + points[1],
+                            color=color,
+                            ls=linestyle,
+                            lw=0.95,
+                        )
+                    axis.set_xlim(limits[column])
+                    axis.set_ylim(limits[row])
+
+                if column == 0:
+                    axis.set_ylabel(labels[row], fontsize=9.0)
+                if row == primed_dimension - 1:
+                    axis.set_xlabel(labels[column], fontsize=9.0)
+                if column > 0:
+                    axis.tick_params(labelleft=False)
+                if row < primed_dimension - 1:
+                    axis.tick_params(labelbottom=False)
+
+        if legend_handles is not None:
+            figure.legend(
+                legend_handles,
+                (
+                    "Samples",
+                    "Predicted distribution",
+                    "Sample distribution",
+                    "Target distribution",
+                ),
+                loc="upper right",
+                bbox_to_anchor=(0.99, 0.99),
+                frameon=True,
+                fancybox=False,
+                edgecolor=self.BLACK,
+                facecolor="white",
+                framealpha=1.0,
+                fontsize=10.0,
+            )
+        figure.subplots_adjust(
+            left=0.085,
+            right=0.985,
+            bottom=0.075,
+            top=0.94,
+            wspace=0.24,
+            hspace=0.24,
+        )
+        output_path = self._path("terminal_distribution")
+        figure.savefig(
+            output_path,
+            dpi=self.FIGURE_DPI,
+            bbox_inches="tight",
+        )
+        plt.close(figure)
         return output_path
 
     def plot_interval_defect(
