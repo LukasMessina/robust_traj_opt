@@ -60,12 +60,12 @@ class Options:
     """Solver and transcription settings."""
 
     # Keep every `mesh_stride`-th knot point of the DIRTRAN mesh. 
-    mesh_stride: int = 4
+    mesh_stride: int = 1
     integrator_substeps: int = 4
 
     violation_parameter: float = 0.05   
     # Covariance reduction factor  
-    covariance_reduction: float = 2e4    
+    covariance_reduction: float = 1e4    
     scaling_parameter: float = 0.0
 
     # Floors the covariance at jitter / n_x, which must stay far below the
@@ -89,16 +89,16 @@ class Options:
 
     # IPOPT settings
     max_iter: int = 3000
-    tol: float = 1e-5
+    tol: float = 1e-3
     constr_viol_tol: float = 1e-9
-    dual_inf_tol: float = 1e-5
-    compl_inf_tol: float = 1e-5
+    dual_inf_tol: float = 1e-3
+    compl_inf_tol: float = 1e-3
 
     # Acceptable fallback
-    acceptable_tol: float = 1e-4
+    acceptable_tol: float = 1e-3
     acceptable_constr_viol_tol: float = 1e-8
-    acceptable_dual_inf_tol: float = 1e-4
-    acceptable_compl_inf_tol: float = 1e-4
+    acceptable_dual_inf_tol: float = 1e-3
+    acceptable_compl_inf_tol: float = 1e-3
     acceptable_iter: int = 25
     limited_memory_max_history: int = 25
     print_level: int = 5
@@ -468,7 +468,8 @@ def determinant(matrix, dimension: int):
 
 
 def max_eigval_sym_3by3(matrix, relative_floor: float = 1e-14):
-    """Closed-form largest eigenvalue of a symmetric 3x3 matrix, trigonometric/Cardano closed-form solution.
+    """Closed-form largest eigenvalue of a symmetric 3x3 matrix.
+    Ref: https://dl.acm.org/doi/pdf/10.1145/355578.366316
     
     The closed form is scale-free instead: its
     relative accuracy does not depend on the magnitude of the matrix.
@@ -480,24 +481,20 @@ def max_eigval_sym_3by3(matrix, relative_floor: float = 1e-14):
     generic gain.
     """
 
-    mean = (matrix[0, 0] + matrix[1, 1] + matrix[2, 2]) / 3.0
-    off_diagonal = matrix[0, 1] ** 2 + matrix[0, 2] ** 2 + matrix[1, 2] ** 2
-    deviation = (
-        (matrix[0, 0] - mean) ** 2 + (matrix[1, 1] - mean) ** 2 + (matrix[2, 2] - mean) ** 2
-    )
-    spread = casadi.sqrt(deviation / 6.0 + off_diagonal / 3.0 + (relative_floor * mean) ** 2 + 1e-300)
-    normalized = (matrix - mean * casadi.DM.eye(NU)) / spread
-    argument = determinant(normalized, NU) / 2.0
-    argument = casadi.fmax(casadi.fmin(argument, 1.0 - 1e-12), -1.0 + 1e-12)
-    return mean + 2.0 * spread * casadi.cos(casadi.acos(argument) / 3.0)
+    q = (matrix[0, 0] + matrix[1, 1] + matrix[2, 2]) / 3.0
+    p1 = matrix[0, 1] ** 2 + matrix[0, 2] ** 2 + matrix[1, 2] ** 2
+    p2 = (
+        (matrix[0, 0] - q) ** 2 + (matrix[1, 1] - q) ** 2 + (matrix[2, 2] - q) ** 2
+    ) + 2.0 * p1
+    p = casadi.sqrt(p2 / 6.0 + (relative_floor * q) ** 2 + 1e-300)
+    B = (matrix - q * casadi.DM.eye(NU)) / p
+    r = determinant(B, NU) / 2.0
+    r = casadi.fmax(casadi.fmin(r, 1.0 - 1e-12), -1.0 + 1e-12)
+    return q + 2.0 * p * casadi.cos(casadi.acos(r) / 3.0)
 
 
-def spectral_radius_expression(matrix, floor: float):
+def symbolic_psqrt_spectral_radius(matrix, floor: float):
     """rho(A) = sqrt(lambda_max(A)), floored so the gradient stays bounded at A = 0.
-
-    `sqrt` alone is non-smooth at the origin, which is reached whenever a gain
-    vanishes. With the floor the augm_state_derivatives behaves like `K / floor` as `K -> 0`
-    and therefore tends to zero rather than diverging.
     """
 
     return casadi.sqrt(max_eigval_sym_3by3(matrix) + floor ** 2)
@@ -932,7 +929,7 @@ def solve_rocp(
         opti.subject_to(casadi.dot(feedforward[:, k], feedforward[:, k]) <= slack[0, k] ** 2)
 
         # rho(SigmaT_k) in closed form 
-        radius = spectral_radius_expression(control_covariance, options.spectral_radius_floor)
+        radius = symbolic_psqrt_spectral_radius(control_covariance, options.spectral_radius_floor)
 
         # Transcription of the control chance constraint
         opti.subject_to(slack[0, k] + psi_inv * radius <= 1.0)
