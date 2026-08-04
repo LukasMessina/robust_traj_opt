@@ -72,8 +72,7 @@ class Options:
     # round-off leaves behind once the steering contracts a direction.
     cholesky_jitter: float = 1e-11
     spectral_radius_floor: float = 1e-9
-    # Box bound on the normalised gains. 
-    gain_bound: float = 1e3
+
     # Lower bound on the diagonal of the terminal margin's Cholesky factor. The
     # map G -> G G^T is a diffeomorphism only where diag(G) > 0; at diag(G) = 0 its
     # Jacobian drops rank, so LICQ fails exactly when the terminal covariance
