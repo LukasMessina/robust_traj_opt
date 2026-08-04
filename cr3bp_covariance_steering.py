@@ -59,7 +59,7 @@ class Options:
     """Solver and transcription settings."""
 
     # Keep every `mesh_stride`-th knot point of the DIRTRAN mesh. 
-    mesh_stride: int = 1
+    mesh_stride: int = 4
     integrator_substeps: int = 4
 
     violation_parameter: float = 0.05   
@@ -1356,7 +1356,8 @@ def plot_outputs(
         step_days,
         rollout_step,
         color=Plotter.DARK_GREY,
-        lw=0.82,
+        alpha=0.15,
+        lw=0.48,
         zorder=1,
     )
     if rollout_lines:
@@ -1505,7 +1506,8 @@ def plot_outputs(
             displayed_0.T,
             displayed_1.T,
             color=Plotter.DARK_GREY,
-            lw=0.68,
+            alpha=0.15,
+            lw=0.38,
             zorder=1,
         )
         if projection_index == 0 and rollout_lines:
@@ -1522,7 +1524,7 @@ def plot_outputs(
             axis.plot(
                 solution.means[axis_0, node] + points[0],
                 solution.means[axis_1, node] + points[1],
-                color=Plotter.DARK_PURPLE,
+                color=Plotter.RED,
                 lw=0.80,
                 alpha=0.90,
                 zorder=2,
@@ -1692,7 +1694,7 @@ def run_test_case(test_case_id: str, options: Options | None = None) -> dict[str
         monte_carlo_result,
         psi_inv,
     )
-    print_summary(case, diagnostics, psi_inv, log_prefix)
+    print_summary(case, diagnostics, psi_inv)
 
     output_prefix = OUTPUT_DIR / case.test_case_id
     save_outputs(
@@ -1727,7 +1729,7 @@ def _build_arc_functions(
 
 def main() -> None:
     options = Options()
-    for test_case_id in ("halo_l2_to_halo_l1", "lyapunov_l1_to_l2"):
+    for test_case_id in ("lyapunov_l1_to_l2", "halo_l2_to_halo_l1"):
         run_test_case(test_case_id, options)
 
 
