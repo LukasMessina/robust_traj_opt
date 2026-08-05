@@ -676,7 +676,7 @@ class Plotter:
             np.repeat(np.asarray(values), 2, axis=0),
         )
 
-    def plot_projection_magnification(
+    def get_projection_magnification(
         self,
         solution: Any,
         normalization: Any,
@@ -709,7 +709,7 @@ class Plotter:
             )
         )
 
-    def plot_thrust_deviation_magnification(
+    def get_thrust_deviation_magnification(
         self,
         feedback_n: np.ndarray,
         maximum_thrust_n: float,

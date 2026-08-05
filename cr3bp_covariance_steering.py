@@ -73,30 +73,29 @@ class Options:
     cholesky_jitter: float = 1e-11
     spectral_radius_floor: float = 1e-9
 
-    # Lower bound on the diagonal of the terminal margin's Cholesky factor. The
-    # map G -> G G^T is a diffeomorphism only where diag(G) > 0; at diag(G) = 0 its
-    # Jacobian drops rank, so LICQ fails exactly when the terminal covariance
-    # constraint becomes active -- which is precisely where the optimum sits.
-    # Bounding the diagonal away from zero keeps the constraint Jacobian full rank
-    # at the cost of tightening the requirement.
-    terminal_margin_factor_floor: float = 1e-3
 
     # Target contribution of the cl control effort margin up to a
     # confidence level p after seeding
     cl_control_effort_seed_margin: float = 0.2        
 
+    # Warm-start the feedback gains from the Bryson-rule Riccati recursion. With
+    # this disabled the gains start at zero, the covariance grows open-loop, and
+    # the terminal constraint begins many orders of magnitude violated. Starting
+    # with a zero gain is still recoverable, but consumes a lot of additional iterations.
+    warm_start_gains: bool = False
+
     # IPOPT settings
     max_iter: int = 3000
-    tol: float = 1e-3
+    tol: float = 1e-4
     constr_viol_tol: float = 1e-9
-    dual_inf_tol: float = 1e-3
-    compl_inf_tol: float = 1e-3
+    dual_inf_tol: float = 1e-4
+    compl_inf_tol: float = 1e-4
 
     # Acceptable fallback
-    acceptable_tol: float = 1e-3
+    acceptable_tol: float = 1e-4
     acceptable_constr_viol_tol: float = 1e-8
-    acceptable_dual_inf_tol: float = 1e-3
-    acceptable_compl_inf_tol: float = 1e-3
+    acceptable_dual_inf_tol: float = 1e-4
+    acceptable_compl_inf_tol: float = 1e-4
     acceptable_iter: int = 25
     limited_memory_max_history: int = 25
     print_level: int = 5
@@ -764,23 +763,7 @@ class InitialGuess:
     slack: np.ndarray
     gains: np.ndarray
     radius: np.ndarray
-    terminal_covariance: np.ndarray
     gain_scale: np.ndarray
-
-
-def _initial_margin_factor(terminal_covariance: np.ndarray, target: float) -> np.ndarray:
-    """Cholesky factor of the terminal margin, or its PSD part when infeasible.
-
-    The seed leaves the terminal covariance well above target, so the margin is
-    indefinite and has no Cholesky factor; clipping the negative eigenvalues gives
-    the nearest PSD matrix, which is a serviceable starting value for G.
-    """
-
-    margin = np.eye(NP) - terminal_covariance[0:NP, 0:NP] / target
-    eigenvalues, eigenvectors = np.linalg.eigh(0.5 * (margin + margin.T))
-    clipped = eigenvectors @ np.diag(np.clip(eigenvalues, 1e-12, None)) @ eigenvectors.T
-    factor = np.linalg.cholesky(clipped)
-    return np.array([factor[row, column] for row in range(NP) for column in range(row + 1)])
 
 
 def build_initial_guess(
@@ -818,22 +801,11 @@ def build_initial_guess(
     gain_scale = np.array(
         [1.0 / max(np.linalg.norm(matrix, 2), 1e-300) for matrix in control_matrices]
     )
-    gains, seed_weights = seed_gains(options, state_matrices, control_matrices)
-    _, seeded_covariances, _ = propagate_stochastic_moments(
-        arc_functions, means, feedforward, gains, normalization.initial_covariance
-    )
-    unscented_terminal_eigval = float(
-        np.linalg.eigvalsh(seeded_covariances[-1][0:NP, 0:NP])[-1]
-    )
-
-    log_prefix = f"[{case.test_case_id}] "
-    print(
-        f"\nBryson seed (Q=I, R={seed_weights[0]:.4g}, Qf={seed_weights[1]:.4g}): "
-        f"terminal lambda_max = {unscented_terminal_eigval * options.covariance_reduction:.4f} "
-        f"x target\n",
-        flush=True,
-    )
-
+    if options.warm_start_gains:
+        gains, seed_weights = seed_gains(options, state_matrices, control_matrices)
+    else:
+        gains = np.zeros((ref_traj.n_arcs, NU, NP), dtype=float)
+        seed_weights = None
 
     radius = np.zeros(ref_traj.n_arcs, dtype=float)
     covariances = np.tile(normalization.initial_covariance, (ref_traj.n_arcs + 1, 1, 1))
@@ -859,13 +831,29 @@ def build_initial_guess(
     factor[active] = np.minimum(1.0, headroom[active] / magnitudes[active])
     feedforward = feedforward * factor
 
+
+    seed_target = 1.0 / options.covariance_reduction
+    seed_terminal_covariance = covariances[-1]
+    position_ratio = float(np.linalg.eigvalsh(seed_terminal_covariance[0:3, 0:3])[-1] / seed_target)
+    velocity_ratio = float(np.linalg.eigvalsh(seed_terminal_covariance[3:NP, 3:NP])[-1] / seed_target)
+    origin = (
+        "null initial gains"
+        if seed_weights is None
+        else f"Bryson's rule warm start (Q=I, R={seed_weights[0]:.4g}, Qf={seed_weights[1]:.4g})"
+    )
+    print(
+        f"[{case.test_case_id}] {origin}: terminal blocks pos {position_ratio:.4e} / "
+        f"vel {velocity_ratio:.4e} x target "
+        f"({'feasible' if max(position_ratio, velocity_ratio) <= 1.0 else 'INFEASIBLE start'})",
+        flush=True,
+    )
+
     return InitialGuess(
         means=means,
         feedforward=feedforward,
         slack=np.linalg.norm(feedforward, axis=0),
         gains=gains,
         radius=radius,
-        terminal_covariance=covariances[-1],
         gain_scale=gain_scale,
     )
 
@@ -907,8 +895,6 @@ def solve_rocp(
     feedforward = opti.variable(NU, n_arcs)
     slack = opti.variable(1, n_arcs)
     gains = [opti.variable(NU, NP) for _ in range(n_arcs)]
-    # Cholesky factor of the terminal covariance margin.
-    margin_factor = opti.variable(NP * (NP + 1) // 2)
 
     opti.subject_to(means[:, 0] == case.x0_augmented_state)
     opti.subject_to(casadi.vec(slack) >= 0.0)
@@ -937,21 +923,20 @@ def solve_rocp(
 
     opti.subject_to(means[0:NP, n_arcs] == case.xf_state)
 
-    # Terminal covariance constraint. Written as a Cholesky
-    # residual. G lower triangular with a
-    # non-negative diagonal exists if and only if the left-hand side is PSD.
-    lower_triangular = casadi.MX.zeros(NP, NP)
-    entry = 0
-    for row in range(NP):
-        for column in range(row + 1):
-            lower_triangular[row, column] = margin_factor[entry]
-            entry += 1
-    opti.subject_to(casadi.diag(lower_triangular) >= options.terminal_margin_factor_floor)
-    terminal = casadi.DM.eye(NP) - covariance[0:NP, 0:NP] / target
-    residual = terminal - lower_triangular @ lower_triangular.T
-    for row in range(NP):
-        for column in range(row + 1):
-            opti.subject_to(residual[row, column] == 0.0)
+    # Terminal covariance constraint, in the following form:
+    # bound the largest eigenvalue of the position and velocity diagonal blocks
+    # separately, rather than imposing the full 6x6 P'_N <= P_bar'_N. 
+    # This constrains the magnitude of the state dispersion
+    # while disregarding its orientation: the position-velocity cross-covariance
+    # is discarded, so it is a relaxation, but a bounded one. 
+    #
+    # In the normalised coordinates both blocks share the same bound: with
+    # Sigma_r,N = sigma_r0^2 P_r,N and sigma_r,N = sigma_r0 / sqrt(reduction),
+    #     lambda_max(Sigma_r,N) <= sigma_r,N^2  <=>  lambda_max(P_r,N) <= target
+    # and identically for velocity. Dividing by target keeps the residual O(1).
+
+    for block in (slice(0, 3), slice(3, NP)):
+        opti.subject_to(max_eigval_sym_3by3(covariance[block, block]) / target <= 1.0)
 
     opti.minimize(objective)
 
@@ -960,7 +945,6 @@ def solve_rocp(
     opti.set_initial(slack, np.maximum(initial_guess.slack, 1e-9).reshape(1, -1))
     for k in range(n_arcs):
         opti.set_initial(gains[k], initial_guess.gains[k] / initial_guess.gain_scale[k])
-    opti.set_initial(margin_factor, _initial_margin_factor(initial_guess.terminal_covariance, target))
 
     ipopt_options = {
         "max_iter": options.max_iter,
@@ -1127,6 +1111,8 @@ def compute_diagnostics(
 
     empirical = monte_carlo_result["terminal_covariance"][0:NP, 0:NP] / target
     empirical_eigenvalues = np.linalg.eigvalsh(empirical)
+    position_block_ratio = np.linalg.eigvalsh(terminal_covariance_target_ratio[0:3, 0:3])[-1]
+    velocity_block_ratio = np.linalg.eigvalsh(terminal_covariance_target_ratio[3:NP, 3:NP])[-1]
 
     return {
         "n_arcs": float(ref_traj.n_arcs),
@@ -1147,8 +1133,15 @@ def compute_diagnostics(
             np.max(psi_inv * solution.radius) * case.max_thrust_nd * case.thrust_unit
         ),
         "terminal_componentwise_mean_error_nd": componentwise_mean_error,
+        # The two quantities actually constrained:
+        "terminal_position_block_ratio": float(position_block_ratio),
+        "terminal_velocity_block_ratio": float(velocity_block_ratio),
+        # The full 6x6 eigenvalue is reported alongside, since the block form is a
+        # relaxation of it: it may exceed 1 while both blocks are satisfied.
         "terminal_covariance_max_eigenvalue": float(terminal_covariance_target_ratio_eigvals[-1]),
-        "terminal_covariance_satisfied": float(terminal_covariance_target_ratio_eigvals[-1] <= 1.0 + 1e-6),
+        "terminal_covariance_satisfied": float(
+            max(position_block_ratio, velocity_block_ratio) <= 1.0 + 1e-12
+        ),
         "terminal_position_std_m": float(
             np.sqrt(solution.covariances[-1][0, 0]) * normalization.scale[0] * case.length_unit * 1e3
         ),
@@ -1190,8 +1183,11 @@ def print_summary(
         f"(must be <= 1, i.e. {to_n:.4f} [N])",
         f"",
         f"terminal mean error       : {diagnostics['terminal_componentwise_mean_error_nd']:.3e} [-]",
-        f"terminal cov. max eigval  : {diagnostics['terminal_covariance_max_eigenvalue']:.6f} "
+        f"terminal pos. block ratio : {diagnostics['terminal_position_block_ratio']:.6f} "
         f"(must be <= 1)",
+        f"terminal vel. block ratio : {diagnostics['terminal_velocity_block_ratio']:.6f} "
+        f"(must be <= 1)",
+        f"full 6x6 max eigval       : {diagnostics['terminal_covariance_max_eigenvalue']:.6f} "
         f"  terminal 1-sigma pos.   : {diagnostics['terminal_position_std_m']:.6e} [m]",
         f"  terminal 1-sigma vel.   : {diagnostics['terminal_velocity_std_ms']:.6e} [m/s]",
         f"MC 95th pct. of the non dimensional objective function     : {diagnostics['monte_carlo_percentile_nd']:.6e} [-] "
@@ -1249,7 +1245,7 @@ def plot_outputs(
         ref_traj.steps,
     )
 
-    # 1 - dispersion evolution, with equal square panels and the deterministic legend style.
+    # 1 - dispersion evolution.
     figure, axes = plt.subplots(
         1,
         3,
@@ -1321,7 +1317,7 @@ def plot_outputs(
     feedback_n = psi_inv * solution.radius * case.max_thrust_nd * case.thrust_unit
     lower_bound_n = np.maximum(nominal_thrust_n - feedback_n, 0.0)
     upper_bound_n = nominal_thrust_n + feedback_n
-    thrust_magnification = plotter.plot_thrust_deviation_magnification(
+    thrust_magnification = plotter.get_thrust_deviation_magnification(
         feedback_n, case.max_thrust_n
     )
     thrust_scale_label = plotter.plot_magnification_label(
@@ -1418,7 +1414,6 @@ def plot_outputs(
         feedback_step,
         lw=0.95,
         color=Plotter.BLACK,
-        label="Feedback allowance",
     )
     axis.set_yscale("log")
     axis.set_xlabel("time [days]")
@@ -1430,18 +1425,7 @@ def plot_outputs(
         tick_size=Plotter.DIAGNOSTIC_TICK_SIZE,
         label_size=Plotter.DIAGNOSTIC_LABEL_SIZE,
     )
-    plotter._legend(
-        axis,
-        loc="lower center",
-        bbox_to_anchor=(0.5, 1.02),
-        frameon=True,
-        fancybox=False,
-        edgecolor=Plotter.BLACK,
-        facecolor="white",
-        framealpha=1.0,
-        fontsize=6.2,
-        borderaxespad=0.0,
-    )
+
     figure.tight_layout()
     figure.savefig(
         output_prefix.parent / f"{output_prefix.name}_thrust_budget.png",
@@ -1450,7 +1434,7 @@ def plot_outputs(
     )
     plt.close(figure)
 
-    # 3 - deterministic-style transfer projections with scaled uncertainty layers.
+    # 3 - transfer projections with scaled uncertainty layers.
     axes_to_plot = plotter._projection_axes_for_case(case)
     if len(axes_to_plot) == 1:
         figure, axis = plt.subplots(figsize=Plotter.SINGLE_FIGSIZE, dpi=Plotter.FIGURE_DPI)
@@ -1473,7 +1457,7 @@ def plot_outputs(
             case, case.xf_augmented_state, case.target_period_nd
         )
 
-    magnification = plotter.plot_projection_magnification(
+    magnification = plotter.get_projection_magnification(
         solution, normalization
     )
     projection_scale_label = plotter.plot_magnification_label(magnification)
@@ -1565,12 +1549,6 @@ def plot_outputs(
         normalization,
         monte_carlo_result,
     )
-
-    # Remove superseded products only after all replacement figures were written.
-    for obsolete_suffix in ("dispersion", "ellipses", "monte_carlo"):
-        obsolete = output_prefix.parent / f"{output_prefix.name}_{obsolete_suffix}.png"
-        if obsolete.exists():
-            obsolete.unlink()
 
 
 def save_outputs(
