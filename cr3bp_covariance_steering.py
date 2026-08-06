@@ -49,17 +49,17 @@ INITIAL_STATE_STD_ND: dict[
         1e-6,  # sigma_x
         1e-6,  # sigma_y
         1e-6,  # sigma_z
-        5e-7,  # sigma_xdot
-        5e-7,  # sigma_ydot
-        5e-7,  # sigma_zdot
+        1e-6,  # sigma_xdot
+        1e-6,  # sigma_ydot
+        1e-6,  # sigma_zdot
     ),
     "lyapunov_l1_to_l2": (
         1e-6,  # sigma_x
         1e-6,  # sigma_y
         1e-6,  # sigma_z
-        5e-7,  # sigma_xdot
-        5e-7,  # sigma_ydot
-        5e-7,  # sigma_zdot
+        1e-6,  # sigma_xdot
+        1e-6,  # sigma_ydot
+        1e-6,  # sigma_zdot
     ),
 }
 # Uniform gain used when the Riccati warm start is disabled.
@@ -79,7 +79,7 @@ class Options:
     violation_parameter: float = 0.05   
     # Terminal covariance reduction factors relative to the corresponding
     # initial covariance blocks. They may be set independently.
-    position_covariance_reduction: float = 1e3
+    position_covariance_reduction: float = 1e4
     velocity_covariance_reduction: float = 1e3
     scaling_parameter: float = 0.0
     # Navigation (measurement) error covariance as a fraction of the initial state
@@ -97,6 +97,13 @@ class Options:
     cholesky_jitter: float = 1e-11
     spectral_radius_floor: float = 1e-9
 
+    # Floor on diag(G) in the terminal covariance constraint (see solve_rocp):
+    # I_6 - Dt^-1/2 P'_N Dt^-1/2 = G G^T, G lower-triangular. Any PSD left-hand
+    # side admits a factor with strictly positive pivots; it
+    # exists purely to keep G -> G G^T non-degenerate near diag(G) = 0, where the
+    # constraint Jacobian would otherwise lose rank.
+    terminal_margin_floor: float = 1e-3
+
 
     # Target contribution of the cl control effort margin up to a
     # confidence level p after seeding
@@ -113,7 +120,7 @@ class Options:
     # SNOPT settings
     major_max_iter: int = 5000
     minor_max_iter: int = 100 * major_max_iter
-    major_optimality_tol: float = 1e-7
+    major_optimality_tol: float = 5e-7
     major_feasibility_tol: float = 1e-9
     minor_feasibility_tol: float = 1e-9
     expand_graph: bool = False
@@ -761,6 +768,7 @@ class InitialGuess:
     gains: np.ndarray
     radius: np.ndarray
     gain_scale: np.ndarray
+    terminal_margin: np.ndarray   # lower-triangular entries of G, row-major
 
 
 def build_initial_guess(
@@ -860,6 +868,25 @@ def build_initial_guess(
         flush=True,
     )
 
+    # Cholesky factor of the terminal Loewner slack at the seed, used as the
+    # initial guess for the margin decision variables in solve_rocp. A seed that
+    # already violates the target leaves terminal_slack indefinite, so any
+    # negative eigenvalues are floored before factorising -- this is only a
+    # starting point for the solver, not a feasibility claim.
+    inverse_target_std = 1.0 / np.sqrt(
+        [position_target] * 3 + [velocity_target] * 3
+    )
+    scaled_terminal = np.outer(inverse_target_std, inverse_target_std) * seed_terminal_covariance[0:NP, 0:NP]
+    terminal_slack = np.eye(NP) - scaled_terminal
+    eigvals, eigvecs = np.linalg.eigh(0.5 * (terminal_slack + terminal_slack.T))
+    terminal_slack_psd = eigvecs @ np.diag(np.clip(eigvals, 0.0, None)) @ eigvecs.T
+    G_seed = np.linalg.cholesky(
+        terminal_slack_psd + options.terminal_margin_floor ** 2 * np.eye(NP)
+    )
+    terminal_margin = np.array(
+        [G_seed[row, col] for row in range(NP) for col in range(row + 1)]
+    )
+
     return InitialGuess(
         means=means,
         feedforward=feedforward,
@@ -867,6 +894,7 @@ def build_initial_guess(
         gains=gains,
         radius=radius,
         gain_scale=gain_scale,
+        terminal_margin=terminal_margin,
     )
 
 
@@ -966,25 +994,41 @@ def solve_rocp(
 
     opti.subject_to(means[0:NP, n_arcs] == case.xf_state)
 
-    # Terminal covariance constraint, in the following form:
-    # bound the largest eigenvalue of the position and velocity diagonal blocks
-    # separately, rather than imposing the full 6x6 P'_N <= P_bar'_N. 
-    # This constrains the magnitude of the state dispersion
-    # while disregarding its orientation: the position-velocity cross-covariance
-    # is discarded, so it is a relaxation, but a bounded one. 
-    #
-    # In the normalised coordinates each block has its requested bound: with
-    # Sigma_r,N = sigma_r0^2 P_r,N and sigma_r,N = sigma_r0 / sqrt(r_p),
-    #     lambda_max(Sigma_r,N) <= sigma_r,N^2
-    #         <=> lambda_max(P_r,N) <= 1 / r_p,
-    # and identically for velocity with r_v. Dividing by each target keeps both
-    # residuals O(1).
+    # Terminal covariance constraint: the full 6x6 Loewner order
+    # P'_N <= Dt, with Dt = diag(position_target * I_3, velocity_target * I_3),
+    # encoded by a Cholesky residual. Writing
+    # the normalised slack
+    #     terminal_slack = I_6 - Dt^-1/2 P'_N Dt^-1/2,
+    # any PSD matrix admits a factorisation terminal_slack = G G^T with G
+    # lower-triangular, so constraining the 21 lower-triangular entries of
+    # (terminal_slack - G G^T) to zero is equivalent to terminal_slack >= 0, i.e.
+    # P'_N <= Dt exactly -- jointly over position, velocity, and their
+    # cross-covariance, unlike the block-diagonal eigenvalue-bound relaxation.
+    # diag(G) >= terminal_margin_floor keeps G -> G G^T non-degenerate near the
+    # boundary.
+    inverse_target_std = casadi.DM(
+        1.0 / np.sqrt([position_target] * 3 + [velocity_target] * 3)
+    )
+    scaled_terminal = (
+        casadi.diag(inverse_target_std)
+        @ covariance[0:NP, 0:NP]
+        @ casadi.diag(inverse_target_std)
+    )
+    terminal_slack = casadi.MX.eye(NP) - scaled_terminal
 
-    for block, target in (
-        (slice(0, 3), position_target),
-        (slice(3, NP), velocity_target),
-    ):
-        opti.subject_to(max_eigval_sym_3by3(covariance[block, block]) / target <= 1.0)
+    n_margin = NP * (NP + 1) // 2
+    margin = opti.variable(n_margin)
+    lower_indices = [(row, col) for row in range(NP) for col in range(row + 1)]
+    margin_matrix = [[casadi.MX(0.0)] * NP for _ in range(NP)]
+    for (row, col), entry in zip(lower_indices, casadi.vertsplit(margin)):
+        margin_matrix[row][col] = entry
+    G = casadi.vertcat(*[casadi.horzcat(*row) for row in margin_matrix])
+
+    opti.subject_to(casadi.diag(G) >= options.terminal_margin_floor)
+    residual = terminal_slack - G @ G.T
+    opti.subject_to(
+        casadi.vertcat(*[residual[row, col] for row, col in lower_indices]) == 0.0
+    )
 
     opti.minimize(objective)
 
@@ -993,6 +1037,7 @@ def solve_rocp(
     opti.set_initial(slack, np.maximum(initial_guess.slack, 1e-9).reshape(1, -1))
     for k in range(n_arcs):
         opti.set_initial(gains[k], initial_guess.gains[k] / initial_guess.gain_scale[k])
+    opti.set_initial(margin, initial_guess.terminal_margin)
 
     # SNOPT major/minor tolerances play the role IPOPT's tol/constr_viol_tol
     # play: "Major optimality tolerance" is the KKT/reduced-gradient tolerance,
@@ -1221,7 +1266,9 @@ def compute_diagnostics(
             np.max(psi_inv * solution.radius) * case.max_thrust_nd * case.thrust_unit
         ),
         "terminal_componentwise_mean_error_nd": componentwise_mean_error,
-        # The two quantities actually constrained:
+        # Position/velocity block ratios are reported for interpretability, but
+        # solve_rocp constrains the full 6x6 Loewner order P'_N <= Dt directly
+        # (Cholesky-residual encoding), not these two blocks separately.
         "terminal_position_block_ratio": float(position_block_ratio),
         "terminal_velocity_block_ratio": float(velocity_block_ratio),
         "position_covariance_reduction_requested": float(
@@ -1230,11 +1277,10 @@ def compute_diagnostics(
         "velocity_covariance_reduction_requested": float(
             options.velocity_covariance_reduction
         ),
-        # The full 6x6 eigenvalue is reported alongside, since the block form is a
-        # relaxation of it: it may exceed 1 while both blocks are satisfied.
+        # The quantity actually constrained: lambda_max(Dt^-1/2 P'_N Dt^-1/2) <= 1.
         "terminal_covariance_max_eigenvalue": float(terminal_covariance_target_ratio_eigvals[-1]),
         "terminal_covariance_satisfied": float(
-            max(position_block_ratio, velocity_block_ratio) <= 1.0 + 1e-12
+            terminal_covariance_target_ratio_eigvals[-1] <= 1.0 + 1e-12
         ),
         "terminal_position_std_m": float(
             np.sqrt(solution.covariances[-1][0, 0]) * normalization.scale[0] * case.length_unit * 1e3
@@ -1278,10 +1324,11 @@ def print_summary(
         f"",
         f"terminal mean error       : {diagnostics['terminal_componentwise_mean_error_nd']:.3e} [-]",
         f"terminal pos. block ratio : {diagnostics['terminal_position_block_ratio']:.6f} "
-        f"(must be <= 1; reduction {diagnostics['position_covariance_reduction_requested']:.4g})",
+        f"(diagnostic only; reduction {diagnostics['position_covariance_reduction_requested']:.4g})",
         f"terminal vel. block ratio : {diagnostics['terminal_velocity_block_ratio']:.6f} "
-        f"(must be <= 1; reduction {diagnostics['velocity_covariance_reduction_requested']:.4g})",
+        f"(diagnostic only; reduction {diagnostics['velocity_covariance_reduction_requested']:.4g})",
         f"full 6x6 max eigval       : {diagnostics['terminal_covariance_max_eigenvalue']:.6f} "
+        f"(must be <= 1, the constrained quantity)",
         f"  terminal 1-sigma pos.   : {diagnostics['terminal_position_std_m']:.6e} [m]",
         f"  terminal 1-sigma vel.   : {diagnostics['terminal_velocity_std_ms']:.6e} [m/s]",
         f"MC 95th pct. of the non dimensional objective function     : {diagnostics['monte_carlo_percentile_nd']:.6e} [-] "
