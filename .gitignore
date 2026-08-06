@@ -7,3 +7,6 @@
 
 # Licensed solver
 solvers/snopt/
+
+# Generated optimization summaries
+output/**/summary.txt

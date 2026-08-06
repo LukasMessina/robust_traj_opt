@@ -7,20 +7,19 @@ propagated covariances are positive semi-definite by construction.
 
 Uncertainty is propagated by the Unscented Transform with
 kappa = 0 and a lower-triangular Cholesky factor. The sigma points are integrated
-with the fixed-step RK4, wrapped in a CasADi Callback so the
-optimiser sees the integration as a blackbox; the callback supplies the exact
-Jacobian of the discrete RK4 map, obtained by differentiating the four stages.
+with a fixed-step RK4 built directly as a CasADi expression, so the optimiser sees
+through the integration and supplies exact first and second derivatives.
 
 Configuration: one Gaussian component (no GMM split, hence a single control
-policy), no navigation error (R_bar = 0, H = I), deterministic dynamics (Q_k = 0),
-and no mass path constraint. 
-
+policy), navigation error (R_bar, H = I), deterministic dynamics (Q_k = 0).
 The initial guess is the fuel-optimal solution restricted to its knot
 points, thus the interval durations are not uniform and the objective sum is weighted by them.
 """
 
 from __future__ import annotations
 
+import os
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -42,30 +41,55 @@ REFERENCE_DIR = Path("output/cr3bp_fuel_optimal")
 OUTPUT_DIR = Path("output/cr3bp_covariance_steering")
 
 # Initial position and velocity standard deviations per test case [-].
-INITIAL_STATE_STD_ND: dict[str, tuple[float, float]] = {
-    "halo_l2_to_halo_l1": (1e-6, 1e-6),
-    "lyapunov_l1_to_l2": (1e-6, 1e-6),
+# Order: (sigma_x, sigma_y, sigma_z, sigma_xdot, sigma_ydot, sigma_zdot).
+INITIAL_STATE_STD_ND: dict[
+    str, tuple[float, float, float, float, float, float]
+] = {
+    "halo_l2_to_halo_l1": (
+        1e-6,  # sigma_x
+        1e-6,  # sigma_y
+        1e-6,  # sigma_z
+        5e-7,  # sigma_xdot
+        5e-7,  # sigma_ydot
+        5e-7,  # sigma_zdot
+    ),
+    "lyapunov_l1_to_l2": (
+        1e-6,  # sigma_x
+        1e-6,  # sigma_y
+        1e-6,  # sigma_z
+        5e-7,  # sigma_xdot
+        5e-7,  # sigma_ydot
+        5e-7,  # sigma_zdot
+    ),
 }
+# Uniform gain used when the Riccati warm start is disabled.
+COLD_START_GAIN = 1e-3
+
 INITIAL_MASS_STD = 0.0      # [kg]
 MASS_SCALE = 1e-3        # [kg]
-
-# Callbacks must outlive the expression graph that references them.
-# Prevents callback objects from being destroyed by garbage collector.
-_CALLBACK_KEEPALIVE: list[casadi.Callback] = []
-
 
 @dataclass(frozen=True)
 class Options:
     """Solver and transcription settings."""
 
     # Keep every `mesh_stride`-th knot point of the DIRTRAN mesh. 
-    mesh_stride: int = 4
+    mesh_stride: int = 1
     integrator_substeps: int = 4
 
     violation_parameter: float = 0.05   
-    # Covariance reduction factor  
-    covariance_reduction: float = 1e4    
+    # Terminal covariance reduction factors relative to the corresponding
+    # initial covariance blocks. They may be set independently.
+    position_covariance_reduction: float = 1e3
+    velocity_covariance_reduction: float = 1e3
     scaling_parameter: float = 0.0
+    # Navigation (measurement) error covariance as a fraction of the initial state
+    # covariance: R_bar = navigation_error_ratio * Sigma_0. Zero disables it and
+    # recovers the 2*n_x+1 sigma-point scheme.
+    #
+    # With R_bar != 0 the sigma points are generated on the augmented vector
+    # z = [x ; eta] with covariance blkdiag(Sigma, R_bar), giving 2*(2 n_x)+1 = 29
+    # points instead of 15. 
+    navigation_error_ratio: float = 1e-4
 
     # Floors the covariance at jitter / n_x, which must stay far below the
     # terminal target while covering the negative eigenvalues of order 1e-15 that
@@ -82,23 +106,18 @@ class Options:
     # this disabled the gains start at zero, the covariance grows open-loop, and
     # the terminal constraint begins many orders of magnitude violated. Starting
     # with a zero gain is still recoverable, but consumes a lot of additional iterations.
-    warm_start_gains: bool = False
+    warm_start_gains: bool = True
 
-    # IPOPT settings
-    max_iter: int = 3000
-    tol: float = 1e-4
-    constr_viol_tol: float = 1e-9
-    dual_inf_tol: float = 1e-4
-    compl_inf_tol: float = 1e-4
+    solver: str = "snopt"
 
-    # Acceptable fallback
-    acceptable_tol: float = 1e-4
-    acceptable_constr_viol_tol: float = 1e-8
-    acceptable_dual_inf_tol: float = 1e-4
-    acceptable_compl_inf_tol: float = 1e-4
-    acceptable_iter: int = 25
-    limited_memory_max_history: int = 25
-    print_level: int = 5
+    # SNOPT settings
+    major_max_iter: int = 5000
+    minor_max_iter: int = 100 * major_max_iter
+    major_optimality_tol: float = 1e-7
+    major_feasibility_tol: float = 1e-9
+    minor_feasibility_tol: float = 1e-9
+    expand_graph: bool = False
+    print_level: int = 1
 
     monte_carlo_samples: int = 10000
     monte_carlo_seed: int = 42
@@ -111,16 +130,32 @@ def psi_inverse(dimension: int, beta: float) -> float:
 
 
 def control_covariance_weight(options: Options) -> float:
+    """Unscented trasform weight."""
 
-    """Weight of Eq. 5.86, or its unscented-consistent counterpart."""
-    return 1.0 / (2.0 * (NX + options.scaling_parameter))
+    return 1.0 / (2.0 * (augmented_dimension(options) + options.scaling_parameter))
 
 
-def unscented_weights(kappa: float) -> np.ndarray:
+def augmented_dimension(options: Options) -> int:
+    """Dimension the sigma points are generated on.
+
+    `NX` without navigation error; `2*NX` with it, the extra block being the
+    measurement noise, so that state and noise are sampled jointly.
+    """
+
+    return 2 * NX if options.navigation_error_ratio > 0.0 else NX
+
+
+def navigation_covariance(options: Options, normalization: "Normalization") -> np.ndarray:
+    """Navigation covariance in normalised coordinates: D0^-1 R_bar D0^-1 = ratio * P_0."""
+
+    return options.navigation_error_ratio * normalization.initial_covariance
+
+
+def unscented_weights(kappa: float, dimension: int) -> np.ndarray:
     """Sigma-point weights c_j of Eq. 5.82-5.83; c_0 vanishes for kappa = 0."""
 
-    weights = np.full(N_SIGMA, 1.0 / (2.0 * (NX + kappa)))
-    weights[0] = kappa / (NX + kappa)
+    weights = np.full(2 * dimension + 1, 1.0 / (2.0 * (dimension + kappa)))
+    weights[0] = kappa / (dimension + kappa)
     return weights
 
 
@@ -137,7 +172,8 @@ class Normalization:
     whilst D0' is the diagonal matrix of the initial standard deviations of the primed state.
     The implememation carries P = D0^-1 Sigma D0^-1 rather than Sigma (where
     Sigma represents the original covariance matrix), so the terminal
-    requirement reads P'_N <= 1e-4 I with O(1) entries. Gains are carried as
+    requirement has independently configurable position and velocity targets
+    with O(1) entries. Gains are carried as
     K_tilde = K D0' / T_max and the open-loop control as S_tilde = S / T_max, so
     every decision variable is approximately O(1).
 
@@ -168,9 +204,23 @@ class Normalization:
 def initial_std(case: TestCase) -> np.ndarray:
     """Initial 1-sigma values of the augmented state [-]."""
 
-    position_std, velocity_std = INITIAL_STATE_STD_ND[case.test_case_id]
+    position_velocity_std = np.asarray(
+        INITIAL_STATE_STD_ND[case.test_case_id], dtype=float
+    )
+    if position_velocity_std.shape != (NP,):
+        raise ValueError(
+            f"Initial standard deviations for '{case.test_case_id}' must contain "
+            f"exactly {NP} values ordered as (x, y, z, xdot, ydot, zdot)."
+        )
+    if not np.all(np.isfinite(position_velocity_std)) or np.any(
+        position_velocity_std <= 0.0
+    ):
+        raise ValueError(
+            "Initial position and velocity standard deviations must be finite "
+            "and strictly positive so the normalization matrix is invertible."
+        )
     mass_std = INITIAL_MASS_STD / case.m0_wet
-    return np.array([position_std] * 3 + [velocity_std] * 3 + [mass_std], dtype=float)
+    return np.concatenate((position_velocity_std, [mass_std]))
 
 
 def build_normalization(case: TestCase) -> Normalization:
@@ -235,24 +285,59 @@ class Dynamics:
 
     def propagate(
         self,
-        states: np.ndarray,
-        controls: np.ndarray,
+        states,
+        controls,
         step: float,
         substeps: int,
         with_jacobian: bool = False,
-    ) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None]:
-        """Fixed-step RK4 over one arc, zero-order hold on the control.
+    ):
+        """Fixed-step RK4 over one arc for symbolic or numerical inputs.
 
-        When `with_jacobian` is set, the partial
-        derivatives of the discrete map are accumulated through the four stages.
+        With MX/SX inputs, the RK4 map is built natively from a compact mapped SX
+        dynamics function. CasADi can therefore differentiate the returned map to
+        any required order, including the exact Hessian used by IPOPT.
+
+        With NumPy inputs, the same RK4 stages are evaluated numerically. If
+        ``with_jacobian`` is true, the exact partial derivatives of the discrete
+        RK4 map are accumulated through the stages and substeps. The control is
+        held constant over the complete arc in both modes.
+
+        Returns ``(propagated, state_sensitivity, control_sensitivity)``. The two
+        sensitivities are ``None`` unless requested in numerical mode.
         """
+
+        symbolic = isinstance(states, (casadi.MX, casadi.SX)) or isinstance(
+            controls, (casadi.MX, casadi.SX)
+        )
+        if symbolic and with_jacobian:
+            raise ValueError(
+                "with_jacobian is only used for numerical propagation; "
+                "differentiate the returned CasADi expression in symbolic mode."
+            )
 
         count = states.shape[1]
         substep = step / substeps
-        propagated = np.array(states, dtype=float)
-        identity = np.eye(NX)
-        state_sensitivity = np.broadcast_to(identity, (count, NX, NX)).copy() if with_jacobian else None
-        control_sensitivity = np.zeros((count, NX, NU)) if with_jacobian else None
+        if symbolic:
+            mapped = self._mapped(
+                self._augm_state_derivatives_maps,
+                self._augm_state_derivatives,
+                count,
+            )
+            propagated = states
+            state_sensitivity = None
+            control_sensitivity = None
+        else:
+            propagated = np.array(states, dtype=float, copy=True)
+            controls = np.asarray(controls, dtype=float)
+            identity = np.eye(NX)
+            state_sensitivity = (
+                np.broadcast_to(identity, (count, NX, NX)).copy()
+                if with_jacobian
+                else None
+            )
+            control_sensitivity = (
+                np.zeros((count, NX, NU)) if with_jacobian else None
+            )
 
         for _ in range(substeps):
             if with_jacobian:
@@ -276,136 +361,15 @@ class Dynamics:
                 control_sensitivity = step_state @ control_sensitivity + step_control
                 state_sensitivity = step_state @ state_sensitivity
             else:
-                k1 = self.augm_state_derivatives(propagated, controls)
-                k2 = self.augm_state_derivatives(propagated + 0.5 * substep * k1, controls)
-                k3 = self.augm_state_derivatives(propagated + 0.5 * substep * k2, controls)
-                k4 = self.augm_state_derivatives(propagated + substep * k3, controls)
+                derivative = mapped if symbolic else self.augm_state_derivatives
+                k1 = derivative(propagated, controls)
+                k2 = derivative(propagated + 0.5 * substep * k1, controls)
+                k3 = derivative(propagated + 0.5 * substep * k2, controls)
+                k4 = derivative(propagated + substep * k3, controls)
 
             propagated = propagated + (substep / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
 
         return propagated, state_sensitivity, control_sensitivity
-
-
-def _block_diagonal_sparsity(block_rows: int, block_columns: int, blocks: int) -> casadi.Sparsity:
-    rows: list[int] = []
-    columns: list[int] = []
-    for block in range(blocks):
-        for column in range(block_columns):
-            for row in range(block_rows):
-                rows.append(block * block_rows + row)
-                columns.append(block * block_columns + column)
-    return casadi.Sparsity.triplet(blocks * block_rows, blocks * block_columns, rows, columns)
-
-
-def _block_index_map(sparsity: casadi.Sparsity, block_rows: int, block_columns: int):
-    rows, columns = sparsity.get_triplet()
-    rows = np.asarray(rows, dtype=int)
-    columns = np.asarray(columns, dtype=int)
-    return rows // block_rows, rows % block_rows, columns % block_columns
-
-
-class ArcPropagatorJacobian(casadi.Callback):
-    """Exact Jacobian of the blackbox arc integration map, block-diagonal over sigma points."""
-
-    def __init__(self, name: str, parent: "ArcPropagator", input_names, output_names) -> None:
-        casadi.Callback.__init__(self)
-        self.parent = parent
-        self._input_names = list(input_names) + list(output_names)
-        self._output_names = [f"jac_{output_names[0]}_{item}" for item in input_names]
-        self._sparsity = [
-            _block_diagonal_sparsity(NX, NX, parent.n_sigma),
-            _block_diagonal_sparsity(NX, NU, parent.n_sigma),
-        ]
-        self._index = [
-            _block_index_map(self._sparsity[0], NX, NX),
-            _block_index_map(self._sparsity[1], NX, NU),
-        ]
-        self.construct(name, {})
-
-    def get_n_in(self) -> int:
-        return 3
-
-    def get_n_out(self) -> int:
-        return 2
-
-    def get_name_in(self, index: int) -> str:
-        return self._input_names[index]
-
-    def get_name_out(self, index: int) -> str:
-        return self._output_names[index]
-
-    def get_sparsity_in(self, index: int) -> casadi.Sparsity:
-        rows = NU if index == 1 else NX
-        return casadi.Sparsity.dense(rows, self.parent.n_sigma)
-
-    def get_sparsity_out(self, index: int) -> casadi.Sparsity:
-        return self._sparsity[index]
-
-    def eval(self, arg):
-        states = np.asarray(arg[0].full(), dtype=float)
-        controls = np.asarray(arg[1].full(), dtype=float)
-        _, state_sensitivity, control_sensitivity = self.parent.dynamics.propagate(
-            states, controls, self.parent.step, self.parent.substeps, with_jacobian=True
-        )
-        outputs = []
-        for blocks, sparsity, index in zip(
-            (state_sensitivity, control_sensitivity), self._sparsity, self._index
-        ):
-            outputs.append(casadi.DM(sparsity, blocks[index].tolist()))
-        return outputs
-
-
-class ArcPropagator(casadi.Callback):
-    """Blackbox numerical propagation of the whole sigma-point ensemble over one arc."""
-
-    def __init__(self, name: str, dynamics: Dynamics, n_sigma: int, step: float, substeps: int) -> None:
-        casadi.Callback.__init__(self)
-        self.dynamics = dynamics
-        self.n_sigma = n_sigma
-        self.step = float(step)
-        self.substeps = int(substeps)
-        self.jacobians: dict[str, ArcPropagatorJacobian] = {}
-        self.construct(name, {})
-
-    def get_n_in(self) -> int:
-        return 2
-
-    def get_n_out(self) -> int:
-        return 1
-
-    def get_name_in(self, index: int) -> str:
-        return ("x", "u")[index]
-
-    def get_name_out(self, index: int) -> str:
-        # NOTE:The index is always unused, but the signature must be a function of it to satisfy CasADi.
-        return "z"
-
-    def get_sparsity_in(self, index: int) -> casadi.Sparsity:
-        return casadi.Sparsity.dense(NX if index == 0 else NU, self.n_sigma)
-
-    def get_sparsity_out(self, index: int) -> casadi.Sparsity:
-        return casadi.Sparsity.dense(NX, self.n_sigma)
-
-    def eval(self, arg):
-        states = np.asarray(arg[0].full(), dtype=float)
-        controls = np.asarray(arg[1].full(), dtype=float)
-        propagated, _, _ = self.dynamics.propagate(states, controls, self.step, self.substeps)
-        return [casadi.DM(propagated)]
-
-    def has_jacobian(self) -> bool:
-        return True
-
-    def get_jacobian(self, name, input_names, output_names, options):
-        if name not in self.jacobians:
-            jacobian = ArcPropagatorJacobian(name, self, input_names, output_names)
-            self.jacobians[name] = jacobian
-            _CALLBACK_KEEPALIVE.append(jacobian)
-        return self.jacobians[name]
-
-
-# --------------------------------------------------------------------------- #
-# Symbolic helpers
-# --------------------------------------------------------------------------- #
 
 
 def cholesky_lower_triangular_matrix(matrix, dimension: int, pivot_floor: float = 0.0):                     
@@ -512,57 +476,74 @@ def get_arc_function(
     itself; only the propagation is opaque, since is evaluated numerically.
     """
 
-    propagator = ArcPropagator(f"propagator_arc_{index}", dynamics, N_SIGMA, step, options.integrator_substeps)
-    _CALLBACK_KEEPALIVE.append(propagator)
+    dimension = augmented_dimension(options)
+    n_sigma = 2 * augmented_dimension(options) + 1
 
     mean = casadi.MX.sym("mu", NX)
     covariance = casadi.MX.sym("P", NX, NX)
     feedforward = casadi.MX.sym("S", NU)
     gain = casadi.MX.sym("K", NU, NP)
 
-    weights = unscented_weights(options.scaling_parameter)
+    weights = unscented_weights(options.scaling_parameter, dimension)
     scale = casadi.DM(normalization.matrix)
     inverse_scale = casadi.DM(normalization.inverse_matrix)
 
-    # Sigma points
-    normalized_spread = cholesky_lower_triangular_matrix(
-        NX * covariance + options.cholesky_jitter * casadi.DM.eye(NX),
+    # Sigma points on the augmented vector z = [x ; eta] with covariance
+    # blkdiag(Sigma, R_bar). A Cholesky factor of a block-diagonal matrix is
+    # block diagonal, so only the state block needs a symbolic factorisation --
+    # the noise block is constant and is factorised once. The columns of
+    # the state block therefore carry no measurement noise, and the columns of the
+    # noise block sit at the mean state with a perturbed thrust.
+    state_spread = cholesky_lower_triangular_matrix(
+        dimension * covariance + options.cholesky_jitter * casadi.DM.eye(NX),
         NX,
         pivot_floor=options.cholesky_jitter,
     )
-    spread = scale @ normalized_spread
-    primed_normalized_spread = normalized_spread[0:NP, :]
+    state_columns = [state_spread[:, column] for column in range(NX)]
+    measurement_columns = [state_spread[0:NP, column] for column in range(NX)]
+
+    if dimension != NX:
+        # R_bar is diagonal, so its Cholesky factor is the elementwise square
+        # root. 
+        noise_root = casadi.DM(
+            np.diag(
+                np.sqrt(
+                    np.clip(
+                        dimension * np.diag(navigation_covariance(options, normalization)),
+                        0.0,
+                        None,
+                    )
+                )
+            )
+        )
+        state_columns += [casadi.MX.zeros(NX)] * NX
+        measurement_columns += [noise_root[0:NP, column] for column in range(NX)]
 
     # NOTE: The mean state is in original units, not normalised. Whilst the nominal thrust is normalised.
     states = [mean]
     controls = [feedforward]
-    for column in range(NX):
-        deviation = gain @ primed_normalized_spread[:, column]
-        states.append(mean + spread[:, column])
-        controls.append(feedforward + deviation)
-    for column in range(NX):
-        deviation = gain @ primed_normalized_spread[:, column]
-        states.append(mean - spread[:, column])
-        controls.append(feedforward - deviation)
+    for sign in (1.0, -1.0):
+        for column in range(dimension):
+            states.append(mean + sign * (scale @ state_columns[column]))
+            controls.append(feedforward + sign * (gain @ measurement_columns[column]))
 
     sigma_states = casadi.horzcat(*states)
     sigma_controls = case.max_thrust_nd * casadi.horzcat(*controls)
-    propagated = propagator(sigma_states, sigma_controls)
+    propagated, _, _ = dynamics.propagate(
+        sigma_states, sigma_controls, step, options.integrator_substeps
+    )
 
-    mean_next = sum(weights[j] * propagated[:, j] for j in range(N_SIGMA))
+    mean_next = sum(weights[j] * propagated[:, j] for j in range(n_sigma))
     covariance_next = casadi.MX.zeros(NX, NX)
-    for j in range(N_SIGMA):
+    for j in range(n_sigma):
         residual = inverse_scale @ (propagated[:, j] - mean_next)
         covariance_next = covariance_next + weights[j] * residual @ residual.T
     # NOTE: Enforces exact numerical symmetry.
     covariance_next = 0.5 * (covariance_next + covariance_next.T)
 
-    # Eq. 5.86. Columns 1..6 of the factor carry the position-velocity directions;
-    # column 7 is mass-only, so its two sigma points have T_j = S_k and drop out.
-    # The plus and minus points of a pair contribute identically, hence the 2.
     control_covariance = casadi.MX.zeros(NU, NU)
-    for column in range(NP):
-        deviation = gain @ primed_normalized_spread[:, column]
+    for column in range(dimension):
+        deviation = gain @ measurement_columns[column]
         control_covariance = control_covariance + deviation @ deviation.T
     control_covariance = 2.0 * control_covariance_weight(options) * control_covariance
     control_covariance = 0.5 * (control_covariance + control_covariance.T)
@@ -697,7 +678,7 @@ def normalized_arc_jacobians(
 
 def tvlqr_gains(
     control_weight: float,
-    terminal_weight: float,
+    terminal_weight: float | np.ndarray,
     state_matrices: list[np.ndarray],
     control_matrices: list[np.ndarray],
 ) -> np.ndarray:
@@ -705,7 +686,12 @@ def tvlqr_gains(
 
     Q_normalized = np.eye(NX)
     R_normalized = control_weight * np.eye(NU)
-    P_normalized = terminal_weight * np.eye(NX)
+    terminal_weights = np.asarray(terminal_weight, dtype=float)
+    if terminal_weights.ndim == 0:
+        terminal_weights = np.full(NX, float(terminal_weights))
+    elif terminal_weights.shape != (NX,):
+        raise ValueError(f"terminal_weight must be a scalar or have shape ({NX},).")
+    P_normalized = np.diag(terminal_weights)
     gains = np.zeros((len(state_matrices), NU, NP), dtype=float)
 
     for k in reversed(range(len(state_matrices))):
@@ -727,7 +713,7 @@ def seed_gains(
     options: Options,
     state_matrices: list[np.ndarray],
     control_matrices: list[np.ndarray],
-) -> tuple[np.ndarray, tuple[float, float]]:
+) -> tuple[np.ndarray, tuple[float, np.ndarray]]:
     """Warm-start gains from a Riccati recursion with Bryson-rule weights.
 
     Bryson's rule weights each channel by the inverse square of its largest
@@ -741,19 +727,30 @@ def seed_gains(
     (`dx = D0 dx~`, `dT = T_max du~`) turns the cost `dx' Q dx + du' R du` into
     `dx~' (D0 Q D0) dx~ + T_max^2 du~' R du~`, so
 
-        Q~  = D0 Q D0  = (1/c^2) I,   R~ = T_max^2 R = I,   Qf~ = (1/c^2) reduction_factor I
+        Q~  = D0 Q D0  = (1/c^2) I,   R~ = T_max^2 R = I,
+        Qf~ = (1/c^2) diag(r_p I_3, r_v I_3)
 
-    because `sigma_f = sigma_0 / sqrt(reduction)` makes `Qf/Q = reduction` exactly.
-    Only ratios matter, scaling all three by a constant leaves the gains
-    unchanged, thus this is equivalent to `Q = I`, `R = c^2`, `Qf = reduction`,
-    which is how it is passed below. 
+    because `sigma_f = sigma_0 / sqrt(reduction)` makes each terminal
+    `Qf/Q` ratio equal its requested reduction. Only ratios matter, so this is
+    equivalent to `Q = I`, `R = c^2`, and terminal weights `r_p` and `r_v`.
+    The unconstrained mass state retains the stricter of those weights so that
+    equal position and velocity reductions reproduce the previous seed exactly.
 
     """
 
     control_weight = 3.0 ** 2
-    terminal_weight = float(options.covariance_reduction)
-    gains = tvlqr_gains(control_weight, terminal_weight, state_matrices, control_matrices)
-    return gains, (control_weight, terminal_weight)
+    position_reduction = float(options.position_covariance_reduction)
+    velocity_reduction = float(options.velocity_covariance_reduction)
+    terminal_weights = np.array(
+        [position_reduction] * 3
+        + [velocity_reduction] * 3
+        + [max(position_reduction, velocity_reduction)],
+        dtype=float,
+    )
+    gains = tvlqr_gains(
+        control_weight, terminal_weights, state_matrices, control_matrices
+    )
+    return gains, (control_weight, terminal_weights)
 
 
 @dataclass
@@ -804,7 +801,10 @@ def build_initial_guess(
     if options.warm_start_gains:
         gains, seed_weights = seed_gains(options, state_matrices, control_matrices)
     else:
-        gains = np.zeros((ref_traj.n_arcs, NU, NP), dtype=float)
+        # Uniform negative gains rather than zeros.
+        gains = -COLD_START_GAIN * np.tile(
+            gain_scale[:, None, None], (1, NU, NP)
+        )
         seed_weights = None
 
     radius = np.zeros(ref_traj.n_arcs, dtype=float)
@@ -832,18 +832,30 @@ def build_initial_guess(
     feedforward = feedforward * factor
 
 
-    seed_target = 1.0 / options.covariance_reduction
+    position_target = 1.0 / options.position_covariance_reduction
+    velocity_target = 1.0 / options.velocity_covariance_reduction
     seed_terminal_covariance = covariances[-1]
-    position_ratio = float(np.linalg.eigvalsh(seed_terminal_covariance[0:3, 0:3])[-1] / seed_target)
-    velocity_ratio = float(np.linalg.eigvalsh(seed_terminal_covariance[3:NP, 3:NP])[-1] / seed_target)
+    position_ratio = float(
+        np.linalg.eigvalsh(seed_terminal_covariance[0:3, 0:3])[-1]
+        / position_target
+    )
+    velocity_ratio = float(
+        np.linalg.eigvalsh(seed_terminal_covariance[3:NP, 3:NP])[-1]
+        / velocity_target
+    )
     origin = (
-        "null initial gains"
+        f"uniform initial gains (K_hat = {-COLD_START_GAIN:g})"
         if seed_weights is None
-        else f"Bryson's rule warm start (Q=I, R={seed_weights[0]:.4g}, Qf={seed_weights[1]:.4g})"
+        else (
+            "Bryson's rule warm start "
+            f"(Q=I, R={seed_weights[0]:.4g}, "
+            f"Qf_pos={seed_weights[1][0]:.4g}, "
+            f"Qf_vel={seed_weights[1][3]:.4g})"
+        )
     )
     print(
         f"[{case.test_case_id}] {origin}: terminal blocks pos {position_ratio:.4e} / "
-        f"vel {velocity_ratio:.4e} x target "
+        f"vel {velocity_ratio:.4e} x their respective targets "
         f"({'feasible' if max(position_ratio, velocity_ratio) <= 1.0 else 'INFEASIBLE start'})",
         flush=True,
     )
@@ -876,6 +888,31 @@ class RobustSolution:
     diagnostics: dict[str, float] = field(default_factory=dict)
 
 
+def run_snopt_solver(opti: casadi.Opti, test_case_id: str) -> casadi.OptiSol:
+    """Solve from a unique directory so SNOPT gets a fresh output file.
+
+    CasADi initializes every Opti SNOPT instance with the relative output path
+    ``solver.out``.  With SNOPT 7.7.7 on Windows, a second initialization at
+    the same absolute path in one Python process can fail because the Fortran
+    output unit from the first solve is not reusable.  A unique working
+    directory makes the absolute output path unique for every solve.
+
+    The directory is intentionally retained for the lifetime of the process:
+    attempting to remove ``solver.out`` while SNOPT still owns its Fortran unit
+    is not reliable on Windows.
+    """
+
+    snopt_work_dir = Path(
+        tempfile.mkdtemp(prefix=f"casadi-snopt-{test_case_id}-")
+    )
+    original_work_dir = Path.cwd()
+    try:
+        os.chdir(snopt_work_dir)
+        return opti.solve()
+    finally:
+        os.chdir(original_work_dir)
+
+
 def solve_rocp(
     case: TestCase,
     options: Options,
@@ -888,7 +925,8 @@ def solve_rocp(
     """Transcribe and solve the robust optimal control problem."""
 
     n_arcs = ref_traj.n_arcs
-    target = 1.0 / options.covariance_reduction
+    position_target = 1.0 / options.position_covariance_reduction
+    velocity_target = 1.0 / options.velocity_covariance_reduction
 
     opti = casadi.Opti()
     means = opti.variable(NX, n_arcs + 1)
@@ -910,7 +948,10 @@ def solve_rocp(
 
         # ||S_k|| via a slack, as in deterministic case, so the cost stays smooth at
         # the coast arcs where S_k vanishes.
-        opti.subject_to(casadi.dot(feedforward[:, k], feedforward[:, k]) <= slack[0, k] ** 2)
+        opti.subject_to(
+            casadi.dot(feedforward[:, k], feedforward[:, k])
+            <= slack[0, k] ** 2
+        )
 
         # rho(SigmaT_k) in closed form 
         radius = symbolic_psqrt_spectral_radius(control_covariance, options.spectral_radius_floor)
@@ -919,7 +960,9 @@ def solve_rocp(
         opti.subject_to(slack[0, k] + psi_inv * radius <= 1.0)
 
         # weighted by the arc duration because the mesh is not uniform.
-        objective = objective + float(ref_traj.steps[k]) * (slack[0, k] + psi_inv * radius)
+        objective = objective + float(ref_traj.steps[k]) * (
+            slack[0, k] + psi_inv * radius
+        )
 
     opti.subject_to(means[0:NP, n_arcs] == case.xf_state)
 
@@ -930,12 +973,17 @@ def solve_rocp(
     # while disregarding its orientation: the position-velocity cross-covariance
     # is discarded, so it is a relaxation, but a bounded one. 
     #
-    # In the normalised coordinates both blocks share the same bound: with
-    # Sigma_r,N = sigma_r0^2 P_r,N and sigma_r,N = sigma_r0 / sqrt(reduction),
-    #     lambda_max(Sigma_r,N) <= sigma_r,N^2  <=>  lambda_max(P_r,N) <= target
-    # and identically for velocity. Dividing by target keeps the residual O(1).
+    # In the normalised coordinates each block has its requested bound: with
+    # Sigma_r,N = sigma_r0^2 P_r,N and sigma_r,N = sigma_r0 / sqrt(r_p),
+    #     lambda_max(Sigma_r,N) <= sigma_r,N^2
+    #         <=> lambda_max(P_r,N) <= 1 / r_p,
+    # and identically for velocity with r_v. Dividing by each target keeps both
+    # residuals O(1).
 
-    for block in (slice(0, 3), slice(3, NP)):
+    for block, target in (
+        (slice(0, 3), position_target),
+        (slice(3, NP), velocity_target),
+    ):
         opti.subject_to(max_eigval_sym_3by3(covariance[block, block]) / target <= 1.0)
 
     opti.minimize(objective)
@@ -946,32 +994,55 @@ def solve_rocp(
     for k in range(n_arcs):
         opti.set_initial(gains[k], initial_guess.gains[k] / initial_guess.gain_scale[k])
 
-    ipopt_options = {
-        "max_iter": options.max_iter,
-        "tol": options.tol,
-        "acceptable_tol": options.acceptable_tol,
-        "constr_viol_tol": options.constr_viol_tol,
-        "acceptable_constr_viol_tol": options.acceptable_constr_viol_tol,
-        "acceptable_iter": options.acceptable_iter,
-        "dual_inf_tol": options.dual_inf_tol,
-        "acceptable_dual_inf_tol": options.acceptable_dual_inf_tol,
-        "compl_inf_tol": options.compl_inf_tol,
-        "acceptable_compl_inf_tol": options.acceptable_compl_inf_tol,
-        "mu_strategy": "monotone",
-        # The arc map is a first-order blackbox, so no exact Hessian is available.
-        "hessian_approximation": "limited-memory",
-        "limited_memory_max_history": options.limited_memory_max_history,
-        "print_level": options.print_level,
-        "sb": "yes",
+    # SNOPT major/minor tolerances play the role IPOPT's tol/constr_viol_tol
+    # play: "Major optimality tolerance" is the KKT/reduced-gradient tolerance,
+    # and "Major feasibility tolerance" is the nonlinear constraint-violation
+    # tolerance. CasADi 3.7.2's SNOPT interface tries numeric options as integers
+    # before trying them as reals. Fractional Python floats can consequently be
+    # converted to zero and leave SNOPT's defaults in effect. Pass real-valued
+    # SNOPT options as strings so they reach SNOPT through its generic parameter
+    # parser with their intended values.
+    #
+    # The default elastic weight (1e4) was too small to hold feasibility without
+    # repeatedly escalating the penalty parameter (observed climbing to ~1e11,
+    # which loosens the effective optimality/feasibility test since both are
+    # scaled by the multiplier/penalty magnitude). NOTE: an earlier attempt that
+    # also set "Scale option": 0 (disabling SNOPT's automatic scaling, reasoning
+    # the problem is already hand-normalised) made things worse - more major
+    # iterations, penalty parameter still climbing to ~1.5e9, looser constraint
+    # violation - so scaling is left at its default here. Only the elastic
+    # weight is changed, and this needs to be re-verified against a plain
+    # (no override) run before trusting it fixed anything.
+    snopt_options = {
+        "Major iterations limit": options.major_max_iter,
+        "Minor iterations limit": max(500, options.minor_max_iter),
+        "Major optimality tolerance": f"{options.major_optimality_tol:.13g}",
+        "Major feasibility tolerance": f"{options.major_feasibility_tol:.13g}",
+        "Minor feasibility tolerance": f"{options.minor_feasibility_tol:.13g}",
+        # CasADi opens solver.out while initializing SNOPT, before it applies
+        # these native options. "Print file": 0 suppresses subsequent output
+        # to that file but cannot prevent it from being opened. The unique
+        # working directory in run_snopt_solver is what prevents consecutive
+        # solves from reusing the same absolute solver.out path. "Summary
+        # file": 6 keeps the major-iteration log on standard output.
+        "Print file": 0,
+        "Summary file": 6 if options.print_level else 0,
+        "Major print level": options.print_level,
+        "Minor print level": 0,
     }
-    # `expand` must stay off: an MX graph containing Callbacks cannot be expanded.
-    opti.solver("ipopt", {"expand": False, "print_time": True}, ipopt_options)
+    opti.solver(
+        "snopt",
+        {"expand": options.expand_graph, "print_time": True},
+        snopt_options,
+    )
+    solver_name = "SNOPT"
+
 
     try:
-        solution = opti.solve()
+        solution = run_snopt_solver(opti, case.test_case_id)
         converged = True
     except RuntimeError as error:
-        print(f"  IPOPT did not converge ({error}); returning the last iterate.", flush=True)
+        print(f"  {solver_name} did not converge ({error}); returning the last iterate.", flush=True)
         solution = opti.debug
         converged = False
 
@@ -1028,6 +1099,9 @@ def monte_carlo_rollouts(
     generator = np.random.default_rng(options.monte_carlo_seed)
     samples = options.monte_carlo_samples
     states = solution.means[:, 0:1] + normalization.initial_std[:, None] * generator.standard_normal((NX, samples))
+    # Navigation error: an independent draw at every arc, added to the measured
+    # deviation the policy acts on. 
+    navigation_std = np.sqrt(np.clip(np.diag(navigation_covariance(options, normalization)), 0.0, None))
 
     # Cumulative control effort is stored for each sample
     cumulative_control_effort = np.zeros(samples, dtype=float)
@@ -1039,6 +1113,7 @@ def monte_carlo_rollouts(
 
     for k in range(steps.size):
         deviation = (states[0:NP] - solution.means[0:NP, k : k + 1]) / normalization.scale[0:NP, None]
+        deviation = deviation + navigation_std[0:NP, None] * generator.standard_normal((NP, samples))
         commanded_control = case.max_thrust_nd * (
             solution.feedforward[:, k : k + 1] + solution.gains[k] @ deviation
         )
@@ -1063,7 +1138,9 @@ def monte_carlo_rollouts(
 
         peak_applied_thrust = np.maximum(peak_applied_thrust, applied_magnitudes)
         cumulative_control_effort += float(steps[k]) * applied_magnitudes
-        states, _, _ = dynamics.propagate(states, applied_control, float(steps[k]), options.integrator_substeps)
+        states, _, _ = dynamics.propagate(
+            states, applied_control, float(steps[k]), options.integrator_substeps
+        )
 
     terminal_deviation = (states - solution.means[:, -1:]) / normalization.scale[:, None]
     sampled_covariance = np.cov(terminal_deviation)
@@ -1095,7 +1172,12 @@ def compute_diagnostics(
     monte_carlo_result: dict,
     psi_inv: float,
 ) -> dict[str, float]:
-    target = 1.0 / options.covariance_reduction
+    position_target = 1.0 / options.position_covariance_reduction
+    velocity_target = 1.0 / options.velocity_covariance_reduction
+    target_diagonal = np.array(
+        [position_target] * 3 + [velocity_target] * 3, dtype=float
+    )
+    inverse_target_std = 1.0 / np.sqrt(target_diagonal)
     steps = ref_traj.steps
 
     feedforward_magnitude = np.linalg.norm(solution.feedforward, axis=0)
@@ -1103,13 +1185,19 @@ def compute_diagnostics(
     feedback_effort = float(np.sum(steps * psi_inv * solution.radius))
     total_effort = deterministic_effort + feedback_effort
 
-    terminal_covariance_target_ratio = solution.covariances[-1][0:NP, 0:NP] / target
+    terminal_covariance_target_ratio = (
+        solution.covariances[-1][0:NP, 0:NP]
+        * np.outer(inverse_target_std, inverse_target_std)
+    )
     terminal_covariance_target_ratio_eigvals = np.linalg.eigvalsh(terminal_covariance_target_ratio)
 
     componentwise_mean_error = float(np.max(np.abs(solution.means[0:NP, -1] - case.xf_state)))
     thrust_budget = feedforward_magnitude + psi_inv * solution.radius
 
-    empirical = monte_carlo_result["terminal_covariance"][0:NP, 0:NP] / target
+    empirical = (
+        monte_carlo_result["terminal_covariance"][0:NP, 0:NP]
+        * np.outer(inverse_target_std, inverse_target_std)
+    )
     empirical_eigenvalues = np.linalg.eigvalsh(empirical)
     position_block_ratio = np.linalg.eigvalsh(terminal_covariance_target_ratio[0:3, 0:3])[-1]
     velocity_block_ratio = np.linalg.eigvalsh(terminal_covariance_target_ratio[3:NP, 3:NP])[-1]
@@ -1136,6 +1224,12 @@ def compute_diagnostics(
         # The two quantities actually constrained:
         "terminal_position_block_ratio": float(position_block_ratio),
         "terminal_velocity_block_ratio": float(velocity_block_ratio),
+        "position_covariance_reduction_requested": float(
+            options.position_covariance_reduction
+        ),
+        "velocity_covariance_reduction_requested": float(
+            options.velocity_covariance_reduction
+        ),
         # The full 6x6 eigenvalue is reported alongside, since the block form is a
         # relaxation of it: it may exceed 1 while both blocks are satisfied.
         "terminal_covariance_max_eigenvalue": float(terminal_covariance_target_ratio_eigvals[-1]),
@@ -1184,9 +1278,9 @@ def print_summary(
         f"",
         f"terminal mean error       : {diagnostics['terminal_componentwise_mean_error_nd']:.3e} [-]",
         f"terminal pos. block ratio : {diagnostics['terminal_position_block_ratio']:.6f} "
-        f"(must be <= 1)",
+        f"(must be <= 1; reduction {diagnostics['position_covariance_reduction_requested']:.4g})",
         f"terminal vel. block ratio : {diagnostics['terminal_velocity_block_ratio']:.6f} "
-        f"(must be <= 1)",
+        f"(must be <= 1; reduction {diagnostics['velocity_covariance_reduction_requested']:.4g})",
         f"full 6x6 max eigval       : {diagnostics['terminal_covariance_max_eigenvalue']:.6f} "
         f"  terminal 1-sigma pos.   : {diagnostics['terminal_position_std_m']:.6e} [m]",
         f"  terminal 1-sigma vel.   : {diagnostics['terminal_velocity_std_ms']:.6e} [m/s]",
@@ -1230,10 +1324,14 @@ def plot_outputs(
     output_prefix: Path,
 ) -> None:
     node_days = ref_traj.node_times * case.time_unit / 86400.0
-    target = 1.0 / options.covariance_reduction
+    position_target = 1.0 / options.position_covariance_reduction
+    velocity_target = 1.0 / options.velocity_covariance_reduction
+    target_covariance = np.zeros((NX, NX), dtype=float)
+    target_covariance[0:3, 0:3] = position_target * np.eye(3)
+    target_covariance[3:NP, 3:NP] = velocity_target * np.eye(3)
     sigma_physical = std_physical_units(case, normalization, solution.covariances)
     target_sigma = std_physical_units(
-        case, normalization, (target * np.eye(NX))[None, :, :]
+        case, normalization, target_covariance[None, :, :]
     )[0]
     plotter = Plotter(output_prefix)
     rollout_history, rollout_thrust_n = plotter.plot_monte_carlo_rollouts(
@@ -1587,7 +1685,15 @@ def save_outputs(
         sigma_physical=sigma_physical,
         normalization_scale_nd=normalization.scale,
         initial_state_std_nd=normalization.initial_std,
-        target_ratio=1.0 / options.covariance_reduction,
+        position_covariance_reduction=options.position_covariance_reduction,
+        velocity_covariance_reduction=options.velocity_covariance_reduction,
+        position_target_ratio=1.0 / options.position_covariance_reduction,
+        velocity_target_ratio=1.0 / options.velocity_covariance_reduction,
+        target_ratio=np.array(
+            [1.0 / options.position_covariance_reduction] * 3
+            + [1.0 / options.velocity_covariance_reduction] * 3,
+            dtype=float,
+        ),
         psi_inv=psi_inv,
         monte_carlo_cumulative=monte_carlo_result["cumulative_control_effort"],
         monte_carlo_violation_fraction=monte_carlo_result["violation_fraction"],

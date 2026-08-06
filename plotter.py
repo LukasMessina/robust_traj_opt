@@ -824,10 +824,12 @@ class Plotter:
         )
         sample_mean = np.mean(samples, axis=0)
         sample_covariance = np.cov(samples, rowvar=False)
-        target_covariance = (
-            (1.0 / options.covariance_reduction)
-            * np.diag(physical_scale**2)
+        target_ratios = np.array(
+            [1.0 / options.position_covariance_reduction] * 3
+            + [1.0 / options.velocity_covariance_reduction] * 3,
+            dtype=float,
         )
+        target_covariance = np.diag(target_ratios * physical_scale**2)
         labels = (
             r"$x$ [m]",
             r"$y$ [m]",
@@ -835,6 +837,14 @@ class Plotter:
             r"$\dot{x}$ [m/s]",
             r"$\dot{y}$ [m/s]",
             r"$\dot{z}$ [m/s]",
+        )
+        pdf_labels = (
+            r"PDF [$\mathrm{m}^{-1}$]",
+            r"PDF [$\mathrm{m}^{-1}$]",
+            r"PDF [$\mathrm{m}^{-1}$]",
+            r"PDF [$\mathrm{s}\,\mathrm{m}^{-1}$]",
+            r"PDF [$\mathrm{s}\,\mathrm{m}^{-1}$]",
+            r"PDF [$\mathrm{s}\,\mathrm{m}^{-1}$]",
         )
 
         limits: list[tuple[float, float]] = []
@@ -901,7 +911,7 @@ class Plotter:
                 if row == column:
                     histogram = axis.hist(
                         samples[:, row],
-                        bins=20,
+                        bins=25,
                         density=True,
                         color=self.GREY,
                         alpha=0.48,
@@ -945,7 +955,27 @@ class Plotter:
                         label="Target distribution",
                     )
                     axis.set_xlim(limits[row])
-                    axis.set_yticks([])
+                    axis.set_xlabel(labels[row], fontsize=8.0, labelpad=2.0)
+                    axis.set_ylabel(
+                        pdf_labels[row], fontsize=8.0, labelpad=2.0
+                    )
+                    # Put each density scale in the empty upper-triangle space
+                    # to the right of its diagonal panel. This prevents its PDF
+                    # label and tick labels from intruding on the subplot to the
+                    # left while preserving uniform panel-to-panel spacing.
+                    axis.yaxis.set_label_position("right")
+                    axis.yaxis.tick_right()
+                    axis.spines["left"].set_visible(False)
+                    axis.spines["right"].set_visible(True)
+                    axis.spines["right"].set_color(self.BLACK)
+                    axis.spines["right"].set_linewidth(self.SPINE_WIDTH)
+                    axis.tick_params(
+                        axis="y",
+                        which="both",
+                        labelleft=False,
+                        labelright=True,
+                        pad=2.0,
+                    )
                     if row == 0:
                         legend_handles = [
                             histogram[2][0],
@@ -998,14 +1028,19 @@ class Plotter:
                         )
                     axis.set_xlim(limits[column])
                     axis.set_ylim(limits[row])
+                    axis.set_xlabel(
+                        labels[column], fontsize=8.0, labelpad=2.0
+                    )
+                    axis.set_ylabel(
+                        labels[row], fontsize=8.0, labelpad=2.0
+                    )
 
-                if column == 0:
-                    axis.set_ylabel(labels[row], fontsize=9.0)
-                if row == primed_dimension - 1:
-                    axis.set_xlabel(labels[column], fontsize=9.0)
-                if column > 0:
+                # Every diagonal density panel is self-contained, with visible
+                # ticks and inverse-unit PDF labels. Pairwise panels retain the
+                # less cluttered outer-edge tick-label convention.
+                if column > 0 and row != column:
                     axis.tick_params(labelleft=False)
-                if row < primed_dimension - 1:
+                if row < primed_dimension - 1 and row != column:
                     axis.tick_params(labelbottom=False)
 
         if legend_handles is not None:
@@ -1031,8 +1066,8 @@ class Plotter:
             right=0.985,
             bottom=0.075,
             top=0.94,
-            wspace=0.24,
-            hspace=0.24,
+            wspace=0.32,
+            hspace=0.32,
         )
         output_path = self._path("terminal_distribution")
         figure.savefig(
