@@ -34,11 +34,11 @@ class Plotter:
 
     BLACK = "#000000"
     BLUE = "#0088ab"
-    DARK_PURPLE = "#5c0056"
+    DARK_BLUE = "#1f29bb"
     ORANGE = "#ff7f0e"
     GREEN = "#2ca02c"
     RED = "#d61b1b"
-    PURPLE = "#9b6fd3"
+    PURPLE = "#6601ea"
     GREY = "#7f7f7f"
     DARK_GREY = "#333333"
     LIGHT_GREY = "#d9d9d9"
@@ -76,7 +76,7 @@ class Plotter:
     SPINE_WIDTH = 1.05
     MAJOR_TICK_WIDTH = 1.0
     MINOR_TICK_WIDTH = 0.8
-    TRAJECTORY_LINE_WIDTH = 1.7
+    TRAJECTORY_LINE_WIDTH = 1.4
     TRAJECTORY_PROJECTION_LINE_WIDTH = 1.2
     REFERENCE_LINE_WIDTH = 1.15
     GUIDE_LINE_WIDTH = 1.05

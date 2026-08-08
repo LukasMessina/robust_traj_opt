@@ -46,20 +46,20 @@ INITIAL_STATE_STD_ND: dict[
     str, tuple[float, float, float, float, float, float]
 ] = {
     "halo_l2_to_halo_l1": (
-        1e-6,  # sigma_x
-        1e-6,  # sigma_y
-        1e-6,  # sigma_z
-        1e-6,  # sigma_xdot
-        1e-6,  # sigma_ydot
-        1e-6,  # sigma_zdot
+        5e-5,  # sigma_x
+        5e-5,  # sigma_y
+        5e-5,  # sigma_z
+        1e-4,  # sigma_xdot
+        1e-4,  # sigma_ydot
+        1e-4,  # sigma_zdot
     ),
     "lyapunov_l1_to_l2": (
-        1e-6,  # sigma_x
-        1e-6,  # sigma_y
-        1e-6,  # sigma_z
-        1e-6,  # sigma_xdot
-        1e-6,  # sigma_ydot
-        1e-6,  # sigma_zdot
+        5e-5,  # sigma_x
+        5e-5,  # sigma_y
+        5e-5,  # sigma_z
+        1e-4,  # sigma_xdot
+        1e-4,  # sigma_ydot
+        1e-4,  # sigma_zdot
     ),
 }
 # Uniform gain used when the Riccati warm start is disabled.
@@ -120,7 +120,7 @@ class Options:
     # SNOPT settings
     major_max_iter: int = 5000
     minor_max_iter: int = 100 * major_max_iter
-    major_optimality_tol: float = 5e-7
+    major_optimality_tol: float = 1e-7
     major_feasibility_tol: float = 1e-9
     minor_feasibility_tol: float = 1e-9
     expand_graph: bool = False
@@ -1061,6 +1061,10 @@ def solve_rocp(
     snopt_options = {
         "Major iterations limit": options.major_max_iter,
         "Minor iterations limit": max(500, options.minor_max_iter),
+        # Cumulative number of minor (SQP/QP) iterations over the entire solve.
+        # Without this explicit setting, SNOPT may stop at its smaller default
+        # even though neither of the limits above has been reached.
+        "Iterations limit": options.minor_max_iter,
         "Major optimality tolerance": f"{options.major_optimality_tol:.13g}",
         "Major feasibility tolerance": f"{options.major_feasibility_tol:.13g}",
         "Minor feasibility tolerance": f"{options.minor_feasibility_tol:.13g}",
@@ -1652,7 +1656,7 @@ def plot_outputs(
             axis.plot(
                 solution.means[axis_0, node] + points[0],
                 solution.means[axis_1, node] + points[1],
-                color=Plotter.RED,
+                color=Plotter.DARK_BLUE,
                 lw=0.80,
                 alpha=0.90,
                 zorder=2,
@@ -1859,7 +1863,7 @@ def _build_arc_functions(
 
 def main() -> None:
     options = Options()
-    for test_case_id in ("lyapunov_l1_to_l2", "halo_l2_to_halo_l1"):
+    for test_case_id in ("halo_l2_to_halo_l1", "lyapunov_l1_to_l2",):
         run_test_case(test_case_id, options)
 
 
