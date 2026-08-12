@@ -120,7 +120,7 @@ class Options:
     # SNOPT settings
     major_max_iter: int = 5000
     minor_max_iter: int = 100 * major_max_iter
-    major_optimality_tol: float = 1e-7
+    major_optimality_tol: float = 5e-7
     major_feasibility_tol: float = 1e-9
     minor_feasibility_tol: float = 1e-9
     expand_graph: bool = False
