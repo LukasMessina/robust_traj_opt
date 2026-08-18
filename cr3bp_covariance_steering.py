@@ -689,26 +689,32 @@ def tvlqr_gains(
     state_matrices: list[np.ndarray],
     control_matrices: list[np.ndarray],
 ) -> np.ndarray:
-    """Backward Riccati recursion on the normalised linearisation."""
+    """Backward Riccati recursion on the normalised state/control subsystem.
 
-    Q_normalized = np.eye(NX)
+    The propagated dynamics include mass as a seventh augmented state, but the
+    feedback law observes only the six position/velocity deviations.  Restrict
+    the linearisation before starting the recursion so mass dynamics and
+    state--mass coupling cannot influence the initial feedback gains.
+    """
+
+    Q_normalized = np.eye(NP)
     R_normalized = control_weight * np.eye(NU)
     terminal_weights = np.asarray(terminal_weight, dtype=float)
     if terminal_weights.ndim == 0:
-        terminal_weights = np.full(NX, float(terminal_weights))
-    elif terminal_weights.shape != (NX,):
-        raise ValueError(f"terminal_weight must be a scalar or have shape ({NX},).")
+        terminal_weights = np.full(NP, float(terminal_weights))
+    elif terminal_weights.shape != (NP,):
+        raise ValueError(f"terminal_weight must be a scalar or have shape ({NP},).")
     P_normalized = np.diag(terminal_weights)
     gains = np.zeros((len(state_matrices), NU, NP), dtype=float)
 
     for k in reversed(range(len(state_matrices))):
-        state_matrix = state_matrices[k]
-        control_matrix = control_matrices[k]
+        state_matrix = state_matrices[k][0:NP, 0:NP]
+        control_matrix = control_matrices[k][0:NP, :]
         gain = np.linalg.solve(
             R_normalized + control_matrix.T @ P_normalized @ control_matrix,
             control_matrix.T @ P_normalized @ state_matrix,
         )
-        gains[k] = -gain[:, 0:NP]
+        gains[k] = -gain
         closed_loop_matrix = state_matrix - control_matrix @ gain
         P_normalized = Q_normalized + gain.T @ R_normalized @ gain + closed_loop_matrix.T @ P_normalized @ closed_loop_matrix
         P_normalized = 0.5 * (P_normalized + P_normalized.T)
@@ -740,8 +746,11 @@ def seed_gains(
     because `sigma_f = sigma_0 / sqrt(reduction)` makes each terminal
     `Qf/Q` ratio equal its requested reduction. Only ratios matter, so this is
     equivalent to `Q = I`, `R = c^2`, and terminal weights `r_p` and `r_v`.
-    The unconstrained mass state retains the stricter of those weights so that
-    equal position and velocity reductions reproduce the previous seed exactly.
+
+    This cost and the Riccati recursion are defined only on the six-dimensional
+    position/velocity subsystem. Mass remains part of nonlinear moment
+    propagation, but it is not observed by the feedback law and therefore must
+    not affect the gain seed.
 
     """
 
@@ -750,8 +759,7 @@ def seed_gains(
     velocity_reduction = float(options.velocity_covariance_reduction)
     terminal_weights = np.array(
         [position_reduction] * 3
-        + [velocity_reduction] * 3
-        + [max(position_reduction, velocity_reduction)],
+        + [velocity_reduction] * 3,
         dtype=float,
     )
     gains = tvlqr_gains(
