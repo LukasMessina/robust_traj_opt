@@ -6,7 +6,7 @@
 *.json
 
 # Licensed solver
-solvers/snopt/
+solvers/
 
 # Generated optimization summaries
 output/**/summary.txt

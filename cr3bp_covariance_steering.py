@@ -12,16 +12,30 @@ through the integration and supplies exact first and second derivatives.
 
 Configuration: one Gaussian component (no GMM split, hence a single control
 policy), navigation error (R_bar, H = I), deterministic dynamics (Q_k = 0).
-The initial guess is the fuel-optimal solution restricted to its knot
+The initial guess is the energy-optimal solution restricted to its knot
 points, thus the interval durations are not uniform and the objective sum is weighted by them.
+The stochastic running objective is the mean-control epigraph plus
+Bryson-weighted state- and control-covariance traces, with no terminal Qf cost.
+
+Before the stochastic solve, the saved reference is reoptimized on the
+stochastic NLP's RK4 mesh with a bounded deterministic minimum-energy objective.
+Set ``Options.reference_arcs`` (or pass ``--reference-arcs``) to apply the same
+procedure to only the first requested intervals and their relative endpoint.
+
+Covariance propagation defaults to single shooting. Set
+``Options.covariance_transcription="multiple_shooting"`` (or use the matching
+CLI option) for node-scaled Cholesky covariance factors and dimensionless
+continuity equalities.
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 import casadi
 import matplotlib.pyplot as plt
@@ -37,7 +51,7 @@ NU = 3                       # control dimension
 NP = 6                       # primed (position-velocity) state dimension
 N_SIGMA = 2 * NX + 1         # unscented sigma points
 
-REFERENCE_DIR = Path("output/cr3bp_fuel_optimal")
+REFERENCE_DIR = Path("output/cr3bp_energy_optimal")
 OUTPUT_DIR = Path("output/cr3bp_covariance_steering")
 
 # Initial position and velocity standard deviations per test case [-].
@@ -74,6 +88,21 @@ class Options:
 
     # Keep every `mesh_stride`-th knot point of the DIRTRAN mesh. 
     mesh_stride: int = 1
+    # When set, restrict the reference to its first `reference_arcs` source
+    # intervals and use the state at that relative endpoint as the terminal
+    # mean target. None preserves the complete-transfer problem.
+    reference_arcs: int | None = None
+    # Reoptimize the saved full or truncated collocation reference with the RK4
+    # map used by the stochastic NLP before initializing its moments and gains.
+    # The legacy name is retained for compatibility with existing callers.
+    refine_truncated_reference: bool = True
+    reference_control_norm_epsilon: float = 1e-6
+    bryson_sigma_factor: float = 3.0
+    covariance_transcription: Literal[
+        "single_shooting", "multiple_shooting"
+    ] = "single_shooting"
+    covariance_scale_relative_floor: float = 1e-6
+    covariance_factor_diagonal_floor: float = 1e-4
     integrator_substeps: int = 4
 
     violation_parameter: float = 0.05   
@@ -105,10 +134,6 @@ class Options:
     terminal_margin_floor: float = 1e-3
 
 
-    # Target contribution of the cl control effort margin up to a
-    # confidence level p after seeding
-    cl_control_effort_seed_margin: float = 0.2        
-
     # Warm-start the feedback gains from the Bryson-rule Riccati recursion. With
     # this disabled the gains start at zero, the covariance grows open-loop, and
     # the terminal constraint begins many orders of magnitude violated. Starting
@@ -123,6 +148,9 @@ class Options:
     major_optimality_tol: float = 5e-7
     major_feasibility_tol: float = 1e-9
     minor_feasibility_tol: float = 1e-9
+    # Initial weight for SNOPT's nonlinear elastic-mode constraint
+    # relaxations. Setting this to None leaves SNOPT's native default (1e4).
+    elastic_weight: float | None = None
     expand_graph: bool = False
     print_level: int = 1
 
@@ -134,6 +162,98 @@ def psi_inverse(dimension: int, beta: float) -> float:
     """Psi_d^-1(beta) = sqrt(Phi_d^-1(1 - beta)) with Phi_d the chi-squared CDF."""
 
     return float(np.sqrt(chi2.ppf(1.0 - beta, dimension)))
+
+
+def bryson_running_cost_weights(options: Options) -> tuple[np.ndarray, np.ndarray]:
+    """Return normalized Bryson weights ``Q=I_6`` and ``R=c^2 I_3``.
+
+    State covariance is normalized by the initial position/velocity standard
+    deviations and control covariance by the maximum thrust. The mass channel
+    is deliberately excluded, matching the short-horizon comparison cost.
+    """
+
+    sigma_factor = float(options.bryson_sigma_factor)
+    if sigma_factor <= 0.0:
+        raise ValueError("bryson_sigma_factor must be positive")
+    return np.eye(NP), sigma_factor**2 * np.eye(NU)
+
+
+def composite_running_cost(
+    control_epigraph,
+    state_covariance,
+    control_covariance,
+    state_weight,
+    control_weight,
+):
+    """Epigraph mean-control cost plus Bryson covariance traces."""
+
+    return (
+        control_epigraph
+        + casadi.trace(state_weight @ state_covariance[0:NP, 0:NP])
+        + casadi.trace(control_weight @ control_covariance)
+    )
+
+
+def decision_lower_triangular_matrix(entries, dimension: int):
+    """Assemble a lower-triangular CasADi matrix from row-major entries."""
+
+    indices = [
+        (row, column)
+        for row in range(dimension)
+        for column in range(row + 1)
+    ]
+    rows = [[casadi.MX(0.0)] * dimension for _ in range(dimension)]
+    for (row, column), entry in zip(indices, casadi.vertsplit(entries)):
+        rows[row][column] = entry
+    return casadi.vertcat(*[casadi.horzcat(*row) for row in rows])
+
+
+def covariance_node_scaling(
+    seed_covariances: np.ndarray,
+    relative_floor: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Build fixed node-dependent diagonal scales from a covariance seed."""
+
+    covariances = np.asarray(seed_covariances, dtype=float)
+    if covariances.ndim != 3 or covariances.shape[1] != covariances.shape[2]:
+        raise ValueError("seed_covariances must have shape (nodes, nx, nx)")
+    if relative_floor <= 0.0:
+        raise ValueError("relative_floor must be positive")
+
+    diagonal = np.maximum(
+        np.diagonal(covariances, axis1=1, axis2=2),
+        0.0,
+    )
+    channel_peaks = np.max(diagonal, axis=0)
+    if np.any(channel_peaks <= 0.0):
+        raise ValueError("every covariance channel needs a positive seed scale")
+    variances = np.maximum(
+        diagonal,
+        relative_floor * channel_peaks[np.newaxis, :],
+    )
+    standard_deviations = np.sqrt(variances)
+    return variances, standard_deviations, 1.0 / standard_deviations
+
+
+def covariance_factor_seed(matrix: np.ndarray, jitter: float) -> np.ndarray:
+    """Return an exact Cholesky factor when possible, otherwise a PSD seed."""
+
+    symmetric = 0.5 * (np.asarray(matrix, dtype=float) + np.asarray(matrix, dtype=float).T)
+    try:
+        factor = np.linalg.cholesky(symmetric)
+        if np.min(np.diag(factor)) >= jitter:
+            return factor
+    except np.linalg.LinAlgError:
+        pass
+    eigenvalues, eigenvectors = np.linalg.eigh(symmetric)
+    positive = (
+        eigenvectors
+        @ np.diag(np.clip(eigenvalues, 0.0, None))
+        @ eigenvectors.T
+    )
+    return np.linalg.cholesky(
+        positive + jitter * np.eye(symmetric.shape[0])
+    )
 
 
 def control_covariance_weight(options: Options) -> float:
@@ -571,7 +691,7 @@ def get_arc_function(
 
 @dataclass
 class ReferenceTraj:
-    """Fuel-optimal DIRTRAN solution restricted to a subset of its knot points."""
+    """Energy-optimal DIRTRAN solution restricted to a subset of its knot points."""
 
     node_times: np.ndarray   # [-] non-dimensional, first entry zero
     steps: np.ndarray        # [-] arc durations, generally non-uniform
@@ -585,10 +705,30 @@ class ReferenceTraj:
 
 
 def load_ref_traj(case: TestCase, options: Options) -> ReferenceTraj:
-    data = np.load(REFERENCE_DIR / f"{case.test_case_id}.npz", allow_pickle=True)
+    source_path = REFERENCE_DIR / f"{case.test_case_id}.npz"
+    data = np.load(source_path, allow_pickle=True)
     mesh = np.asarray(data["mesh_fraction"], dtype=float)
     states = np.asarray(data["x"], dtype=float)
     controls = np.asarray(data["u"], dtype=float)
+
+    requested_arcs = options.reference_arcs
+    if requested_arcs is not None:
+        requested_arcs = int(requested_arcs)
+        if requested_arcs < 1:
+            raise ValueError("reference_arcs must be positive or None")
+        available_arcs = min(
+            mesh.size - 1,
+            states.shape[1] - 1,
+            controls.shape[1],
+        )
+        if requested_arcs > available_arcs:
+            raise ValueError(
+                f"{source_path} contains only "
+                f"{available_arcs} complete arcs, not {requested_arcs}"
+            )
+        mesh = mesh[: requested_arcs + 1]
+        states = states[:, : requested_arcs + 1]
+        controls = controls[:, :requested_arcs]
 
     stride = max(int(options.mesh_stride), 1)
     kept = sorted(set(list(range(0, mesh.size - 1, stride)) + [mesh.size - 1]))
@@ -602,14 +742,159 @@ def load_ref_traj(case: TestCase, options: Options) -> ReferenceTraj:
         weights = fine_steps[window]
         coarse_controls[:, k] = controls[:, window] @ weights / weights.sum()
 
-    history = data["history"]
-    fuel_consumed = float(history[-1]["fuel_consumed_kg"]) if history.size else float("nan")
+    if requested_arcs is None:
+        history = data["history"]
+        fuel_consumed = (
+            float(history[-1]["fuel_consumed_kg"])
+            if history.size
+            else float("nan")
+        )
+    else:
+        fuel_consumed = float(
+            case.m0_wet * (states[6, 0] - states[6, -1])
+        )
     return ReferenceTraj(
         node_times=node_times,
         steps=np.diff(node_times),
         states=states[:, kept],
         controls=coarse_controls,
         fuel_consumed=fuel_consumed,
+    )
+
+
+def terminal_mean_target(
+    case: TestCase,
+    options: Options,
+    ref_traj: ReferenceTraj,
+) -> np.ndarray:
+    """Return the complete-transfer or relative short-horizon mean target."""
+
+    if options.reference_arcs is None:
+        return np.asarray(case.xf_state, dtype=float)
+    return np.asarray(ref_traj.states[0:NP, -1], dtype=float)
+
+
+def configure_snopt(opti: casadi.Opti, options: Options) -> None:
+    """Apply the common SNOPT settings used by reference and stochastic solves."""
+
+    # CasADi 3.7.2's SNOPT interface tries numeric options as integers before
+    # trying them as reals. Pass fractional tolerances as strings so they reach
+    # SNOPT through its generic real-valued parameter parser.
+    snopt_options = {
+        "Major iterations limit": options.major_max_iter,
+        "Minor iterations limit": max(500, options.minor_max_iter),
+        "Iterations limit": options.minor_max_iter,
+        "Major optimality tolerance": f"{options.major_optimality_tol:.13g}",
+        "Major feasibility tolerance": f"{options.major_feasibility_tol:.13g}",
+        "Minor feasibility tolerance": f"{options.minor_feasibility_tol:.13g}",
+        "Print file": 0,
+        "Summary file": 6 if options.print_level else 0,
+        "Major print level": options.print_level,
+        "Minor print level": 0,
+    }
+    if options.elastic_weight is not None:
+        elastic_weight = float(options.elastic_weight)
+        if not np.isfinite(elastic_weight) or elastic_weight <= 0.0:
+            raise ValueError("elastic_weight must be finite and positive")
+        # Elastic weight is a real-valued SNOPT option, so pass it through the
+        # same string route used by the fractional tolerances above.
+        snopt_options["Elastic weight"] = f"{elastic_weight:.13g}"
+    opti.solver(
+        "snopt",
+        {"expand": options.expand_graph, "print_time": True},
+        snopt_options,
+    )
+
+
+def reoptimize_reference(
+    case: TestCase,
+    options: Options,
+    source: ReferenceTraj,
+    dynamics: Dynamics,
+) -> ReferenceTraj:
+    """Reoptimize the full or truncated energy reference on the NLP RK4 map.
+
+    A full transfer uses the exact case terminal position/velocity; a truncated
+    transfer uses the saved relative endpoint. Terminal mass remains free, and
+    the objective is the bounded normalized control-energy integral.
+    """
+
+    if not options.refine_truncated_reference:
+        return source
+    epsilon = float(options.reference_control_norm_epsilon)
+    if epsilon <= 0.0:
+        raise ValueError("reference_control_norm_epsilon must be positive")
+
+    n_arcs = source.n_arcs
+    opti = casadi.Opti()
+    means = opti.variable(NX, n_arcs + 1)
+    normalized_controls = opti.variable(NU, n_arcs)
+    opti.subject_to(means[:, 0] == case.x0_augmented_state)
+
+    objective = 0.0
+    for k in range(n_arcs):
+        propagated, _, _ = dynamics.propagate(
+            means[:, k],
+            case.max_thrust_nd * normalized_controls[:, k],
+            float(source.steps[k]),
+            options.integrator_substeps,
+        )
+        opti.subject_to(means[:, k + 1] == propagated)
+        control_norm = casadi.sqrt(
+            casadi.dot(normalized_controls[:, k], normalized_controls[:, k])
+            + epsilon**2
+        )
+        opti.subject_to(control_norm <= 1.0)
+        objective = objective + float(source.steps[k]) * casadi.dot(
+            normalized_controls[:, k], normalized_controls[:, k]
+        )
+
+    opti.subject_to(
+        means[0:NP, -1]
+        == casadi.DM(terminal_mean_target(case, options, source))
+    )
+    opti.minimize(objective)
+    opti.set_initial(means, source.states)
+    opti.set_initial(
+        normalized_controls,
+        source.controls / case.max_thrust_nd,
+    )
+    configure_snopt(opti, options)
+
+    try:
+        solution = run_snopt_solver(
+            opti, f"{case.test_case_id}-reference-{n_arcs}-arcs"
+        )
+        status = "converged"
+    except RuntimeError as error:
+        print(
+            f"[{case.test_case_id}:reference] SNOPT did not converge "
+            f"({error}); returning the last iterate.",
+            flush=True,
+        )
+        solution = opti.debug
+        status = "last iterate"
+
+    solved_states = np.asarray(solution.value(means), dtype=float)
+    solved_normalized_controls = np.asarray(
+        solution.value(normalized_controls), dtype=float
+    ).reshape(NU, n_arcs)
+    solved_controls = case.max_thrust_nd * solved_normalized_controls
+    mass_consumed = float(
+        case.m0_wet * (solved_states[6, 0] - solved_states[6, -1])
+    )
+    print(
+        f"[{case.test_case_id}] RK4 minimum-energy reference ({n_arcs} arcs): "
+        f"{status}, max |u|/u_max="
+        f"{np.max(np.linalg.norm(solved_normalized_controls, axis=0)):.6f}",
+        flush=True,
+    )
+    return ReferenceTraj(
+        node_times=source.node_times.copy(),
+        steps=source.steps.copy(),
+        states=solved_states,
+        controls=solved_controls,
+        fuel_consumed=mass_consumed,
     )
 
 
@@ -788,12 +1073,12 @@ def build_initial_guess(
     arc_functions: list[casadi.Function],
     psi_inv: float,
 ) -> InitialGuess:
-    """Warm start that already satisfies the thrust chance constraint.
+    """Warm start from the unmodified energy reference and feedback-gain seed.
 
-    The fuel optimal solution is bang-bang at exactly T_max, so the probabilistic thrust constraint is violated at
-    every thrust arc as soon as any feedback is present. The seed gains are scaled
-    down until the closed-loop share of the budget leaves room, then the open-loop
-    magnitudes are trimmed to fit under what remains.
+    The feedforward controls are exactly the normalized energy-optimal controls and
+    the Riccati gains are used at their original magnitude. Covariance is then
+    propagated once from that combination. The seed is intentionally not altered
+    to satisfy the thrust chance constraint.
     """
 
     means = np.array(ref_traj.states, dtype=float)
@@ -823,29 +1108,19 @@ def build_initial_guess(
         )
         seed_weights = None
 
-    radius = np.zeros(ref_traj.n_arcs, dtype=float)
-    covariances = np.tile(normalization.initial_covariance, (ref_traj.n_arcs + 1, 1, 1))
-    for iteration in range(30):
-        _, covariances, control_covariances = propagate_stochastic_moments(
-            arc_functions, means, feedforward, gains, normalization.initial_covariance
+    _, covariances, control_covariances = propagate_stochastic_moments(
+        arc_functions,
+        means,
+        feedforward,
+        gains,
+        normalization.initial_covariance,
+    )
+    radius = psqrt_spectral_radii(control_covariances)
+    if not np.all(np.isfinite(radius)):
+        raise FloatingPointError(
+            "Non-finite closed-loop control-effort radius in the unmodified "
+            "energy-reference/Riccati seed."
         )
-        radius = psqrt_spectral_radii(control_covariances)
-        worst = float(np.max(psi_inv * radius))
-        if not np.isfinite(worst):
-            raise FloatingPointError(
-                "Non-finite closed-loop control-effort seed margin at gain-scaling "
-                f"iteration {iteration + 1}."
-            )
-        if worst <= options.cl_control_effort_seed_margin:
-            break
-        gains *= np.sqrt(options.cl_control_effort_seed_margin / worst)
-
-    headroom = np.clip(1.0 - psi_inv * radius, 0.0, None)
-    magnitudes = np.linalg.norm(feedforward, axis=0)
-    factor = np.ones_like(magnitudes)
-    active = magnitudes > 1e-12
-    factor[active] = np.minimum(1.0, headroom[active] / magnitudes[active])
-    feedforward = feedforward * factor
 
 
     position_target = 1.0 / options.position_covariance_reduction
@@ -920,6 +1195,7 @@ class RobustSolution:
     covariances: np.ndarray            # P, normalised
     control_covariances: np.ndarray    # SigmaT, normalised
     objective: float
+    covariance_scale_variances: np.ndarray | None = None
     # Every instance will have a different set of diagnostics.
     diagnostics: dict[str, float] = field(default_factory=dict)
 
@@ -963,6 +1239,33 @@ def solve_rocp(
     n_arcs = ref_traj.n_arcs
     position_target = 1.0 / options.position_covariance_reduction
     velocity_target = 1.0 / options.velocity_covariance_reduction
+    mode = options.covariance_transcription
+    if mode not in ("single_shooting", "multiple_shooting"):
+        raise ValueError(
+            "covariance_transcription must be 'single_shooting' or "
+            "'multiple_shooting'"
+        )
+
+    seed_covariances = None
+    covariance_scale_variances = None
+    covariance_scale_std = None
+    covariance_scale_inv_std = None
+    if mode == "multiple_shooting":
+        _, seed_covariances, _ = propagate_stochastic_moments(
+            arc_functions,
+            initial_guess.means,
+            initial_guess.feedforward,
+            initial_guess.gains,
+            normalization.initial_covariance,
+        )
+        (
+            covariance_scale_variances,
+            covariance_scale_std,
+            covariance_scale_inv_std,
+        ) = covariance_node_scaling(
+            seed_covariances,
+            options.covariance_scale_relative_floor,
+        )
 
     opti = casadi.Opti()
     means = opti.variable(NX, n_arcs + 1)
@@ -973,14 +1276,62 @@ def solve_rocp(
     opti.subject_to(means[:, 0] == case.x0_augmented_state)
     opti.subject_to(casadi.vec(slack) >= 0.0)
 
+    covariance_entries = []
+    node_covariances = [casadi.DM(normalization.initial_covariance)]
+    if mode == "multiple_shooting":
+        n_covariance_entries = NX * (NX + 1) // 2
+        for node in range(1, n_arcs + 1):
+            entries = opti.variable(n_covariance_entries)
+            factor = decision_lower_triangular_matrix(entries, NX)
+            opti.subject_to(
+                casadi.diag(factor)
+                >= options.covariance_factor_diagonal_floor
+            )
+            covariance_entries.append(entries)
+            normalized_covariance = factor @ factor.T
+            scale = casadi.DM(np.diag(covariance_scale_std[node]))
+            node_covariances.append(
+                scale @ normalized_covariance @ scale
+            )
+
     covariance = casadi.DM(normalization.initial_covariance)
+    bryson_state_weight, bryson_control_weight = bryson_running_cost_weights(
+        options
+    )
+    Q_running = casadi.DM(bryson_state_weight)
+    R_running = casadi.DM(bryson_control_weight)
     objective = 0.0
     for k in range(n_arcs):
-        mean_next, covariance, control_covariance = arc_functions[k](
-            means[:, k], covariance, feedforward[:, k], float(initial_guess.gain_scale[k]) * gains[k]
+        covariance_k = (
+            covariance
+            if mode == "single_shooting"
+            else node_covariances[k]
         )
-        # Multiple shooting on the mean, single shooting on the covariance.
+        mean_next, covariance_next, control_covariance = arc_functions[k](
+            means[:, k],
+            covariance_k,
+            feedforward[:, k],
+            float(initial_guess.gain_scale[k]) * gains[k],
+        )
         opti.subject_to(means[:, k + 1] == mean_next)
+        if mode == "single_shooting":
+            covariance = covariance_next
+        else:
+            defect = node_covariances[k + 1] - covariance_next
+            inverse_scale = casadi.DM(
+                np.diag(covariance_scale_inv_std[k + 1])
+            )
+            scaled_defect = inverse_scale @ defect @ inverse_scale
+            opti.subject_to(
+                casadi.vertcat(
+                    *[
+                        scaled_defect[row, column]
+                        for row in range(NX)
+                        for column in range(row + 1)
+                    ]
+                )
+                == 0.0
+            )
 
         # ||S_k|| via a slack, as in deterministic case, so the cost stays smooth at
         # the coast arcs where S_k vanishes.
@@ -995,12 +1346,22 @@ def solve_rocp(
         # Transcription of the control chance constraint
         opti.subject_to(slack[0, k] + psi_inv * radius <= 1.0)
 
-        # weighted by the arc duration because the mesh is not uniform.
-        objective = objective + float(ref_traj.steps[k]) * (
-            slack[0, k] + psi_inv * radius
+        # Composite running cost used by the short-horizon comparison: the
+        # epigraph mean-control norm plus Bryson-weighted state and control
+        # covariance traces. The chance radius is constrained above but is not
+        # charged separately, and there is no terminal Qf objective term.
+        objective = objective + float(ref_traj.steps[k]) * composite_running_cost(
+            slack[0, k],
+            covariance_k,
+            control_covariance,
+            Q_running,
+            R_running,
         )
 
-    opti.subject_to(means[0:NP, n_arcs] == case.xf_state)
+    opti.subject_to(
+        means[0:NP, n_arcs]
+        == casadi.DM(terminal_mean_target(case, options, ref_traj))
+    )
 
     # Terminal covariance constraint: the full 6x6 Loewner order
     # P'_N <= Dt, with Dt = diag(position_target * I_3, velocity_target * I_3),
@@ -1017,9 +1378,14 @@ def solve_rocp(
     inverse_target_std = casadi.DM(
         1.0 / np.sqrt([position_target] * 3 + [velocity_target] * 3)
     )
+    terminal_covariance = (
+        covariance
+        if mode == "single_shooting"
+        else node_covariances[-1]
+    )
     scaled_terminal = (
         casadi.diag(inverse_target_std)
-        @ covariance[0:NP, 0:NP]
+        @ terminal_covariance[0:NP, 0:NP]
         @ casadi.diag(inverse_target_std)
     )
     terminal_slack = casadi.MX.eye(NP) - scaled_terminal
@@ -1046,52 +1412,42 @@ def solve_rocp(
     for k in range(n_arcs):
         opti.set_initial(gains[k], initial_guess.gains[k] / initial_guess.gain_scale[k])
     opti.set_initial(margin, initial_guess.terminal_margin)
+    if mode == "multiple_shooting":
+        covariance_lower_indices = [
+            (row, column)
+            for row in range(NX)
+            for column in range(row + 1)
+        ]
+        for node, entries in enumerate(covariance_entries, start=1):
+            inverse_scale = np.diag(covariance_scale_inv_std[node])
+            normalized_seed = (
+                inverse_scale
+                @ seed_covariances[node]
+                @ inverse_scale
+            )
+            factor = covariance_factor_seed(
+                normalized_seed,
+                options.cholesky_jitter,
+            )
+            minimum_diagonal = float(np.min(np.diag(factor)))
+            if minimum_diagonal < options.covariance_factor_diagonal_floor:
+                raise ValueError(
+                    "multiple-shooting covariance-factor seed violates the "
+                    f"diagonal floor at node {node}: "
+                    f"{minimum_diagonal:.3e} < "
+                    f"{options.covariance_factor_diagonal_floor:.3e}"
+                )
+            opti.set_initial(
+                entries,
+                np.asarray(
+                    [
+                        factor[row, column]
+                        for row, column in covariance_lower_indices
+                    ]
+                ),
+            )
 
-    # SNOPT major/minor tolerances play the role IPOPT's tol/constr_viol_tol
-    # play: "Major optimality tolerance" is the KKT/reduced-gradient tolerance,
-    # and "Major feasibility tolerance" is the nonlinear constraint-violation
-    # tolerance. CasADi 3.7.2's SNOPT interface tries numeric options as integers
-    # before trying them as reals. Fractional Python floats can consequently be
-    # converted to zero and leave SNOPT's defaults in effect. Pass real-valued
-    # SNOPT options as strings so they reach SNOPT through its generic parameter
-    # parser with their intended values.
-    #
-    # The default elastic weight (1e4) was too small to hold feasibility without
-    # repeatedly escalating the penalty parameter (observed climbing to ~1e11,
-    # which loosens the effective optimality/feasibility test since both are
-    # scaled by the multiplier/penalty magnitude). NOTE: an earlier attempt that
-    # also set "Scale option": 0 (disabling SNOPT's automatic scaling, reasoning
-    # the problem is already hand-normalised) made things worse - more major
-    # iterations, penalty parameter still climbing to ~1.5e9, looser constraint
-    # violation - so scaling is left at its default here. Only the elastic
-    # weight is changed, and this needs to be re-verified against a plain
-    # (no override) run before trusting it fixed anything.
-    snopt_options = {
-        "Major iterations limit": options.major_max_iter,
-        "Minor iterations limit": max(500, options.minor_max_iter),
-        # Cumulative number of minor (SQP/QP) iterations over the entire solve.
-        # Without this explicit setting, SNOPT may stop at its smaller default
-        # even though neither of the limits above has been reached.
-        "Iterations limit": options.minor_max_iter,
-        "Major optimality tolerance": f"{options.major_optimality_tol:.13g}",
-        "Major feasibility tolerance": f"{options.major_feasibility_tol:.13g}",
-        "Minor feasibility tolerance": f"{options.minor_feasibility_tol:.13g}",
-        # CasADi opens solver.out while initializing SNOPT, before it applies
-        # these native options. "Print file": 0 suppresses subsequent output
-        # to that file but cannot prevent it from being opened. The unique
-        # working directory in run_snopt_solver is what prevents consecutive
-        # solves from reusing the same absolute solver.out path. "Summary
-        # file": 6 keeps the major-iteration log on standard output.
-        "Print file": 0,
-        "Summary file": 6 if options.print_level else 0,
-        "Major print level": options.print_level,
-        "Minor print level": 0,
-    }
-    opti.solver(
-        "snopt",
-        {"expand": options.expand_graph, "print_time": True},
-        snopt_options,
-    )
+    configure_snopt(opti, options)
     solver_name = "SNOPT"
 
 
@@ -1105,6 +1461,7 @@ def solve_rocp(
 
     solved_means = np.asarray(solution.value(means), dtype=float)
     solved_feedforward = np.asarray(solution.value(feedforward), dtype=float).reshape(NU, n_arcs)
+    solved_slack = np.asarray(solution.value(slack), dtype=float).reshape(n_arcs)
     solved_gains = np.stack(
         [
             initial_guess.gain_scale[k] * np.asarray(solution.value(gain), dtype=float).reshape(NU, NP)
@@ -1112,13 +1469,97 @@ def solve_rocp(
         ]
     )
 
-    propagated_means, covariances, control_covariances = propagate_stochastic_moments(
-        arc_functions, solved_means, solved_feedforward, solved_gains, normalization.initial_covariance
-    )
+    if mode == "single_shooting":
+        propagated_means, covariances, control_covariances = (
+            propagate_stochastic_moments(
+                arc_functions,
+                solved_means,
+                solved_feedforward,
+                solved_gains,
+                normalization.initial_covariance,
+            )
+        )
+        covariance_matching_defect = 0.0
+        scaled_covariance_matching_defect = 0.0
+    else:
+        covariances = np.empty((n_arcs + 1, NX, NX), dtype=float)
+        covariances[0] = normalization.initial_covariance
+        covariance_lower_indices = [
+            (row, column)
+            for row in range(NX)
+            for column in range(row + 1)
+        ]
+        for node, entries in enumerate(covariance_entries, start=1):
+            values = np.asarray(solution.value(entries), dtype=float).ravel()
+            factor = np.zeros((NX, NX), dtype=float)
+            for (row, column), value in zip(
+                covariance_lower_indices,
+                values,
+            ):
+                factor[row, column] = value
+            scale = np.diag(covariance_scale_std[node])
+            covariances[node] = scale @ factor @ factor.T @ scale
+
+        propagated_means = np.empty_like(solved_means)
+        propagated_means[:, 0] = solved_means[:, 0]
+        control_covariances = np.empty((n_arcs, NU, NU), dtype=float)
+        covariance_matching_defect = 0.0
+        scaled_covariance_matching_defect = 0.0
+        for k in range(n_arcs):
+            mean_next, covariance_next, control_covariance = arc_functions[k](
+                solved_means[:, k],
+                covariances[k],
+                solved_feedforward[:, k],
+                solved_gains[k],
+            )
+            propagated_means[:, k + 1] = np.asarray(
+                mean_next.full(), dtype=float
+            ).ravel()
+            predicted_covariance = np.asarray(
+                covariance_next.full(), dtype=float
+            )
+            control_covariances[k] = np.asarray(
+                control_covariance.full(), dtype=float
+            )
+            raw_defect = predicted_covariance - covariances[k + 1]
+            covariance_matching_defect = max(
+                covariance_matching_defect,
+                float(np.max(np.abs(raw_defect))),
+            )
+            inverse_scale = np.diag(covariance_scale_inv_std[k + 1])
+            scaled_defect = inverse_scale @ raw_defect @ inverse_scale
+            scaled_covariance_matching_defect = max(
+                scaled_covariance_matching_defect,
+                float(np.max(np.abs(scaled_defect))),
+            )
+
     matching_defect = float(np.max(np.abs(propagated_means[:, 1:] - solved_means[:, 1:])))
     # rho is an expression, so recover it exactly from the propagated moments.
     solved_radius = np.sqrt(
         psqrt_spectral_radii(control_covariances) ** 2 + options.spectral_radius_floor ** 2
+    )
+    objective_mean_control = float(np.sum(ref_traj.steps * solved_slack))
+    objective_state_covariance = float(
+        np.sum(
+            [
+                ref_traj.steps[k]
+                * np.trace(
+                    bryson_state_weight @ covariances[k, 0:NP, 0:NP]
+                )
+                for k in range(n_arcs)
+            ]
+        )
+    )
+    objective_control_covariance = float(
+        np.sum(
+            [
+                ref_traj.steps[k]
+                * np.trace(
+                    bryson_control_weight @ control_covariances[k]
+                )
+                for k in range(n_arcs)
+            ]
+        )
     )
 
     return RobustSolution(
@@ -1129,7 +1570,29 @@ def solve_rocp(
         covariances=covariances,
         control_covariances=control_covariances,
         objective=float(solution.value(objective)),
-        diagnostics={"converged": float(converged), "matching_defect_nd": matching_defect},
+        covariance_scale_variances=covariance_scale_variances,
+        diagnostics={
+            "converged": float(converged),
+            "matching_defect_nd": matching_defect,
+            "multiple_shooting": float(mode == "multiple_shooting"),
+            "covariance_matching_defect": covariance_matching_defect,
+            "scaled_covariance_matching_defect": (
+                scaled_covariance_matching_defect
+            ),
+            "covariance_scale_min_variance": (
+                float(np.min(covariance_scale_variances))
+                if covariance_scale_variances is not None
+                else float("nan")
+            ),
+            "covariance_scale_max_variance": (
+                float(np.max(covariance_scale_variances))
+                if covariance_scale_variances is not None
+                else float("nan")
+            ),
+            "objective_mean_control": objective_mean_control,
+            "objective_state_covariance": objective_state_covariance,
+            "objective_control_covariance": objective_control_covariance,
+        },
     )
 
 
@@ -1248,7 +1711,10 @@ def compute_diagnostics(
     )
     terminal_covariance_target_ratio_eigvals = np.linalg.eigvalsh(terminal_covariance_target_ratio)
 
-    componentwise_mean_error = float(np.max(np.abs(solution.means[0:NP, -1] - case.xf_state)))
+    mean_target = terminal_mean_target(case, options, ref_traj)
+    componentwise_mean_error = float(
+        np.max(np.abs(solution.means[0:NP, -1] - mean_target))
+    )
     thrust_budget = feedforward_magnitude + psi_inv * solution.radius
 
     empirical = (
@@ -1261,10 +1727,42 @@ def compute_diagnostics(
 
     return {
         "n_arcs": float(ref_traj.n_arcs),
+        "duration_days": float(
+            ref_traj.node_times[-1] * case.time_unit / 86400.0
+        ),
         "mesh_stride": float(options.mesh_stride),
+        "short_horizon": float(options.reference_arcs is not None),
+        "reference_arcs_requested": float(
+            options.reference_arcs
+            if options.reference_arcs is not None
+            else ref_traj.n_arcs
+        ),
         "converged": solution.diagnostics["converged"],
         "matching_defect_nd": solution.diagnostics["matching_defect_nd"],
+        "multiple_shooting": solution.diagnostics["multiple_shooting"],
+        "covariance_matching_defect": solution.diagnostics[
+            "covariance_matching_defect"
+        ],
+        "scaled_covariance_matching_defect": solution.diagnostics[
+            "scaled_covariance_matching_defect"
+        ],
+        "covariance_scale_min_variance": solution.diagnostics[
+            "covariance_scale_min_variance"
+        ],
+        "covariance_scale_max_variance": solution.diagnostics[
+            "covariance_scale_max_variance"
+        ],
         "objective_nd": float(solution.objective),
+        "objective_mean_control": solution.diagnostics[
+            "objective_mean_control"
+        ],
+        "objective_state_covariance": solution.diagnostics[
+            "objective_state_covariance"
+        ],
+        "objective_control_covariance": solution.diagnostics[
+            "objective_control_covariance"
+        ],
+        "bryson_sigma_factor": float(options.bryson_sigma_factor),
         "deterministic_effort_nd": deterministic_effort,
         "feedback_effort_nd": feedback_effort,
         "total_effort_nd": total_effort,
@@ -1323,9 +1821,21 @@ def print_summary(
         f"{'=' * 68}",
         f"arcs                      : {diagnostics['n_arcs']:.0f} "
         f"converged           : {'yes' if diagnostics['converged'] else 'no'}",
+        f"horizon                   : "
+        f"{'relative' if diagnostics['short_horizon'] else 'full transfer'}, "
+        f"{diagnostics['duration_days']:.6f} [days]",
+        f"covariance transcription  : "
+        f"{'multiple shooting' if diagnostics['multiple_shooting'] else 'single shooting'}",
         f"max matching defect       : {diagnostics['matching_defect_nd']:.3e} [-]",
-        f"non dimensional objective J   : {diagnostics['total_effort_nd']:.6e} [-]"
-        f"   (NLP slack value {diagnostics['objective_nd']:.6e})",
+        f"covariance defect (raw)   : {diagnostics['covariance_matching_defect']:.3e}",
+        f"covariance defect (scaled): {diagnostics['scaled_covariance_matching_defect']:.3e}",
+        f"composite objective J      : {diagnostics['objective_nd']:.6e} [-]",
+        f"  mean-control epigraph    : {diagnostics['objective_mean_control']:.6e}",
+        f"  state covariance         : {diagnostics['objective_state_covariance']:.6e}",
+        f"  control covariance       : {diagnostics['objective_control_covariance']:.6e}",
+        f"  Bryson weights           : Q=I6, "
+        f"R={diagnostics['bryson_sigma_factor'] ** 2:g} I3, no Qf",
+        f"robust effort diagnostic   : {diagnostics['total_effort_nd']:.6e} [-]",
         f"  open-loop  T_d          : {diagnostics['deterministic_effort_kg']:.6f} [kg]",
         f"  closed-loop T_s         : {diagnostics['feedback_effort_kg']:.6f} [kg]",
         f"  total                   : {diagnostics['total_effort_kg']:.6f} [kg]",
@@ -1343,7 +1853,7 @@ def print_summary(
         f"(must be <= 1, the constrained quantity)",
         f"  terminal 1-sigma pos.   : {diagnostics['terminal_position_std_m']:.6e} [m]",
         f"  terminal 1-sigma vel.   : {diagnostics['terminal_velocity_std_ms']:.6e} [m/s]",
-        f"MC 95th pct. of the non dimensional objective function     : {diagnostics['monte_carlo_percentile_nd']:.6e} [-] "
+        f"MC 95th pct. of control effort: {diagnostics['monte_carlo_percentile_nd']:.6e} [-] "
         f"vs predicted {diagnostics['predicted_percentile_nd'] :.6e} [-]",
         f"MC worst-arc where P(||T|| > Tmax) : {diagnostics['monte_carlo_max_violation_fraction']:.4f} "
         f"(must be <= 0.05); worst exceedance "
@@ -1609,7 +2119,9 @@ def plot_outputs(
         departure_orbit = deterministic_cr3bp.propagate_periodic_orbit(
             case, case.x0_augmented_state, case.departure_period_nd
         )
-    if case.target_period_nd is not None:
+    # A truncated transfer ends at a relative reference node, not at the full
+    # target periodic orbit.
+    if options.reference_arcs is None and case.target_period_nd is not None:
         target_orbit = deterministic_cr3bp.propagate_periodic_orbit(
             case, case.xf_augmented_state, case.target_period_nd
         )
@@ -1733,6 +2245,25 @@ def save_outputs(
         node_times_nd=ref_traj.node_times,
         node_days=node_days,
         steps_nd=ref_traj.steps,
+        reference_arcs_requested=(
+            -1 if options.reference_arcs is None else options.reference_arcs
+        ),
+        short_horizon=options.reference_arcs is not None,
+        covariance_transcription=np.asarray(
+            options.covariance_transcription
+        ),
+        covariance_scale_relative_floor=(
+            options.covariance_scale_relative_floor
+        ),
+        covariance_factor_diagonal_floor=(
+            options.covariance_factor_diagonal_floor
+        ),
+        covariance_scale_variances=(
+            solution.covariance_scale_variances
+            if solution.covariance_scale_variances is not None
+            else np.empty((0, NX), dtype=float)
+        ),
+        terminal_mean_target=terminal_mean_target(case, options, ref_traj),
         means=solution.means,
         feedfoward_normalized=solution.feedforward,
         feedforward_n=solution.feedforward * case.max_thrust_nd * case.thrust_unit,
@@ -1744,6 +2275,12 @@ def save_outputs(
         sigma_physical=sigma_physical,
         normalization_scale_nd=normalization.scale,
         initial_state_std_nd=normalization.initial_std,
+        bryson_sigma_factor=options.bryson_sigma_factor,
+        bryson_state_weight=np.eye(NP),
+        bryson_control_weight=(
+            options.bryson_sigma_factor**2 * np.eye(NU)
+        ),
+        terminal_Qf_objective_weight=0.0,
         position_covariance_reduction=options.position_covariance_reduction,
         velocity_covariance_reduction=options.velocity_covariance_reduction,
         position_target_ratio=1.0 / options.position_covariance_reduction,
@@ -1800,13 +2337,18 @@ def save_outputs(
 
 
 def run_test_case(test_case_id: str, options: Options | None = None) -> dict[str, float]:
+    options = Options() if options is None else options
     case = CASE_REGISTRY[test_case_id]()
-    log_prefix = f"[{test_case_id}] "
     psi_inv = psi_inverse(NU, options.violation_parameter)
 
-    ref_traj = load_ref_traj(case, options)
-    normalization = build_normalization(case)
     dynamics = Dynamics(case)
+    ref_traj = reoptimize_reference(
+        case,
+        options,
+        load_ref_traj(case, options),
+        dynamics,
+    )
+    normalization = build_normalization(case)
 
     arc_functions = _build_arc_functions(case, options, dynamics, normalization, ref_traj)
 
@@ -1838,7 +2380,12 @@ def run_test_case(test_case_id: str, options: Options | None = None) -> dict[str
     )
     print_summary(case, diagnostics, psi_inv)
 
-    output_prefix = OUTPUT_DIR / case.test_case_id
+    output_name = case.test_case_id
+    if options.reference_arcs is not None:
+        output_name = f"{output_name}_first_{options.reference_arcs}_arcs"
+    if options.covariance_transcription == "multiple_shooting":
+        output_name = f"{output_name}_multiple_shooting"
+    output_prefix = OUTPUT_DIR / output_name
     save_outputs(
         case, options, ref_traj, solution, normalization,
         monte_carlo_result, diagnostics, psi_inv, output_prefix,
@@ -1870,8 +2417,50 @@ def _build_arc_functions(
 
 
 def main() -> None:
-    options = Options()
-    for test_case_id in ("halo_l2_to_halo_l1", "lyapunov_l1_to_l2",):
+    parser = argparse.ArgumentParser(
+        description="Solve full- or short-horizon CR3BP covariance steering."
+    )
+    parser.add_argument(
+        "--reference-arcs",
+        type=int,
+        default=None,
+        help=(
+            "use only the first N source-reference arcs and their relative "
+            "terminal state (for example, 30); omit for the full transfer"
+        ),
+    )
+    parser.add_argument(
+        "--case",
+        action="append",
+        choices=("halo_l2_to_halo_l1", "lyapunov_l1_to_l2"),
+        help="case to run; repeat for both, or omit to run both",
+    )
+    parser.add_argument(
+        "--covariance-transcription",
+        choices=("single_shooting", "multiple_shooting"),
+        default="single_shooting",
+        help="covariance propagation transcription (default: single_shooting)",
+    )
+    parser.add_argument(
+        "--elastic-weight",
+        type=float,
+        default=None,
+        help=(
+            "initial SNOPT nonlinear elastic-mode weight; omit to retain "
+            "SNOPT's native default of 1e4"
+        ),
+    )
+    arguments = parser.parse_args()
+    options = Options(
+        reference_arcs=arguments.reference_arcs,
+        covariance_transcription=arguments.covariance_transcription,
+        elastic_weight=arguments.elastic_weight,
+    )
+    case_ids = arguments.case or (
+        "halo_l2_to_halo_l1",
+        "lyapunov_l1_to_l2",
+    )
+    for test_case_id in case_ids:
         run_test_case(test_case_id, options)
 
 
