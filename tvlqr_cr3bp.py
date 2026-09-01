@@ -36,7 +36,7 @@ MC_SEED = 42
 _RESIDUAL_CACHE: dict[int, casadi.Function] = {}
 STD_ND: dict[str, np.ndarray] = {
     "halo_l2_to_halo_l1": np.array([1e-8, 1e-8, 1e-8, 5e-9, 5e-9, 5e-9, 1e-5]),
-    "lyapunov_l1_to_l2": np.array([5e-7, 5e-7, 5e-7, 1e-7, 1e-7, 1e-7, 1e-5]),
+    "nrho_l2_to_dro": np.array([5e-7, 5e-7, 5e-7, 1e-7, 1e-7, 1e-7, 1e-5]),
 }
 
 

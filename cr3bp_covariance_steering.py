@@ -43,13 +43,16 @@ import numpy as np
 from scipy.stats import chi2
 
 import deterministic_cr3bp
+import integrator
 from deterministic_cr3bp import CASE_REGISTRY, TestCase
 from plotter import Plotter 
 
 NX = 7                       # augmented state dimension
 NU = 3                       # control dimension
 NP = 6                       # primed (position-velocity) state dimension
-N_SIGMA = 2 * NX + 1         # unscented sigma points
+# The sigma-point count is not a constant: it is 2 * augmented_dimension + 1,
+# and the augmented dimension doubles to 2 * NX when navigation error is
+# enabled. Use `augmented_dimension(options)` rather than assuming 2 * NX + 1.
 
 REFERENCE_DIR = Path("output/cr3bp_energy_optimal")
 OUTPUT_DIR = Path("output/cr3bp_covariance_steering")
@@ -60,22 +63,30 @@ INITIAL_STATE_STD_ND: dict[
     str, tuple[float, float, float, float, float, float]
 ] = {
     "halo_l2_to_halo_l1": (
-        5e-5,  # sigma_x
-        5e-5,  # sigma_y
-        5e-5,  # sigma_z
+        1e-5,  # sigma_x
+        1e-5,  # sigma_y
+        1e-5,  # sigma_z
         1e-4,  # sigma_xdot
         1e-4,  # sigma_ydot
         1e-4,  # sigma_zdot
     ),
-    "lyapunov_l1_to_l2": (
-        5e-5,  # sigma_x
-        5e-5,  # sigma_y
-        5e-5,  # sigma_z
+    "nrho_l2_to_dro": (
+        1e-5,  # sigma_x
+        1e-5,  # sigma_y
+        1e-5,  # sigma_z
         1e-4,  # sigma_xdot
         1e-4,  # sigma_ydot
         1e-4,  # sigma_zdot
     ),
 }
+# Equal-duration arcs per test case, at five arcs per day. The two transfers
+# have different times of flight -- 21.2 and 20 days -- so a single count would
+# give them different arc durations.
+UNIFORM_ARCS_BY_CASE: dict[str, int] = {
+    "nrho_l2_to_dro": 150,      
+    "halo_l2_to_halo_l1": 150,  
+}
+
 # Uniform gain used when the Riccati warm start is disabled.
 COLD_START_GAIN = 1e-3
 
@@ -86,7 +97,17 @@ MASS_SCALE = 1e-3        # [kg]
 class Options:
     """Solver and transcription settings."""
 
-    # Keep every `mesh_stride`-th knot point of the DIRTRAN mesh. 
+    # Number of equal-duration arcs the reference is resampled onto. Node states
+    # come from the dense trajectory the deterministic solve saves (`x_dense`,
+    # ~80 samples per collocation interval), so a node between two collocation
+    # knots is still an integrated point of the reference rather than an
+    # interpolation of it. An int applies to every case, a mapping gives a count
+    # per test case id, and None falls back to `mesh_stride`.
+    uniform_arcs: int | dict[str, int] | None = field(
+        default_factory=lambda: dict(UNIFORM_ARCS_BY_CASE)
+    )
+    # Legacy index-strided resampling, used only when `uniform_arcs` is None.
+    # The arcs it produces are uniform in index, not in duration.
     mesh_stride: int = 1
     # When set, restrict the reference to its first `reference_arcs` source
     # intervals and use the state at that relative endpoint as the terminal
@@ -96,16 +117,28 @@ class Options:
     # map used by the stochastic NLP before initializing its moments and gains.
     # The legacy name is retained for compatibility with existing callers.
     refine_truncated_reference: bool = True
-    reference_control_norm_epsilon: float = 1e-6
+    # Control-norm leak eps_1: the thrust magnitude is carried as
+    # sqrt(u'u + eps_1^2) on the up-to-the-unit control, everywhere it appears.
+    #
+    # It replaces the epigraph slack, whose constraint gradient (2u, -2 sigma)
+    # vanishes identically as u -> 0: on a coast arc that row leaves the
+    # Jacobian, its multiplier becomes indeterminate, and SNOPT cannot certify a
+    # point it has already made feasible. The leaked norm has gradient
+    # u / sqrt(u'u + eps_1^2), a unit vector for every ||u|| >> eps_1.
+    #
+    # This is Eq. 58 of Varghese and Oguri (JGCD 2026). Note deterministic_cr3bp
+    # keeps its epigraph: IPOPT needs that slack as a descent direction, and it
+    # is the SQP method here that makes the epigraph degenerate.
+    control_norm_epsilon: float = 1e-6
     bryson_sigma_factor: float = 3.0
     covariance_transcription: Literal[
         "single_shooting", "multiple_shooting"
     ] = "single_shooting"
     covariance_scale_relative_floor: float = 1e-6
     covariance_factor_diagonal_floor: float = 1e-4
-    integrator_substeps: int = 4
+    integrator_substeps: int = 1
 
-    violation_parameter: float = 0.05   
+    violation_parameter: float = 0.01   
     # Terminal covariance reduction factors relative to the corresponding
     # initial covariance blocks. They may be set independently.
     position_covariance_reduction: float = 1e4
@@ -131,7 +164,7 @@ class Options:
     # side admits a factor with strictly positive pivots; it
     # exists purely to keep G -> G G^T non-degenerate near diag(G) = 0, where the
     # constraint Jacobian would otherwise lose rank.
-    terminal_margin_floor: float = 1e-3
+    terminal_margin_floor: float = 1e-4
 
 
     # Warm-start the feedback gains from the Bryson-rule Riccati recursion. With
@@ -145,9 +178,15 @@ class Options:
     # SNOPT settings
     major_max_iter: int = 5000
     minor_max_iter: int = 100 * major_max_iter
-    major_optimality_tol: float = 5e-7
-    major_feasibility_tol: float = 1e-9
-    minor_feasibility_tol: float = 1e-9
+    major_optimality_tol: float = 1e-5
+    major_feasibility_tol: float = 1e-8
+    minor_feasibility_tol: float = 1e-8
+    # SNOPT partial pricing. The user guide recommends raising it when the
+    # problem has many more variables than constraints, and suggests the number
+    # of time stages for time-staged models; this file optimises a full feedback
+    # gain per arc, so `n_arcs` is the natural value. None leaves SNOPT's own
+    # default of 1.
+    partial_price: int | None = None
     # Initial weight for SNOPT's nonlinear elastic-mode constraint
     # relaxations. Setting this to None leaves SNOPT's native default (1e4).
     elastic_weight: float | None = None
@@ -176,6 +215,16 @@ def bryson_running_cost_weights(options: Options) -> tuple[np.ndarray, np.ndarra
     if sigma_factor <= 0.0:
         raise ValueError("bryson_sigma_factor must be positive")
     return np.eye(NP), sigma_factor**2 * np.eye(NU)
+
+
+def leaked_control_norm(control, epsilon: float):
+    """``sqrt(u'u + eps_1^2)``, the smooth stand-in for ``||u||_2``.
+
+    Applied to the up-to-the-unit control, so ``eps_1`` is a fraction of the
+    thrust bound. See ``Options.control_norm_epsilon``.
+    """
+
+    return casadi.sqrt(casadi.dot(control, control) + epsilon**2)
 
 
 def composite_running_cost(
@@ -373,7 +422,16 @@ class Dynamics:
     def __init__(self, case: TestCase) -> None:
         state = casadi.SX.sym("state", NX)
         control = casadi.SX.sym("control", NU)
-        eom = deterministic_cr3bp.eom(case, state, control)
+        # `deterministic_cr3bp.eom` takes the thrust magnitude driving the mass
+        # flow as an explicit argument. Inside the unscented transform each of
+        # the 2*n+1 sigma points carries its own control S + K dx, so the
+        # magnitude is that point's exact two-norm: a per-arc epigraph slack
+        # describes the mean control only and would misstate the mass every
+        # off-mean point spends. The exact norm is non-differentiable at u = 0,
+        # which is not reached in practice but is an unguarded edge.
+        eom = deterministic_cr3bp.eom(
+            case, state, control, casadi.sqrt(casadi.dot(control, control))
+        )
         self._augm_state_derivatives = casadi.Function("augm_state_derivatives", [state, control], [eom])
         self._full_derivatives = casadi.Function(
             "full_derivatives",
@@ -384,8 +442,44 @@ class Dynamics:
                 casadi.reshape(casadi.jacobian(eom, control), NX * NU, 1),
             ],
         )
+        # A second derivative function taking the thrust magnitude explicitly,
+        # used by the deterministic reference reoptimization, which carries an
+        # epigraph slack. The unscented transform cannot use it, for the reason
+        # given above.
+        magnitude = casadi.SX.sym("sigma")
+        self._slack_derivatives = casadi.Function(
+            "slack_derivatives",
+            [state, control, magnitude],
+            [deterministic_cr3bp.eom(case, state, control, magnitude)],
+        )
         self._augm_state_derivatives_maps: dict[int, casadi.Function] = {}
         self._full_derivatives_maps: dict[int, casadi.Function] = {}
+
+    def propagate_with_slack(self, states, controls, magnitude, step: float, substeps: int):
+        """Fixed-step RK4 with the mass flow driven by an explicit magnitude.
+
+        `magnitude` is held constant across the arc, as the control is.
+        """
+
+        substep = step / substeps
+        propagated = states
+        for _ in range(substeps):
+            stages = []
+            for i in range(integrator.RK7_STAGES):
+                stage_state = propagated
+                for j in range(i):
+                    coefficient = integrator.RK7_A[i, j]
+                    if coefficient != 0.0:
+                        stage_state = stage_state + substep * coefficient * stages[j]
+                stages.append(
+                    self._slack_derivatives(stage_state, controls, magnitude)
+                )
+            for i in range(integrator.RK7_STAGES):
+                if integrator.RK7_B[i] != 0.0:
+                    propagated = (
+                        propagated + substep * integrator.RK7_B[i] * stages[i]
+                    )
+        return propagated
 
     def _mapped(self, cache: dict[int, casadi.Function], base: casadi.Function, count: int) -> casadi.Function:
         if count not in cache:
@@ -466,35 +560,68 @@ class Dynamics:
                 np.zeros((count, NX, NU)) if with_jacobian else None
             )
 
+        a_matrix, b_weights = integrator.RK7_A, integrator.RK7_B
+        n_stages = integrator.RK7_STAGES
+
         for _ in range(substeps):
             if with_jacobian:
-                k1, a1, b1 = self.augm_state_derivatives_and_jacobians(propagated, controls)
-                k2, a2, b2 = self.augm_state_derivatives_and_jacobians(propagated + 0.5 * substep * k1, controls)
-                k3, a3, b3 = self.augm_state_derivatives_and_jacobians(propagated + 0.5 * substep * k2, controls)
-                k4, a4, b4 = self.augm_state_derivatives_and_jacobians(propagated + substep * k3, controls)
+                # Differentiate the Runge-Kutta step stage by stage. For stage i
+                # the state is x + h * sum_j a[i,j] k_j, so its derivatives are
+                #   dk_i/dx = A_i (I + h sum_j a[i,j] dk_j/dx)
+                #   dk_i/du = B_i + A_i (h sum_j a[i,j] dk_j/du)
+                # with A_i, B_i the right-hand-side Jacobians at that stage.
+                stages, d_state, d_control = [], [], []
+                for i in range(n_stages):
+                    stage_state = propagated
+                    for j in range(i):
+                        if a_matrix[i, j] != 0.0:
+                            stage_state = (
+                                stage_state + substep * a_matrix[i, j] * stages[j]
+                            )
+                    k_i, a_i, b_i = self.augm_state_derivatives_and_jacobians(
+                        stage_state, controls
+                    )
+                    inner_state = np.zeros((k_i.shape[1], NX, NX))
+                    inner_control = np.zeros((k_i.shape[1], NX, NU))
+                    for j in range(i):
+                        if a_matrix[i, j] != 0.0:
+                            inner_state = (
+                                inner_state + a_matrix[i, j] * d_state[j]
+                            )
+                            inner_control = (
+                                inner_control + a_matrix[i, j] * d_control[j]
+                            )
+                    stages.append(k_i)
+                    d_state.append(a_i @ (identity + substep * inner_state))
+                    d_control.append(b_i + a_i @ (substep * inner_control))
 
-                d1_state, d1_control = a1, b1
-                d2_state = a2 @ (identity + 0.5 * substep * d1_state)
-                d2_control = b2 + a2 @ (0.5 * substep * d1_control)
-                d3_state = a3 @ (identity + 0.5 * substep * d2_state)
-                d3_control = b3 + a3 @ (0.5 * substep * d2_control)
-                d4_state = a4 @ (identity + substep * d3_state)
-                d4_control = b4 + a4 @ (substep * d3_control)
-
-                step_state = identity + (substep / 6.0) * (d1_state + 2.0 * d2_state + 2.0 * d3_state + d4_state)
-                step_control = (substep / 6.0) * (
-                    d1_control + 2.0 * d2_control + 2.0 * d3_control + d4_control
-                )
+                step_state = np.broadcast_to(
+                    identity, (stages[0].shape[1], NX, NX)
+                ).copy()
+                step_control = np.zeros((stages[0].shape[1], NX, NU))
+                for i in range(n_stages):
+                    if b_weights[i] != 0.0:
+                        step_state = step_state + substep * b_weights[i] * d_state[i]
+                        step_control = (
+                            step_control + substep * b_weights[i] * d_control[i]
+                        )
                 control_sensitivity = step_state @ control_sensitivity + step_control
                 state_sensitivity = step_state @ state_sensitivity
             else:
                 derivative = mapped if symbolic else self.augm_state_derivatives
-                k1 = derivative(propagated, controls)
-                k2 = derivative(propagated + 0.5 * substep * k1, controls)
-                k3 = derivative(propagated + 0.5 * substep * k2, controls)
-                k4 = derivative(propagated + substep * k3, controls)
+                stages = []
+                for i in range(n_stages):
+                    stage_state = propagated
+                    for j in range(i):
+                        if a_matrix[i, j] != 0.0:
+                            stage_state = (
+                                stage_state + substep * a_matrix[i, j] * stages[j]
+                            )
+                    stages.append(derivative(stage_state, controls))
 
-            propagated = propagated + (substep / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+            for i in range(n_stages):
+                if b_weights[i] != 0.0:
+                    propagated = propagated + substep * b_weights[i] * stages[i]
 
         return propagated, state_sensitivity, control_sensitivity
 
@@ -704,12 +831,129 @@ class ReferenceTraj:
         return self.steps.size
 
 
+def uniform_arc_count(case: TestCase, options: Options) -> int | None:
+    """Equal-duration arc count for `case`, or None for the strided path."""
+
+    requested = options.uniform_arcs
+    if requested is None:
+        return None
+    if isinstance(requested, dict):
+        value = requested.get(case.test_case_id)
+        return None if value is None else int(value)
+    return int(requested)
+
+
+def _uniform_reference(
+    case: TestCase,
+    options: Options,
+    data,
+    mesh: np.ndarray,
+    states: np.ndarray,
+) -> ReferenceTraj:
+    """Resample the saved reference onto arcs of equal duration.
+
+    The deterministic solve stores a dense trajectory -- roughly eighty samples
+    per collocation interval, integrated rather than interpolated -- so a node
+    falling between two collocation knots is still a point of the reference. The
+    dense grid repeats every interval boundary once as an end and once as a
+    start; the duplicates are dropped before sampling.
+
+    The control is zero-order held on the dense grid, so each arc takes the
+    duration-weighted mean of the dense controls it spans.
+
+    `Options.reference_arcs` truncates this uniform mesh, keeping its first N
+    arcs. It therefore names the arc count directly and leaves the arc duration
+    unchanged, rather than -- as it did against the strided path -- naming a
+    count of source collocation intervals, whose span depends on an h-adaptive
+    mesh and so differs between cases.
+    """
+
+    n_arcs = uniform_arc_count(case, options)
+    if n_arcs is None or n_arcs < 1:
+        raise ValueError("uniform_arcs must be positive or None")
+
+    requested_arcs = options.reference_arcs
+    if requested_arcs is not None:
+        requested_arcs = int(requested_arcs)
+        if requested_arcs < 1:
+            raise ValueError("reference_arcs must be positive or None")
+        if requested_arcs > n_arcs:
+            raise ValueError(
+                f"reference_arcs={requested_arcs} exceeds the {n_arcs} uniform "
+                f"arcs available for {case.test_case_id}"
+            )
+
+    dense_days = np.asarray(data["t_dense_days"], dtype=float)
+    dense_states = np.asarray(data["x_dense"], dtype=float)
+    dense_controls = np.asarray(data["u_dense"], dtype=float)
+
+    unique_days, unique_index = np.unique(dense_days, return_index=True)
+    dense_times = unique_days * 86400.0 / case.time_unit
+    unique_states = dense_states[:, unique_index]
+
+    horizon = float(mesh[-1]) * case.tof_nd
+    if dense_times[-1] < horizon - 1e-12:
+        raise ValueError("the dense reference stops before the requested horizon")
+
+    # Build the full uniform mesh, then keep the first `requested_arcs` of it, so
+    # truncation shortens the horizon without changing the arc duration.
+    node_times = np.linspace(0.0, horizon, n_arcs + 1)
+    if requested_arcs is not None:
+        node_times = node_times[: requested_arcs + 1]
+        n_arcs = requested_arcs
+    node_states = np.empty((NX, n_arcs + 1), dtype=float)
+    for row in range(NX):
+        node_states[row] = np.interp(node_times, dense_times, unique_states[row])
+    # Pin the endpoints to the stored states so the boundary conditions are the
+    # deterministic solver's own, not a resampling of them.
+    node_states[:, 0] = states[:, 0]
+    if requested_arcs is None:
+        node_states[:, -1] = states[:, -1]
+
+    edge_times = dense_days * 86400.0 / case.time_unit
+    segment_starts = edge_times[:-1]
+    segment_ends = edge_times[1:]
+    segment_controls = dense_controls[:, :-1]
+    node_controls = np.empty((NU, n_arcs), dtype=float)
+    for k in range(n_arcs):
+        lo, hi = node_times[k], node_times[k + 1]
+        overlap = np.clip(
+            np.minimum(segment_ends, hi) - np.maximum(segment_starts, lo), 0.0, None
+        )
+        total = overlap.sum()
+        if total <= 0.0:
+            node_controls[:, k] = segment_controls[
+                :, int(np.argmin(np.abs(segment_starts - lo)))
+            ]
+        else:
+            node_controls[:, k] = segment_controls @ overlap / total
+
+    if requested_arcs is None:
+        history = data["history"]
+        fuel_consumed = (
+            float(history[-1]["fuel_consumed_kg"]) if history.size else float("nan")
+        )
+    else:
+        fuel_consumed = float(case.m0_wet * (node_states[6, 0] - node_states[6, -1]))
+
+    return ReferenceTraj(
+        node_times=node_times,
+        steps=np.diff(node_times),
+        states=node_states,
+        controls=node_controls,
+        fuel_consumed=fuel_consumed,
+    )
+
+
 def load_ref_traj(case: TestCase, options: Options) -> ReferenceTraj:
     source_path = REFERENCE_DIR / f"{case.test_case_id}.npz"
     data = np.load(source_path, allow_pickle=True)
     mesh = np.asarray(data["mesh_fraction"], dtype=float)
     states = np.asarray(data["x"], dtype=float)
     controls = np.asarray(data["u"], dtype=float)
+
+    if uniform_arc_count(case, options) is not None:
+        return _uniform_reference(case, options, data, mesh, states)
 
     requested_arcs = options.reference_arcs
     if requested_arcs is not None:
@@ -791,7 +1035,14 @@ def configure_snopt(opti: casadi.Opti, options: Options) -> None:
         "Summary file": 6 if options.print_level else 0,
         "Major print level": options.print_level,
         "Minor print level": 0,
+        "Function_precision": 1e-11,
     }
+    if options.partial_price is not None:
+        partial_price = int(options.partial_price)
+        if partial_price < 1:
+            raise ValueError("partial_price must be a positive integer")
+        # Integer-valued in SNOPT, so it needs no string round-trip.
+        snopt_options["Partial price"] = partial_price
     if options.elastic_weight is not None:
         elastic_weight = float(options.elastic_weight)
         if not np.isfinite(elastic_weight) or elastic_weight <= 0.0:
@@ -821,9 +1072,9 @@ def reoptimize_reference(
 
     if not options.refine_truncated_reference:
         return source
-    epsilon = float(options.reference_control_norm_epsilon)
-    if epsilon <= 0.0:
-        raise ValueError("reference_control_norm_epsilon must be positive")
+    control_norm_epsilon = float(options.control_norm_epsilon)
+    if control_norm_epsilon <= 0.0:
+        raise ValueError("control_norm_epsilon must be positive")
 
     n_arcs = source.n_arcs
     opti = casadi.Opti()
@@ -833,21 +1084,22 @@ def reoptimize_reference(
 
     objective = 0.0
     for k in range(n_arcs):
-        propagated, _, _ = dynamics.propagate(
+        # Leaked thrust magnitude: carries the mass flow, the thrust bound and
+        # the running cost, in place of the epigraph slack.
+        control_norm = leaked_control_norm(
+            normalized_controls[:, k], control_norm_epsilon
+        )
+        propagated = dynamics.propagate_with_slack(
             means[:, k],
             case.max_thrust_nd * normalized_controls[:, k],
+            case.max_thrust_nd * control_norm,
             float(source.steps[k]),
             options.integrator_substeps,
         )
         opti.subject_to(means[:, k + 1] == propagated)
-        control_norm = casadi.sqrt(
-            casadi.dot(normalized_controls[:, k], normalized_controls[:, k])
-            + epsilon**2
-        )
         opti.subject_to(control_norm <= 1.0)
-        objective = objective + float(source.steps[k]) * casadi.dot(
-            normalized_controls[:, k], normalized_controls[:, k]
-        )
+        # Control energy on the leaked magnitude, matching the mass flow.
+        objective = objective + float(source.steps[k]) * control_norm**2
 
     opti.subject_to(
         means[0:NP, -1]
@@ -1057,7 +1309,6 @@ def seed_gains(
 class InitialGuess:
     means: np.ndarray
     feedforward: np.ndarray
-    slack: np.ndarray
     gains: np.ndarray
     radius: np.ndarray
     gain_scale: np.ndarray
@@ -1173,7 +1424,6 @@ def build_initial_guess(
     return InitialGuess(
         means=means,
         feedforward=feedforward,
-        slack=np.linalg.norm(feedforward, axis=0),
         gains=gains,
         radius=radius,
         gain_scale=gain_scale,
@@ -1237,6 +1487,23 @@ def solve_rocp(
     """Transcribe and solve the robust optimal control problem."""
 
     n_arcs = ref_traj.n_arcs
+    control_norm_epsilon = float(options.control_norm_epsilon)
+    if control_norm_epsilon <= 0.0:
+        raise ValueError("control_norm_epsilon must be positive")
+    # The running cost sums the per-arc terms unweighted, which is a pure
+    # rescaling of the time integral only while every arc lasts the same. On a
+    # non-uniform mesh -- the legacy `mesh_stride` path produces durations
+    # spanning a factor of 32 -- it would instead reweight the problem, counting
+    # a short arc as heavily as a long one. Fail loudly rather than silently
+    # optimise a different objective.
+    step_spread = float(np.max(ref_traj.steps) - np.min(ref_traj.steps))
+    if step_spread > 1e-9 * float(np.max(ref_traj.steps)):
+        raise ValueError(
+            "solve_rocp assumes equal-duration arcs because the running cost "
+            f"carries no arc duration, but the mesh spans {np.min(ref_traj.steps):.6e} "
+            f"to {np.max(ref_traj.steps):.6e}. Set Options.uniform_arcs, or "
+            "restore the per-arc duration weighting in the objective."
+        )
     position_target = 1.0 / options.position_covariance_reduction
     velocity_target = 1.0 / options.velocity_covariance_reduction
     mode = options.covariance_transcription
@@ -1270,11 +1537,9 @@ def solve_rocp(
     opti = casadi.Opti()
     means = opti.variable(NX, n_arcs + 1)
     feedforward = opti.variable(NU, n_arcs)
-    slack = opti.variable(1, n_arcs)
     gains = [opti.variable(NU, NP) for _ in range(n_arcs)]
 
     opti.subject_to(means[:, 0] == case.x0_augmented_state)
-    opti.subject_to(casadi.vec(slack) >= 0.0)
 
     covariance_entries = []
     node_covariances = [casadi.DM(normalization.initial_covariance)]
@@ -1333,25 +1598,24 @@ def solve_rocp(
                 == 0.0
             )
 
-        # ||S_k|| via a slack, as in deterministic case, so the cost stays smooth at
-        # the coast arcs where S_k vanishes.
-        opti.subject_to(
-            casadi.dot(feedforward[:, k], feedforward[:, k])
-            <= slack[0, k] ** 2
+        # ||S_k|| via the leaked norm: no decision variable and no companion
+        # constraint, so a coast arc cannot contribute a rank-deficient row.
+        control_norm = leaked_control_norm(
+            feedforward[:, k], control_norm_epsilon
         )
 
-        # rho(SigmaT_k) in closed form 
+        # rho(SigmaT_k) in closed form
         radius = symbolic_psqrt_spectral_radius(control_covariance, options.spectral_radius_floor)
 
         # Transcription of the control chance constraint
-        opti.subject_to(slack[0, k] + psi_inv * radius <= 1.0)
+        opti.subject_to(control_norm + psi_inv * radius <= 1.0)
 
         # Composite running cost used by the short-horizon comparison: the
-        # epigraph mean-control norm plus Bryson-weighted state and control
+        # leaked mean-control norm plus Bryson-weighted state and control
         # covariance traces. The chance radius is constrained above but is not
         # charged separately, and there is no terminal Qf objective term.
-        objective = objective + float(ref_traj.steps[k]) * composite_running_cost(
-            slack[0, k],
+        objective = objective + composite_running_cost(
+            control_norm,
             covariance_k,
             control_covariance,
             Q_running,
@@ -1408,7 +1672,6 @@ def solve_rocp(
 
     opti.set_initial(means, initial_guess.means)
     opti.set_initial(feedforward, initial_guess.feedforward)
-    opti.set_initial(slack, np.maximum(initial_guess.slack, 1e-9).reshape(1, -1))
     for k in range(n_arcs):
         opti.set_initial(gains[k], initial_guess.gains[k] / initial_guess.gain_scale[k])
     opti.set_initial(margin, initial_guess.terminal_margin)
@@ -1461,7 +1724,11 @@ def solve_rocp(
 
     solved_means = np.asarray(solution.value(means), dtype=float)
     solved_feedforward = np.asarray(solution.value(feedforward), dtype=float).reshape(NU, n_arcs)
-    solved_slack = np.asarray(solution.value(slack), dtype=float).reshape(n_arcs)
+    # The leaked norm is an expression, not a variable: rebuild it from the
+    # solved feedforward exactly as the objective and chance constraint saw it.
+    solved_control_norm = np.sqrt(
+        np.sum(solved_feedforward**2, axis=0) + control_norm_epsilon**2
+    )
     solved_gains = np.stack(
         [
             initial_guess.gain_scale[k] * np.asarray(solution.value(gain), dtype=float).reshape(NU, NP)
@@ -1538,7 +1805,7 @@ def solve_rocp(
     solved_radius = np.sqrt(
         psqrt_spectral_radii(control_covariances) ** 2 + options.spectral_radius_floor ** 2
     )
-    objective_mean_control = float(np.sum(ref_traj.steps * solved_slack))
+    objective_mean_control = float(np.sum(ref_traj.steps * solved_control_norm))
     objective_state_covariance = float(
         np.sum(
             [
@@ -2432,7 +2699,7 @@ def main() -> None:
     parser.add_argument(
         "--case",
         action="append",
-        choices=("halo_l2_to_halo_l1", "lyapunov_l1_to_l2"),
+        choices=("halo_l2_to_halo_l1", "nrho_l2_to_dro"),
         help="case to run; repeat for both, or omit to run both",
     )
     parser.add_argument(
@@ -2440,6 +2707,25 @@ def main() -> None:
         choices=("single_shooting", "multiple_shooting"),
         default="single_shooting",
         help="covariance propagation transcription (default: single_shooting)",
+    )
+    parser.add_argument(
+        "--uniform-arcs",
+        type=int,
+        default=None,
+        help=(
+            "equal-duration arcs to resample the reference onto, applied to "
+            "every case; omit for the per-case defaults "
+            f"({', '.join(f'{k}={v}' for k, v in UNIFORM_ARCS_BY_CASE.items())})"
+        ),
+    )
+    parser.add_argument(
+        "--arcs-per-day",
+        type=float,
+        default=None,
+        help=(
+            "equal-duration arcs per day, converted per case from its time of "
+            "flight; overrides --uniform-arcs"
+        ),
     )
     parser.add_argument(
         "--elastic-weight",
@@ -2450,15 +2736,39 @@ def main() -> None:
             "SNOPT's native default of 1e4"
         ),
     )
+    parser.add_argument(
+        "--partial-price",
+        type=int,
+        default=None,
+        help=(
+            "SNOPT partial pricing; omit to retain SNOPT's native default of 1. "
+            "The user guide suggests the number of time stages when the problem "
+            "has many more variables than constraints"
+        ),
+    )
     arguments = parser.parse_args()
+    if arguments.arcs_per_day is not None:
+        if arguments.arcs_per_day <= 0.0:
+            raise ValueError("--arcs-per-day must be positive")
+        uniform_arcs = {
+            case_id: max(1, int(round(arguments.arcs_per_day * factory().tof_days)))
+            for case_id, factory in CASE_REGISTRY.items()
+        }
+    elif arguments.uniform_arcs is not None:
+        uniform_arcs = int(arguments.uniform_arcs)
+    else:
+        uniform_arcs = dict(UNIFORM_ARCS_BY_CASE)
+
     options = Options(
+        uniform_arcs=uniform_arcs,
         reference_arcs=arguments.reference_arcs,
         covariance_transcription=arguments.covariance_transcription,
+        partial_price=arguments.partial_price,
         elastic_weight=arguments.elastic_weight,
     )
     case_ids = arguments.case or (
         "halo_l2_to_halo_l1",
-        "lyapunov_l1_to_l2",
+        "nrho_l2_to_dro",
     )
     for test_case_id in case_ids:
         run_test_case(test_case_id, options)

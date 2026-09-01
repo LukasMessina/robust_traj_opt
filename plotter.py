@@ -193,8 +193,10 @@ class Plotter:
             )
 
     def _projection_axes_for_case(self, case: Any) -> tuple[tuple[int, int], ...]:
-        if case.test_case_id == "lyapunov_l1_to_l2":
-            return ((0, 1),)
+        # The x-y projection alone suffices for a planar transfer; anything with
+        # out-of-plane motion needs all three. The planar Lyapunov case this
+        # once special-cased has been replaced by the NRHO-to-DRO transfer,
+        # which is fully three-dimensional.
         return ((0, 1), (0, 2), (1, 2))
 
     def _plot_system_points_2d(

@@ -125,31 +125,43 @@ class TestCase(CR3BPEarthMoon):
 
 
 @dataclass(frozen=True)
-class LyapunovL1ToL2(TestCase):
-    test_case_id: str = "lyapunov_l1_to_l2"  
-    display_name: str = "Lyapunov L1 to Lyapunov L2"  
-    tof_days: float = 12.0  # [days]
+class NrhoL2ToDro(TestCase):
+    """L2 near-rectilinear halo orbit to distant retrograde orbit.
+
+    States and time of flight are Table 3.9 of Caleb (2025), "Optimisation
+    stochastique pour l'analyse mission", ISAE-SUPAERO. Unlike the halo transfer,
+    the target lies off the x-z plane: the DRO state has non-zero y and ydot.
+
+    The table gives no orbit periods; both are recovered here by minimising the
+    closure error of a ballistic propagation from the tabulated state, giving
+    5.8e-06 for the NRHO and 2.7e-05 for the DRO. They are used only to draw the
+    departure and target orbits.
+    """
+
+    test_case_id: str = "nrho_l2_to_dro"
+    display_name: str = "NRHO L2 to DRO"
+    tof_days: float = 21.2  # [days]
     nodes: int = 300        # [-]
     x0: tuple[float, ...] = (
-        0.85599012364703531,
-        0.12436459999999999,
+        1.02197,
         0.0,
-        0.094844873498005022,
-        0.044107030349277508,
+        -0.18206,
+        0.0,
+        -0.10314,
         0.0,
     )  # [-]
     xf: tuple[float, ...] = (
-        1.0959752057722425,
-        0.11525999999999831,
+        0.98337,
+        0.25921,
         0.0,
-        0.037470505824053729,
-        0.12673805721118889,
+        0.35134,
+        -0.00833,
         0.0,
     )  # [-]
-    departure_label: str = "Lyapunov L1"  
-    target_label: str = "Lyapunov L2"     
-    departure_period: float = 2.9750964922007723  # [-]
-    target_period: float = 3.49306635929003       # [-]
+    departure_label: str = "NRHO L2"
+    target_label: str = "DRO"
+    departure_period: float = 1.5104038685  # [-]
+    target_period: float = 3.3171701817     # [-]
 
 
 @dataclass(frozen=True)
@@ -206,14 +218,20 @@ class HAdaptiveOptions:
     max_intervals: int = 1000
     max_adapt_iterations: int = 20
     defect_tolerance: float = 1e-11
-    rk4_substeps_per_interval: int = 32
+    # Substeps used to re-integrate each collocation interval when measuring its
+    # defect. This is the yardstick the h-adaptive refinement is judged against,
+    # not part of the transcription. With the seventh-order integrator a single
+    # substep already reaches the double-precision floor (~3e-13 on a typical
+    # interval, unchanged out to 32), so the extra substeps only cost time; the
+    # value is kept because the defect tolerance was calibrated against it.
+    defect_substeps_per_interval: int = 4
     
 
-CASE_TYPES: tuple[type[TestCase], ...] = (LyapunovL1ToL2, HaloL2ToHaloL1)
+CASE_TYPES: tuple[type[TestCase], ...] = (NrhoL2ToDro, HaloL2ToHaloL1)
 CASE_REGISTRY: dict[str, type[TestCase]] = {
     case_type().test_case_id: case_type for case_type in CASE_TYPES
 }
-MAX_ITER = 10000
+MAX_ITER = 1e6
 PRINT_LEVEL = 0
 TOL = 1e-9
 FUEL_OPTIMAL_MODE = "fuel optimal"
@@ -221,7 +239,7 @@ ENERGY_OPTIMAL_MODE = "energy optimal"
 # Set this to "fuel optimal" or "energy optimal".
 OBJECTIVE_MODE = FUEL_OPTIMAL_MODE
 DEFECT_TOLERANCE_BY_CASE: dict[str, float] = {
-    "lyapunov_l1_to_l2": 1e-11,
+    "nrho_l2_to_dro": 1e-11,
     "halo_l2_to_halo_l1": 1e-11,
 }
 OUTPUT_DIR_BY_OBJECTIVE_MODE: dict[str, Path] = {
@@ -305,8 +323,21 @@ def get_collinear_lagrange_points(case: CR3BPEarthMoon) -> dict[str, float]:
         "L3": _compute_root(equilibrium_condition, -1.5, -case.mu - eps),
     }
 
-def eom(case: CR3BPEarthMoon, state, control, sigma = 0.0):
-    if any(isinstance(v, (casadi.MX, casadi.SX, casadi.DM)) for v in (state, control, sigma)):        
+def eom(case: CR3BPEarthMoon, state, control, sigma):
+    """CR3BP equations of motion with thrust.
+
+    ``sigma`` is the thrust magnitude that drives the mass flow. Callers must
+    supply it explicitly: the transcriptions in this module pass their epigraph
+    slack, constrained by ``u'u <= sigma^2``, which makes the mass flow linear
+    and therefore smooth everywhere -- writing ``mdot = -||u||/v_e`` directly
+    would leave ``d(mdot)/du`` undefined at ``u = 0`` and its curvature growing
+    like ``1/||u||``, exactly where coast arcs live. Callers outside a
+    transcription (see ``cr3bp_covariance_steering``) pass a smoothed norm
+    instead. There is deliberately no default: a caller that omitted it would
+    silently integrate zero mass flow.
+    """
+
+    if any(isinstance(v, (casadi.MX, casadi.SX, casadi.DM)) for v in (state, control, sigma)):
         rx, ry, rz = state[0], state[1], state[2]
         vx, vy, vz = state[3], state[4], state[5]
         mass = state[6]
@@ -316,7 +347,6 @@ def eom(case: CR3BPEarthMoon, state, control, sigma = 0.0):
         ux, uy, uz = np.asarray(control, dtype=float)
         sigma = float(sigma)
 
-    control_norm = np.sqrt(ux**2 + uy**2 + uz**2)
     r1 = np.sqrt((rx + case.mu) ** 2 + ry**2 + rz**2)
     r2 = np.sqrt((rx - (1.0 - case.mu)) ** 2 + ry**2 + rz**2)
 
@@ -335,7 +365,10 @@ def eom(case: CR3BPEarthMoon, state, control, sigma = 0.0):
         + uy / mass
     )
     az = -(1.0 - case.mu) * rz / r1**3 - case.mu * rz / r2**3 + uz / mass
-    mdot = -control_norm / case.exhaust_velocity_nd
+    # Mass flow through the thrust-magnitude variable rather than ||u||: linear
+    # in sigma, hence smooth with zero curvature everywhere. The transcriptions
+    # tie it to the control by u'u <= sigma^2, so sigma = ||u|| at any optimum.
+    mdot = -sigma / case.exhaust_velocity_nd
     if any(isinstance(v, (casadi.MX, casadi.SX, casadi.DM)) for v in (state, control, sigma)):
         return casadi.vertcat(vx, vy, vz, ax, ay, az, mdot)
     return np.array([vx, vy, vz, ax, ay, az, mdot], dtype=float)
@@ -399,7 +432,6 @@ def _warm_start(
     x_var = opti.variable(7, nodes + 1)
     u_var = opti.variable(3, nodes)
     sigma_var = opti.variable(1, nodes)
-    fuel_consumed_nd = 0.0
     energy_used_nd = 0.0
     max_thrust_nd = case.max_thrust_nd
 
@@ -415,12 +447,23 @@ def _warm_start(
         x_mid = 0.5 * (x_var[:, k] + x_var[:, k + 1]) + h / 8.0 * (f_k - f_kp1)
         f_mid = eom(case, x_mid, u_var[:, k], sigma_var[0, k])
         opti.subject_to(x_var[:, k + 1] - x_var[:, k] == h / 6.0 * (f_k + 4.0 * f_mid + f_kp1))
-        fuel_consumed_nd += h * sigma_var[0, k] / case.exhaust_velocity_nd
-        energy_used_nd += h * 0.5 * casadi.dot(u_var[:, k], u_var[:, k])
+        # Control energy through the thrust-magnitude variable, matching the mass
+        # flow. Charging dot(u,u) instead leaves sigma unpenalised: the epigraph
+        # u'u <= sigma^2 only bounds it from below, so it floats free of ||u||
+        # (gaps larger than ||u|| itself are observed) and burns mass at no cost
+        # now that mdot = -sigma/v_e. At any optimum the epigraph is tight, so
+        # sigma^2 = u'u and the minimiser is unchanged.
+        energy_used_nd += h * 0.5 * sigma_var[0, k] ** 2
 
     opti.subject_to(x_var[:, 0] == case.x0_augmented_state)
     opti.subject_to(x_var[0:6, nodes] == case.xf_state)
-    fuel_consumed = fuel_consumed_nd * case.m0_wet
+    # Fuel from the mass state itself rather than a separate quadrature.
+    # With mdot = -sigma/v_e the running sum h*sigma/v_e reproduces the mass
+    # drop exactly, so charging it as the objective states the same quantity
+    # twice: the objective gradient and the mass-defect gradient become
+    # collinear in sigma, which IPOPT reports as local infeasibility. Reading
+    # the terminal mass keeps the objective and the dynamics distinct.
+    fuel_consumed = (x_var[6, 0] - x_var[6, nodes]) * case.m0_wet
     energy_objective = energy_used_nd * case.thrust_unit**2 * case.time_unit
     if objective_mode == FUEL_OPTIMAL_MODE:
         opti.minimize(fuel_consumed)
@@ -706,7 +749,6 @@ def solve_ocp(
             u_var = opti.variable(3, intervals)
             sigma_var = opti.variable(1, intervals)
             stage_vars: list[tuple[int, int, casadi.MX]] = []
-            fuel_consumed_nd = 0.0
             energy_used_nd = 0.0
 
             for k in range(intervals + 1):
@@ -729,8 +771,9 @@ def solve_ocp(
                 interval_states.append(x_var[:, k + 1])
 
 
-                fuel_consumed_nd += h * sigma_var[0, k] / case.exhaust_velocity_nd
-                energy_used_nd += h * 0.5 * casadi.dot(u_var[:, k], u_var[:, k])
+                # Control energy on sigma rather than dot(u,u); see the matching
+                # comment in the Hermite-Simpson transcription.
+                energy_used_nd += h * 0.5 * sigma_var[0, k] ** 2
 
                 for j in range(1, degree + 1):
                     x_j = interval_states[j]
@@ -745,7 +788,8 @@ def solve_ocp(
             opti.subject_to(x_var[:, 0] == case.x0_augmented_state)
             opti.subject_to(x_var[0:6, intervals] == case.xf_state)
 
-            fuel_consumed = fuel_consumed_nd * case.m0_wet
+            # Fuel from the mass state; see the Hermite-Simpson comment.
+            fuel_consumed = (x_var[6, 0] - x_var[6, intervals]) * case.m0_wet
             energy_objective = energy_used_nd * case.thrust_unit**2 * case.time_unit
             if objective_mode == FUEL_OPTIMAL_MODE:
                 opti.minimize(fuel_consumed)
@@ -1123,7 +1167,7 @@ def h_adaptive_method(
             log_prefix=log_prefix,
             objective_mode=objective_mode,
         )
-        defects = estimate_interval_defects(case, ocp_solution, options.rk4_substeps_per_interval)
+        defects = estimate_interval_defects(case, ocp_solution, options.defect_substeps_per_interval)
         max_defect = float(np.max(defects["scaled"]))
         mean_defect = float(np.mean(defects["scaled"]))
         max_defect_idx = int(np.argmax(defects["scaled"]))
