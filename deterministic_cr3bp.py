@@ -165,6 +165,42 @@ class NrhoL2ToDro(TestCase):
 
 
 @dataclass(frozen=True)
+class LyapunovL1ToL2(TestCase):
+    """Planar Lyapunov orbit at L1 to planar Lyapunov orbit at L2.
+
+    Time of flight and states are Table 3.9 of Caleb (2025), "Optimisation
+    stochastique pour l'analyse mission", ISAE-SUPAERO, at the full precision
+    the table rounds to five decimals. Both orbits are planar, so z and zdot
+    vanish at both ends.
+    """
+
+    test_case_id: str = "lyapunov_l1_to_l2"
+    display_name: str = "Lyapunov L1 to Lyapunov L2"
+    tof_days: float = 12.0  # [days]
+    nodes: int = 300        # [-]
+    x0: tuple[float, ...] = (
+        0.85599012364703531,
+        0.12436459999999999,
+        0.0,
+        0.094844873498005022,
+        0.044107030349277508,
+        0.0,
+    )  # [-]
+    xf: tuple[float, ...] = (
+        1.0959752057722425,
+        0.11525999999999831,
+        0.0,
+        0.037470505824053729,
+        0.12673805721118889,
+        0.0,
+    )  # [-]
+    departure_label: str = "Lyapunov L1"
+    target_label: str = "Lyapunov L2"
+    departure_period: float = 2.9750964922007723  # [-]
+    target_period: float = 3.49306635929003       # [-]
+
+
+@dataclass(frozen=True)
 class HaloL2ToHaloL1(TestCase):
     test_case_id: str = "halo_l2_to_halo_l1"  
     display_name: str = "Halo L2 to Halo L1"  # [-]
@@ -213,7 +249,11 @@ class OCPSolution:
 
 @dataclass(frozen=True)
 class HAdaptiveOptions:
-    initial_intervals: int = 100
+    # Intervals the h-adaptive mesh starts from, and the node count of the
+    # Hermite-Simpson warm start. None takes the value for the objective mode in
+    # hand from INITIAL_INTERVALS_BY_OBJECTIVE_MODE; an int overrides it for
+    # both modes.
+    initial_intervals: int | None = None
     radau_degree: int = 3
     max_intervals: int = 1000
     max_adapt_iterations: int = 20
@@ -227,10 +267,18 @@ class HAdaptiveOptions:
     defect_substeps_per_interval: int = 4
     
 
-CASE_TYPES: tuple[type[TestCase], ...] = (NrhoL2ToDro, HaloL2ToHaloL1)
+CASE_TYPES: tuple[type[TestCase], ...] = (NrhoL2ToDro, HaloL2ToHaloL1, LyapunovL1ToL2)
 CASE_REGISTRY: dict[str, type[TestCase]] = {
     case_type().test_case_id: case_type for case_type in CASE_TYPES
 }
+# Substeps per interval when integrating the ballistic initial guess that warm
+# starts the Hermite-Simpson transcription. One step per interval is enough on a
+# well-behaved arc, but the guess is a chain of a hundred intervals and the error
+# compounds: on the NRHO-to-DRO transfer, whose reference passes within 13 000 km
+# of the Moon, a single step per interval leaves the endpoint off by O(10) while
+# eight bring it to 4e-03. The guess only has to be a starting point, but it must
+# not diverge.
+GUESS_SUBSTEPS_PER_INTERVAL = 2
 MAX_ITER = 1e6
 PRINT_LEVEL = 0
 TOL = 1e-9
@@ -238,9 +286,18 @@ FUEL_OPTIMAL_MODE = "fuel optimal"
 ENERGY_OPTIMAL_MODE = "energy optimal"
 # Set this to "fuel optimal" or "energy optimal".
 OBJECTIVE_MODE = FUEL_OPTIMAL_MODE
+# Starting intervals per objective mode. A fuel-optimal solution is bang-bang,
+# so its mesh has to resolve the switching structure and starts finer; the
+# energy-optimal control is smooth and needs fewer intervals to begin with. The
+# h-adaptive refinement moves both from there.
+INITIAL_INTERVALS_BY_OBJECTIVE_MODE: dict[str, int] = {
+    ENERGY_OPTIMAL_MODE: 50,
+    FUEL_OPTIMAL_MODE: 120,
+}
 DEFECT_TOLERANCE_BY_CASE: dict[str, float] = {
     "nrho_l2_to_dro": 1e-11,
     "halo_l2_to_halo_l1": 1e-11,
+    "lyapunov_l1_to_l2": 1e-11,
 }
 OUTPUT_DIR_BY_OBJECTIVE_MODE: dict[str, Path] = {
     FUEL_OPTIMAL_MODE: Path("output/cr3bp_fuel_optimal"),
@@ -390,14 +447,20 @@ def _rollout(
     case: TestCase,
     nodes: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    u_component_nd = 1e-6 / case.thrust_unit
+    u_component_nd = 1e-4 / case.thrust_unit
     u_guess = np.full((3, nodes), u_component_nd, dtype=float)
     sigma_guess = np.full((1, nodes), np.linalg.norm(u_guess[:, 0]), dtype=float)
     x_guess = np.empty((7, nodes + 1), dtype=float)
     x_guess[:, 0] = case.x0_augmented_state
     h = case.tof_nd / nodes
+    substep = h / GUESS_SUBSTEPS_PER_INTERVAL
     for k in range(nodes):
-        x_guess[:, k + 1] = integrator.rk4(case, x_guess[:, k], u_guess[:, k], sigma_guess[0, k], h)
+        state = x_guess[:, k]
+        for _ in range(GUESS_SUBSTEPS_PER_INTERVAL):
+            state = integrator.rk4(
+                case, state, u_guess[:, k], sigma_guess[0, k], substep
+            )
+        x_guess[:, k + 1] = state
     return x_guess, u_guess, sigma_guess
 
 def _resample_hs_solution(
@@ -630,7 +693,7 @@ def rollout_initial_guess(
     mesh: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     intervals = mesh.size - 1
-    u_component_nd = 1e-6 / case.thrust_unit
+    u_component_nd = 1e-4 / case.thrust_unit
     u_guess_nd = np.full((3, intervals), u_component_nd, dtype=float)
     sigma_guess_nd = np.full((1, intervals), np.linalg.norm(u_guess_nd[:, 0]), dtype=float)
 
@@ -638,13 +701,13 @@ def rollout_initial_guess(
     x_guess[:, 0] = case.x0_augmented_state
     for k in range(intervals):
         h = case.tof_nd * float(mesh[k + 1] - mesh[k])
-        x_guess[:, k + 1] = integrator.rk4(
-            case,
-            x_guess[:, k],
-            u_guess_nd[:, k],
-            sigma_guess_nd[0, k],
-            h,
-        )
+        substep = h / GUESS_SUBSTEPS_PER_INTERVAL
+        state = x_guess[:, k]
+        for _ in range(GUESS_SUBSTEPS_PER_INTERVAL):
+            state = integrator.rk4(
+                case, state, u_guess_nd[:, k], sigma_guess_nd[0, k], substep
+            )
+        x_guess[:, k + 1] = state
 
     return x_guess, u_guess_nd, sigma_guess_nd
 
@@ -1116,6 +1179,14 @@ def save_outputs(
     )
     plotter.plot_interval_defect(OCPSolution.mesh, case.tof_days, defects["scaled"], options.defect_tolerance)
 
+def resolve_initial_intervals(options: HAdaptiveOptions, objective_mode: str) -> int:
+    """Starting interval count: the explicit option, else the per-mode default."""
+
+    if options.initial_intervals is not None:
+        return int(options.initial_intervals)
+    return INITIAL_INTERVALS_BY_OBJECTIVE_MODE[check_objective_mode(objective_mode)]
+
+
 def h_adaptive_method(
     case: TestCase,
     options: HAdaptiveOptions,
@@ -1125,8 +1196,9 @@ def h_adaptive_method(
     objective_mode: str = OBJECTIVE_MODE,
 ) -> tuple[OCPSolution, list[dict[str, float]], dict[str, np.ndarray]]:
     objective_mode = check_objective_mode(objective_mode)
-    mesh = np.linspace(0.0, 1.0, options.initial_intervals + 1)
-    degrees = np.full(options.initial_intervals, options.radau_degree, dtype=int)
+    initial_intervals = resolve_initial_intervals(options, objective_mode)
+    mesh = np.linspace(0.0, 1.0, initial_intervals + 1)
+    degrees = np.full(initial_intervals, options.radau_degree, dtype=int)
     guess: INITIAL_GUESS = None
     history: list[dict[str, float]] = []
     ocp_solution: OCPSolution | None = None
@@ -1138,7 +1210,7 @@ def h_adaptive_method(
     )
     hs_solution = _warm_start(
         case=case,
-        nodes=options.initial_intervals,
+        nodes=initial_intervals,
         sol=None,
         max_iter=max_iter,
         print_level=print_level,

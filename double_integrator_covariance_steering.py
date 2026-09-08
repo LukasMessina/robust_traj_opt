@@ -1,86 +1,9 @@
 """
-Chance-constrained covariance steering for the linear double-integrator test case.
+Chance-constrained state_covariance steering for the linear double-integrator system.
 
-Problem data (dynamics, boundary distributions, path/control chance constraints,
-cost weights) are taken verbatim from the reference. The transcription and solution
-methodology, however, is the one implemented in ``cr3bp_covariance_steering.py``,
-not the thesis's own factorized-covariance (block-matrix / L,V change-of-variables)
-SDP. Concretely:
+* The transcription is multiple shooting on both the mean and the cholesky factor
+of the node state_covariance. Only the computational stack changes:
 
-  * The mean trajectory is transcribed by multiple shooting (each node mean is a
-    decision variable, tied to its neighbours by a dynamics equality), exactly as
-    in the CR3BP script.
-  * Two solve modes are provided for the covariance:
-
-      Phase 1 ("single_shot"): the covariance is propagated forward, node to
-      node, purely as a function of the mean/gain decision variables (never
-      itself a decision variable), via an augmented Unscented Transform with
-      kappa = 0 over z_k = [x_k; w_k]. The fresh process noise is propagated as
-      part of every sigma point rather than added afterward as G G^T. Because
-      the double integrator is exactly linear, the feedback policy is affine,
-      and w_k is independent of x_k, this augmented UT reproduces the closed-form
-      Gaussian covariance recursion exactly (no linearization error).
-
-      Phase 2 ("multiple_shoot"): the covariance is additionally put on multiple
-      shooting. A lower-triangular Cholesky factor L_k of each node covariance
-      P_k = L_k L_k^T is introduced as a decision variable (guaranteeing P_k is
-      PSD by construction, entirely analogous to how the mean nodes are decision
-      variables tied by a matching/defect equality), and the one-step UT map is
-      used to define the defect L_k L_k^T - P_predicted(L_{k-1}, ...) = 0 rather
-      than substituting the propagated covariance directly into the next arc.
-
-  * The control chance constraint is transcribed exactly as in the CR3BP script:
-    a scaled control-covariance is formed from the UT sigma points, its spectral
-    radius rho = sqrt(lambda_max) is bounded in closed form (2x2 here, so via the
-    standard symmetric-2x2 eigenvalue formula rather than the CR3BP script's 3x3
-    formula), and the chance constraint ||u_k|| <= u_max w.p. >= p_u becomes
-    ``||v_k|| + Psi^{-1}_{n_u}(1 - p_u) * rho(Sigma^T_k) <= u_max``, with
-    Psi^{-1}_{n_u} the same chi-quantile helper (`psi_inverse`) used in the CR3BP
-    script. ||v_k|| itself is the epsilon-regularized norm
-    ``sqrt(dot(v_k, v_k) + control_norm_epsilon**2)`` rather than an epigraph
-    slack variable -- see the objective note below for why.
-  * The terminal covariance constraint uses the identical Cholesky-residual
-    Loewner-order encoding: with Dt the (diagonal) terminal covariance target,
-    I - Dt^{-1/2} P_N Dt^{-1/2} = G G^T, G lower-triangular with a floored
-    diagonal, and the strict lower-triangular + diagonal residual entries
-    constrained to zero.
-  * State path (position) chance constraints are not present in the CR3BP script
-    (it has no path constraints), so they are added here using the thesis's own
-    second-order-cone reformulation (Eq. 3.52): for row a_j^T x_k <= b_j at
-    confidence >= p_x, the UT-propagated covariance gives the standard deviation
-    sigma_y = ||sqrt(P_k) a_j||, and the deterministic surrogate is
-    ``a_j^T x_bar_k + Phi^{-1}(p_x) * sigma_y <= b_j``.
-  * The objective is the thesis's own composite cost, Eq. (4.8), verbatim and
-    with NO quantile/chance-margin term added:
-    ``J = dt * sum_k ( ||v_k|| + tr(Q_k P_k) + tr(R_k Sigma^T_k) )``.
-    The CR3BP script's quantile term ``Psi^{-1}_{n_u}(1-p_u) * rho(Sigma^T_k)``
-    is used only inside the control chance *constraint* above -- it is never
-    charged into the cost, matching the thesis exactly rather than the CR3BP
-    script's own pure quantile-cost formulation (Eq. 3.9/3.43). ||v_k|| is the
-    same epsilon-regularized norm as the control chance constraint (and as
-    solve_deterministic_nominal's objective), not an epigraph slack: this keeps
-    the gradient of the control-effort term finite at v_k = 0 (coast arcs)
-    without introducing an extra decision variable per arc.
-  * Solved via SNOPT through CasADi's Opti stack, as in the CR3BP script.
-
-Warm start: a deterministic nominal trajectory is solved first
-(``solve_deterministic_nominal``) -- a quadratic minimum-energy multiple-shooting
-OCP with no covariance and no chance constraints (the position path bounds are
-enforced as hard inequalities), playing the same role as the deterministic
-reference the CR3BP script loads from disk. ``build_stochastic_seed`` then turns that
-nominal trajectory plus a TVLQR/Bryson-rule backward Riccati sweep into a full
-warm start (mean, feedforward, gains, and -- by actually propagating that seed
-policy through the real UT arc map -- consistent slack/terminal-margin values),
-mirroring ``build_initial_guess`` in the CR3BP script.
-
-Two entry points are exposed: ``solve_single_shot`` (Phase 1, reproduces Fig. 4.1)
-and ``solve_multiple_shoot`` (Phase 2, covariance multiple shooting with a
-Cholesky-factor decision variable at every node). Both are independent stochastic
-solves of the *same* deterministic-nominal-derived seed -- Phase 2 is not seeded
-from Phase 1's converged solution, only from the shared nominal trajectory (its
-extra per-node Cholesky-factor variables are seeded from that same seed policy's
-propagated covariances). ``main`` solves the nominal trajectory once, then runs
-both phases from it.
 """
 
 from __future__ import annotations
@@ -90,24 +13,60 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import casadi
-import matplotlib.pyplot as plt
+# Replace 'cpu' with 'cuda' if GPU capability is requested,
+# while avoiding unnecessary GPU memory allocation for this small problem.
+os.environ.setdefault("JAX_PLATFORMS", "cpu")
+
+# If switching JAX_PLATFORMS to "cuda", these control how much GPU memory jax
+# grabs up front. Uncomment and adjust as needed -- all three must be set before
+# `import jax` to take effect.
+# os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")   # no upfront grab; allocate on demand
+# os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.3")    # or: preallocate exactly this fraction (0-1) instead of ~0.75
+# os.environ.setdefault("XLA_PYTHON_CLIENT_ALLOCATOR", "platform")  # or: most conservative allocator, grows as needed, no big block
+
+import jax
+jax.config.update("jax_enable_x64", True)
+import jax.numpy as jnp
+
 import numpy as np
-from scipy.stats import chi2, norm
+import matplotlib.pyplot as plt
+from scipy.stats import chi2, norm, qmc
+from scipy.integrate import quad_vec
+from scipy.linalg import expm
 
-from deterministic_cr3bp import collocation_coefficients
+from diffrax import (
+    ControlTerm,
+    ODETerm,
+    MultiTerm,
+    SaveAt,
+    ConstantStepSize,
+    diffeqsolve,
+    Heun,
+    Tsit5,
+)
 
-NX = 4        # state: [x1, x2, x3, x4] = [px, py, vx, vy]
-NU = 2        # control: [ux, uy]
-NW = 4        # fresh standard-normal process-noise dimension per discrete arc
-N_AUGMENTED = NX + NW
-N_SIGMA = 2 * N_AUGMENTED + 1
+from pyoptsparse import Optimization
+from pyoptsparse.pySNOPT.pySNOPT import SNOPT
+from plotter import Plotter
+
+
+plt.rcParams.update(
+    {
+        "text.usetex": False,
+        "font.serif": ["cmr10"],
+        "axes.formatter.use_mathtext": True,
+    }
+)
+
+
+NX = 4  # state: [x1, x2, x3, x4] = [px, py, vx, vy]
+NU = 2  # control: [ux, uy]
 
 OUTPUT_DIR = Path("output/double_integrator_covariance_steering")
 
 
 # --------------------------------------------------------------------------- #
-# Problem data (Babapour thesis, Section 4.1.1)
+#                              Problem data
 # --------------------------------------------------------------------------- #
 
 
@@ -117,101 +76,192 @@ class Options:
     tf: float = 5.0
     n_arcs: int = 20
 
-    # Boundary distributions.
-    x0_mean: np.ndarray = field(
-        default_factory=lambda: np.array([2.0, 4.0, 3.0, 2.0])
-    )
+    x0_mean: np.ndarray = field(default_factory=lambda: np.array([2.0, 4.0, 3.0, 2.0]))
     x0_covariance: np.ndarray = field(
         default_factory=lambda: np.diag([0.1, 0.1, 0.02, 0.02])
     )
-    xf_mean: np.ndarray = field(
-        default_factory=lambda: np.array([8.0, 2.0, 0.0, 0.0])
-    )
+    xf_mean: np.ndarray = field(default_factory=lambda: np.array([8.0, 2.0, 0.0, 0.0]))
     xf_covariance: np.ndarray = field(
         default_factory=lambda: np.diag([0.06, 0.06, 0.006, 0.006])
     )
 
-    # Path (position) chance constraints, a_j^T x <= b_j.
     a1: np.ndarray = field(default_factory=lambda: np.array([1.0, 1.0, 0.0, 0.0]))
     b1: float = 12.75
     a2: np.ndarray = field(default_factory=lambda: np.array([1.0, 0.1, 0.0, 0.0]))
     b2: float = 8.75
-    path_confidence: float = 0.9973   # p_x
+    path_confidence: float = 0.9973  # probability of path constraint satisfaction (p_x)
 
-    # Control chance constraint.
     u_max: float = 2.0
-    control_confidence: float = 0.9973   # p_u
+    control_confidence: float = 0.9973  # probability of control constraint satisfaction (p_u)
 
-    # Running cost weights (Eq. 4.9).
+    # Cost weights (Bryson's rule is used to warm-start the TVLQR gains instead of these)
     Q: np.ndarray = field(default_factory=lambda: 0.01 * np.eye(NX))
     R: np.ndarray = field(default_factory=lambda: np.eye(NU))
 
-    # Unscented transform.
-    scaling_parameter: float = 0.0   # kappa
-    cholesky_jitter: float = 1e-11
-    # Smooth the repeated-eigenvalue corner in lambda_max(SigmaT).  This has
-    # covariance units and is deliberately separate from the standard-deviation
-    # floor used by the outer square root.  A value of 1e-4 is appropriate for
-    # this nondimensional benchmark (representative control-covariance
-    # eigenvalues are O(1e-2)); its conservatism is reported after each solve.
-    spectral_eigenvalue_smoothing: float = 1e-4
-    spectral_radius_floor: float = 1e-9
-    terminal_margin_floor: float = 1e-3
-
-    # TVLQR warm start (Bryson's rule), mirroring seed_gains in the CR3BP script.
+    scaling_parameter: float = 0.0  # UT scaling parameter
+    spectral_eigenvalue_smoothing: float = 1e-6
+    terminal_margin_floor: float = 1e-7
     warm_start_gains: bool = True
-    riccati_terminal_weight: float = 1.0e3
-    riccati_control_weight: float = 1.0
 
-    # Deterministic nominal solve (Radau collocation, as in deterministic_cr3bp.py).
-    radau_degree: int = 3
-    # Explicit RK4 substeps for sigma-point propagation, matching the CR3BP arc
-    # construction. One substep is exact for this constant-control double
-    # integrator because its continuous-time state matrix is nilpotent.
-    integrator_substeps: int = 1
     control_norm_epsilon: float = 1e-6
 
-    solver: str = "snopt"
-    major_max_iter: int = 2000
-    minor_max_iter: int = 100 * 1500
-    # The spectral-radius model is intentionally smoothed at 1e-4. Requiring
-    # 1e-8 stationarity from the resulting large, nonconvex NLP caused SNOPT to
-    # report EXIT 40 after reaching a constraint-feasible point with a dual
-    # residual of only a few 1e-6.  A 1e-5 major optimality tolerance resolves
-    # that scale mismatch without relaxing the feasibility requirements.
-    major_optimality_tol: float = 1e-7
+    major_max_iter: int = 2000000
+    minor_max_iter: int = 100 * major_max_iter
+
+    major_optimality_tol: float = 1e-5
     major_feasibility_tol: float = 1e-9
     minor_feasibility_tol: float = 1e-9
-    elastic_weight: float = 1e8
     print_level: int = 1
+    print_sparsity: bool = False
 
-    monte_carlo_samples: int = 5000
+    monte_carlo_samples: int = 8192  # Sobol sampling requires a power of two.
     monte_carlo_seed: int = 42
+
+    @property
+    def path_constraints(self) -> tuple[tuple[np.ndarray, float], ...]:
+        return ((self.a1, self.b1), (self.a2, self.b2))
+
+    @property
+    def path_matrix(self) -> jnp.ndarray:
+        """Stacked path-constraint normal vectors, shape (n_path, NX)."""
+
+        return jnp.stack(
+            [jnp.asarray(a_vector) for a_vector, _ in self.path_constraints]
+        )
+
+    @property
+    def inverse_terminal_std(self) -> np.ndarray:
+        """Elementwise 1/sigma for the terminal state_covariance matrix targets."""
+
+        return 1.0 / np.sqrt(np.diag(self.xf_covariance))
 
 
 def psi_inverse(dimension: int, beta: float) -> float:
-    """Psi_d^-1(beta) = sqrt(Phi_d^-1(1 - beta)) with Phi_d the chi-squared CDF.
-
-    Identical helper to the one in cr3bp_covariance_steering.py.
-    """
+    """Psi_d^-1(beta) = sqrt(Phi_d^-1(1 - beta)) with Phi_d the chi-squared CDF."""
 
     return float(np.sqrt(chi2.ppf(1.0 - beta, dimension)))
 
 
 def unscented_weights(kappa: float, dimension: int) -> np.ndarray:
-    """Sigma-point weights c_j; c_0 vanishes for kappa = 0."""
-
     weights = np.full(2 * dimension + 1, 1.0 / (2.0 * (dimension + kappa)))
     weights[0] = kappa / (dimension + kappa)
     return weights
 
 
 # --------------------------------------------------------------------------- #
-# Discrete-time dynamics (exact, linear, zero-order hold -- Eq. 4.2)
+#                   Lower-triangular packing helper 
 # --------------------------------------------------------------------------- #
 
 
-def system_matrices(options: Options) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+class LowerTriangular:
+    """Maps between an NxN matrix and its packed lower-triangular entries."""
+
+    def __init__(self, dimension: int) -> None:
+        self.dimension = dimension
+        self.indices: tuple[tuple[int, int], ...] = tuple(
+            (row, column) for row in range(dimension) for column in range(row + 1)
+        )
+        self.rows = np.array([row for row, _ in self.indices])
+        self.columns = np.array([column for _, column in self.indices])
+        self.diagonal_positions: np.ndarray = np.array(
+            [
+                position
+                for position, (row, column) in enumerate(self.indices)
+                if row == column
+            ]
+        )
+
+    def __len__(self) -> int:
+        return len(self.indices)
+
+    def to_matrix(self, entries: jnp.ndarray) -> jnp.ndarray:
+        """Assemble the full lower-triangular matrix from packed entries."""
+
+        matrix = jnp.zeros((self.dimension, self.dimension), dtype=entries.dtype)
+        matrix = matrix.at[self.rows, self.columns].set(entries)
+        return matrix
+
+    def to_matrix_numeric(self, entries: np.ndarray) -> np.ndarray:
+        matrix = np.zeros((self.dimension, self.dimension))
+        matrix[self.rows, self.columns] = np.asarray(entries).ravel()
+        return matrix
+
+    def pack(self, matrix: jnp.ndarray) -> jnp.ndarray:
+        return matrix[self.rows, self.columns]
+
+    def pack_numeric(self, matrix: np.ndarray) -> np.ndarray:
+        return np.asarray(matrix)[self.rows, self.columns]
+
+
+LTRI = LowerTriangular(NX)
+
+
+def nearest_pd_cholesky_factor(matrix: np.ndarray, jitter: float) -> np.ndarray:
+    eigenvalues, eigenvectors = np.linalg.eigh(0.5 * (matrix + matrix.T))
+    psd = eigenvectors @ np.diag(np.clip(eigenvalues, 0.0, None)) @ eigenvectors.T
+    return np.linalg.cholesky(psd + jitter * np.eye(matrix.shape[0]))
+
+
+def apply_jacobian_sparsity(jacobian, sparsity: dict) -> dict:
+    """Return sensitivities with fixed pyOptSparse COO row/column indices."""
+
+    sparse_jacobian = {}
+    for output, variable_blocks in jacobian.items():
+        if output not in sparsity:
+            sparse_jacobian[output] = {
+                variable: np.asarray(block)
+                for variable, block in variable_blocks.items()
+            }
+            continue
+
+        sparse_blocks = {}
+        for variable, pattern in sparsity[output].items():
+            rows, columns, _ = pattern["coo"]
+            shape = tuple(pattern["shape"])
+            derivative = np.asarray(variable_blocks[variable]).reshape(shape)
+            sparse_blocks[variable] = {
+                "coo": [
+                    rows.astype(np.intc),
+                    columns.astype(np.intc),
+                    derivative[rows, columns],
+                ],
+                "shape": shape,
+            }
+        sparse_jacobian[output] = sparse_blocks
+
+    return sparse_jacobian
+
+
+def get_jacobian_sparsity(jacobian_template: dict) -> dict:
+    """Build fixed COO (coordinate format) patterns from a structural
+       jacobian template."""
+
+    sparsity = {}
+    for output, variable_blocks in jacobian_template.items():
+        if output == "objective":
+            continue
+        sparsity[output] = {}
+        for variable, block in variable_blocks.items():
+            array = np.atleast_2d(np.asarray(block))
+            rows, columns = np.nonzero(array)
+            if rows.size:
+                sparsity[output][variable] = {
+                    "coo": [
+                        rows.astype(np.intc),
+                        columns.astype(np.intc),
+                        np.ones(rows.size),
+                    ],
+                    "shape": array.shape,
+                }
+    return sparsity
+
+
+# --------------------------------------------------------------------------- #
+# Discrete-time (ZOH) and continuous-time system matrices
+# --------------------------------------------------------------------------- #
+
+
+def discrete_time_matrices(options: Options) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     dt = options.dt
     A = np.array(
         [
@@ -223,8 +273,8 @@ def system_matrices(options: Options) -> tuple[np.ndarray, np.ndarray, np.ndarra
     )
     B = np.array(
         [
-            [0.5 * dt ** 2, 0.0],
-            [0.0, 0.5 * dt ** 2],
+            [0.5 * dt**2, 0.0],
+            [0.0, 0.5 * dt**2],
             [dt, 0.0],
             [0.0, dt],
         ]
@@ -234,16 +284,6 @@ def system_matrices(options: Options) -> tuple[np.ndarray, np.ndarray, np.ndarra
 
 
 def continuous_time_matrices() -> tuple[np.ndarray, np.ndarray]:
-    """Continuous-time double-integrator dynamics xdot = Ac x + Bc u (pdot=v, vdot=u).
-
-    Distinct from ``system_matrices``, whose A, B are the exact discrete-time
-    zero-order-hold matrices (already integrated over one full ``dt``, per the
-    thesis's Eq. 4.2). Both the explicit RK4 UT arc map and the Radau collocation
-    nominal solve need the instantaneous rate of change instead; feeding the
-    discrete A, B into either integrator would integrate an already-integrated
-    step a second time.
-    """
-
     Ac = np.array(
         [
             [0.0, 0.0, 1.0, 0.0],
@@ -263,236 +303,361 @@ def continuous_time_matrices() -> tuple[np.ndarray, np.ndarray]:
     return Ac, Bc
 
 
-def rk4_step(states, controls, Ac, Bc, step: float, substeps: int):
-    """Fixed-step RK4 with zero-order-held control, as in the CR3BP propagator."""
+def accumulated_process_covariance(
+    Ac: np.ndarray, Qc: np.ndarray, duration: float
+) -> np.ndarray:
+    """Compute the accumulated continuous-time process noise
+    state_covariance by numerical quadrature to verify equivalence with the discrete noise model."""
 
-    if substeps < 1:
-        raise ValueError("integrator_substeps must be at least one")
-    propagated = states
-    substep = step / substeps
-    for _ in range(substeps):
-        k1 = Ac @ propagated + Bc @ controls
-        k2 = Ac @ (propagated + 0.5 * substep * k1) + Bc @ controls
-        k3 = Ac @ (propagated + 0.5 * substep * k2) + Bc @ controls
-        k4 = Ac @ (propagated + substep * k3) + Bc @ controls
-        propagated = propagated + (substep / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
-    return propagated
+    state_covariance, _ = quad_vec(
+        lambda s: expm(Ac * s) @ Qc @ expm(Ac.T * s),
+        0.0,
+        duration,
+        epsabs=1e-14,
+        epsrel=1e-14,
+    )
+    return 0.5 * (state_covariance + state_covariance.T)
 
 
-def cholesky_lower_triangular_matrix(matrix, dimension: int, pivot_floor: float = 0.0):
-    """Lower-triangular Cholesky factor built from scalar operations (MX-safe).
+def calibrate_continuous_diffusion(
+    Ac: np.ndarray, discrete_covariance: np.ndarray, duration: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Recover continuous time process noise state_covariance matrix Qc and its
+    cholesky factor from a desired arc state_covariance.
 
-    Identical construction to the one in cr3bp_covariance_steering.py.
+    The finite-horizon continuous Lyapunov operator is formed column-by-column,
+    then inverted. This deliberately calibrates the physical continuous SDE.
     """
 
-    factor: list[list] = [[casadi.MX(0.0)] * dimension for _ in range(dimension)]
-    for row in range(dimension):
-        for column in range(row + 1):
-            total = matrix[row, column]
-            for inner in range(column):
-                total = total - factor[row][inner] * factor[column][inner]
-            if row == column:
-                factor[row][column] = casadi.sqrt(casadi.fmax(total, pivot_floor))
-            else:
-                factor[row][column] = total / factor[column][column]
-    return casadi.vertcat(*[casadi.horzcat(*row) for row in factor])
+    dimension = Ac.shape[0]
+    lyapunov_operator = np.empty((dimension**2, dimension**2))
+    for column in range(dimension**2):
+        basis = np.zeros((dimension, dimension))
+        basis.flat[column] = 1.0
+        image, _ = quad_vec(
+            lambda s: expm(Ac * s) @ basis @ expm(Ac.T * s),
+            0.0,
+            duration,
+            epsabs=1e-14,
+            epsrel=1e-14,
+        )
+        lyapunov_operator[:, column] = image.reshape(-1)
+    Qc = np.linalg.solve(lyapunov_operator, discrete_covariance.reshape(-1)).reshape(
+        dimension, dimension
+    )
+    Qc = 0.5 * (Qc + Qc.T)
+    return Qc, np.linalg.cholesky(Qc)
 
 
-def psqrt_spectral_radius_2x2(
-    matrix: np.ndarray,
-    eigenvalue_smoothing: float,
-    radius_floor: float,
+# --------------------------------------------------------------------------- #
+#             Propagation of the linear, zero-order-held dynamics
+# --------------------------------------------------------------------------- #
+
+
+def _drift_vector_field(t, state, control):
+    Ac, Bc = continuous_time_matrices()
+    return jnp.asarray(Ac) @ state + jnp.asarray(Bc) @ control
+
+
+_TERM = ODETerm(lambda t, y, args: _drift_vector_field(t, y, args))
+_SOLVER = Tsit5()
+
+
+def diffrax_step(state: jnp.ndarray, control: jnp.ndarray, step: float) -> jnp.ndarray:
+    """Propagate ``state`` one arc of duration ``step`` under zero-order-held ``control``.
+
+    A single fixed Tsit5 step (``ConstantStepSize``) is exact for this linear,
+    ZOH system regardless of solver order, so no substepping or adaptive
+    tolerance is needed -- this differs from the reference repo's use of
+    diffrax only in that the nonlinear CR3BP/2BP dynamics there require
+    genuine adaptive integration, while here diffrax is used for the same
+    linear dynamics the CasADi version integrated in closed form.
+    """
+
+    solution = diffeqsolve(
+        _TERM,
+        _SOLVER,
+        t0=0.0,
+        t1=step,
+        dt0=step,
+        y0=state,
+        args=control,
+        stepsize_controller=ConstantStepSize(),
+        saveat=SaveAt(t1=True),
+        max_steps=4,
+    )
+    return solution.ys[0]
+
+
+_diffrax_step_batch = jax.vmap(diffrax_step, in_axes=(1, 1, None), out_axes=1)
+
+
+def _diffusion_vector_field(t, state, Lc):
+    del t, state
+    return Lc
+
+
+_SDE_SOLVER = Heun()
+
+
+def prescribed_integration_sde_step(
+    state: jnp.ndarray,
+    control: jnp.ndarray,
+    brownian_increment: jnp.ndarray,
+    Lc: jnp.ndarray,
+    step: float,
+) -> jnp.ndarray:
+    """Take one SDE integration step using exactly the supplied Brownian increment.
+
+    The linear control path has the requested total increment over this sole
+    fixed step. It contains no random key and therefore cannot introduce an
+    independent Brownian realization during optimization or differentiation.
+    """
+
+    prescribed_path = lambda t0, t1: (t1 - t0) * brownian_increment / step
+    terms = MultiTerm(
+        ODETerm(lambda t, y, args: _drift_vector_field(t, y, args[0])),
+        ControlTerm(
+            lambda t, y, args: _diffusion_vector_field(t, y, args[1]), prescribed_path
+        ),
+    )
+    solution = diffeqsolve(
+        terms,
+        _SDE_SOLVER,
+        t0=0.0,
+        t1=step,
+        dt0=step,
+        y0=state,
+        args=(control, Lc),
+        stepsize_controller=ConstantStepSize(),
+        saveat=SaveAt(t1=True),
+        max_steps=1,
+    )
+    return solution.ys[0]
+
+
+_prescribed_sde_integration_step_batch = jax.vmap(
+    prescribed_integration_sde_step, in_axes=(1, 1, 1, None, None), out_axes=1
+)
+
+
+# --------------------------------------------------------------------------- #
+#           Smoothed spectral radius of the control covariance
+# --------------------------------------------------------------------------- #
+
+
+def numerical_psqrt_spectral_radius(
+    matrix: np.ndarray, eigenvalue_smoothing: float,
 ) -> float:
-    """Numerical counterpart of :func:`symbolic_psqrt_spectral_radius_2x2`.
-
-    ``eigenvalue_smoothing`` regularizes the norm that separates the two
-    eigenvalues and therefore has the same units as the matrix entries.
-    ``radius_floor`` regularizes the final square root and has the same units as
-    the returned standard deviation.  Keeping these scales separate avoids the
-    previous dimensional ambiguity in which one number was used at both levels.
-    """
-
     array = np.asarray(matrix, dtype=float)
     symmetric = 0.5 * (array + array.T)
     a11, a22, a12 = symmetric[0, 0], symmetric[1, 1], symmetric[0, 1]
     mean = 0.5 * (a11 + a22)
-    radicand = 0.25 * (a11 - a22) ** 2 + a12 ** 2
-    half_spread = np.sqrt(radicand + eigenvalue_smoothing ** 2)
+    radicand = 0.25 * (a11 - a22) ** 2 + a12**2
+    half_spread = np.sqrt(radicand + eigenvalue_smoothing**2)
     lambda_max = mean + half_spread
-    return float(np.sqrt(max(lambda_max, 0.0) + radius_floor ** 2))
+    return float(np.sqrt(max(lambda_max, 0.0)))
 
 
-def symbolic_psqrt_spectral_radius_2x2(
-    matrix,
-    eigenvalue_smoothing: float,
-    radius_floor: float,
-):
-    """Smooth upper approximation of ``sqrt(lambda_max(A))`` for symmetric 2x2 ``A``.
-
-    lambda_max = 0.5*(a11+a22) + sqrt( 0.25*(a11-a22)^2 + a12^2 ), floored on the
-    eigenvalue-gap radicand so derivatives remain finite when the eigenvalues
-    coincide.  The smoothing is an upper approximation and is consequently
-    conservative in the control chance constraint.
-    """
+def symbolic_psqrt_spectral_radius(
+    matrix: jnp.ndarray, eigenvalue_smoothing: float,
+) -> jnp.ndarray:
+    """Smooth upper approximation of sqrt(lambda_max(A)) for symmetric 2x2 A (jax)."""
 
     a11, a22, a12 = matrix[0, 0], matrix[1, 1], matrix[0, 1]
     mean = 0.5 * (a11 + a22)
-    radicand = 0.25 * (a11 - a22) ** 2 + a12 ** 2
-    half_spread = casadi.sqrt(radicand + eigenvalue_smoothing ** 2)
+    radicand = 0.25 * (a11 - a22) ** 2 + a12**2
+    half_spread = jnp.sqrt(radicand + eigenvalue_smoothing**2)
     lambda_max = mean + half_spread
-    return casadi.sqrt(casadi.fmax(lambda_max, 0.0) + radius_floor ** 2)
+    return jnp.sqrt(jnp.maximum(lambda_max, 0.0))
 
 
-def smoothed_control_radii(
+def get_smoothing_diagnostics(
     control_covariances: np.ndarray, options: Options
 ) -> tuple[np.ndarray, dict[str, float]]:
-    """Return constraint-consistent radii and smoothing-bias diagnostics."""
-
     exact_eigenvalues = np.linalg.eigvalsh(control_covariances)[..., -1]
-    exact_radii = np.sqrt(np.clip(exact_eigenvalues, 0.0, None))
-    radii = np.array(
+    exact_psqrt_spectral_radii = np.sqrt(np.clip(exact_eigenvalues, 0.0, None))
+    estimated_psqrt_spectral_radii = np.array(
         [
-            psqrt_spectral_radius_2x2(
-                covariance,
+            numerical_psqrt_spectral_radius(
+                cov,
                 options.spectral_eigenvalue_smoothing,
-                options.spectral_radius_floor,
             )
-            for covariance in control_covariances
+            for cov in control_covariances
         ]
     )
-    bias = radii - exact_radii
-    peak_exact_radius = max(float(np.max(exact_radii)), options.spectral_radius_floor)
+    bias = estimated_psqrt_spectral_radii - exact_psqrt_spectral_radii
+    peak_exact_psqrt_spectral_radius = float(np.max(exact_psqrt_spectral_radii))
     psi_inv_u = psi_inverse(NU, 1.0 - options.control_confidence)
-    metrics = {
-        "max_radius_smoothing_bias": float(np.max(bias)),
-        "relative_radius_smoothing_bias": float(np.max(bias) / peak_exact_radius),
+    return estimated_psqrt_spectral_radii, {
+        "max_psqrt_spectral_radius_smoothing_bias": float(np.max(bias)),
+        "relative_psqrt_spectral_radius_smoothing_bias": float(np.max(bias) / peak_exact_psqrt_spectral_radius),
         "max_control_margin_smoothing_bias": float(psi_inv_u * np.max(bias)),
     }
-    return radii, metrics
 
 
-def get_arc_function(options: Options, G: np.ndarray) -> casadi.Function:
-    """One-step moment map via a state/process-noise augmented UT.
+# --------------------------------------------------------------------------- #
+#        Augmented Unscented Transform for state covariance propagation
+# --------------------------------------------------------------------------- #
 
-    Sigma points represent z_k = [x_k; w_k] with covariance blkdiag(P_k, I),
-    where w_k is fresh and independent at every arc. Feedback uses only the
-    state component, u_k = v_k + K_k(x_k-mu_k), and the discrete noise kick is
-    applied after deterministic RK4 propagation. Consequently the affine test
-    case recovers P_{k+1}=(A+BK)P_k(A+BK)^T+G G^T without adding G G^T
-    separately. RK4 is exact here for zero-order-held control because the
-    double-integrator state matrix is nilpotent.
+
+def build_propagation_arc_map(options: Options, Lc: np.ndarray):
+    """Return an arc propagation map.
+
+    Uses an augmented-UT construction implementation:
+    sigma points over ``z_k = [x_k; w_k]`` with state_covariance ``blkdiag(P_k, I)``
+    and a batched propagation.
     """
 
-    noise_matrix = np.asarray(G, dtype=float)
-    if noise_matrix.ndim != 2 or noise_matrix.shape[0] != NX:
-        raise ValueError(f"G must have shape ({NX}, n_w)")
+    noise_matrix = np.asarray(Lc, dtype=float)
     noise_dimension = noise_matrix.shape[1]
-    augmented_dimension = NX + noise_dimension
-    sigma_scale = augmented_dimension + options.scaling_parameter
-    if sigma_scale <= 0.0:
-        raise ValueError("augmented dimension + scaling_parameter must be positive")
-    n_sigma = 2 * augmented_dimension + 1
-    weights = unscented_weights(
-        options.scaling_parameter,
-        augmented_dimension,
+    total_dimension = NX + noise_dimension
+    ut_scale = total_dimension + options.scaling_parameter
+    if ut_scale <= 0.0:
+        raise ValueError("unscented transform scale must be positive")
+
+    weights = jnp.asarray(
+        unscented_weights(options.scaling_parameter, total_dimension)
     )
+    diffusion_j = jnp.asarray(noise_matrix)
+    dt = options.dt
 
-    Ac, Bc = continuous_time_matrices()
-    Ac_cs = casadi.DM(Ac)
-    Bc_cs = casadi.DM(Bc)
-    G_cs = casadi.DM(noise_matrix)
-
-    mean = casadi.MX.sym("mu", NX)
-    covariance = casadi.MX.sym("P", NX, NX)
-    feedforward = casadi.MX.sym("v", NU)
-    gain = casadi.MX.sym("K", NU, NX)
-
-    # The augmented covariance is blkdiag(P, I). Its block diagonal structure
-    # lets us factor only the symbolic state block; the noise block has the
-    # exact square root sqrt(n_aug+kappa) I.
-    state_spread = cholesky_lower_triangular_matrix(
-        sigma_scale * covariance
-        + options.cholesky_jitter * casadi.DM.eye(NX),
-        NX,
-        pivot_floor=options.cholesky_jitter,
-    )
-    zero_noise = casadi.DM.zeros(noise_dimension, 1)
-    zero_state = casadi.DM.zeros(NX, 1)
-    state_deviations = [state_spread[:, column] for column in range(NX)]
-    noise_deviations = [
-        np.sqrt(sigma_scale) * casadi.DM.eye(noise_dimension)[:, column]
-        for column in range(noise_dimension)
-    ]
-
-    state_sigma_points = [mean]
-    noise_sigma_points = [zero_noise]
-    for sign in (1.0, -1.0):
-        for deviation in state_deviations:
-            state_sigma_points.append(mean + sign * deviation)
-            noise_sigma_points.append(zero_noise)
-        for deviation in noise_deviations:
-            state_sigma_points.append(mean + zero_state)
-            noise_sigma_points.append(sign * deviation)
-
-    controls = [
-        feedforward + gain @ (state_sigma_points[j] - mean)
-        for j in range(n_sigma)
-    ]
-
-    propagated = casadi.horzcat(
-        *[
-            rk4_step(
-                state_sigma_points[j],
-                controls[j],
-                Ac_cs,
-                Bc_cs,
-                options.dt,
-                options.integrator_substeps,
-            )
-            + G_cs @ noise_sigma_points[j]
-            for j in range(n_sigma)
-        ]
-    )
-
-    mean_next = sum(weights[j] * propagated[:, j] for j in range(n_sigma))
-    covariance_next = casadi.MX.zeros(NX, NX)
-    for j in range(n_sigma):
-        residual = propagated[:, j] - mean_next
-        covariance_next = covariance_next + weights[j] * residual @ residual.T
-    covariance_next = 0.5 * (covariance_next + covariance_next.T)
-
-    control_mean = sum(weights[j] * controls[j] for j in range(n_sigma))
-    control_covariance = casadi.MX.zeros(NU, NU)
-    for j in range(n_sigma):
-        deviation = controls[j] - control_mean
-        control_covariance = (
-            control_covariance
-            + weights[j] * deviation @ deviation.T
+    def propagation_arc(
+        mean: jnp.ndarray,
+        state_covariance: jnp.ndarray,
+        feedforward: jnp.ndarray,
+        gain: jnp.ndarray,
+    ):
+        state_spread = jnp.linalg.cholesky(ut_scale * state_covariance)
+        state_offsets = jnp.concatenate(
+            [state_spread, jnp.zeros((NX, noise_dimension))], axis=1
         )
-    control_covariance = 0.5 * (control_covariance + control_covariance.T)
+        noise_offsets = jnp.concatenate(
+            [
+                jnp.zeros((noise_dimension, NX)),
+                jnp.sqrt(ut_scale) * jnp.eye(noise_dimension),
+            ],
+            axis=1,
+        )
+        state_matrix_pts = jnp.concatenate(
+            [
+                mean[:, None],
+                mean[:, None] + state_offsets,
+                mean[:, None] - state_offsets,
+            ],
+            axis=1,
+        )
+        noise_matrix_pts = jnp.concatenate(
+            [jnp.zeros((noise_dimension, 1)), noise_offsets, -noise_offsets], axis=1
+        )
 
-    return casadi.Function(
-        "arc",
-        [mean, covariance, feedforward, gain],
-        [mean_next, covariance_next, control_covariance],
-        ["mu", "P", "v", "K"],
-        ["mu_next", "P_next", "SigmaT"],
-    )
+        controls = feedforward[:, None] + gain @ (
+            state_matrix_pts - mean[:, None]
+        )  # (NU, n_sigma)
+
+        brownian_increments = jnp.sqrt(dt) * noise_matrix_pts
+        propagated_states = _prescribed_sde_integration_step_batch(
+            state_matrix_pts, controls, brownian_increments, diffusion_j, dt
+        )
+
+        mean_next = propagated_states @ weights
+        residual = propagated_states - mean_next[:, None]
+        covariance_next = (residual * weights[None, :]) @ residual.T
+        covariance_next = 0.5 * (covariance_next + covariance_next.T)
+
+        control_mean = controls @ weights
+        control_residual = controls - control_mean[:, None]
+        control_covariance = (control_residual * weights[None, :]) @ control_residual.T
+        control_covariance = 0.5 * (control_covariance + control_covariance.T)
+
+        return mean_next, covariance_next, control_covariance
+
+    return propagation_arc
+
+
+def propagate_statistical_moments(
+    arc_fn,
+    means: np.ndarray,
+    feedforward: np.ndarray,
+    gains: np.ndarray,
+    initial_state_covariance: np.ndarray,
+):
+    """Forward-integrate node state covariances arc by arc, seeding each from the last."""
+
+    n_arcs = feedforward.shape[1]
+    state_covariances = np.empty((n_arcs + 1, NX, NX))
+    control_covariances = np.empty((n_arcs, NU, NU))
+    propagated_means = np.empty((NX, n_arcs + 1))
+    state_covariances[0] = initial_state_covariance
+    propagated_means[:, 0] = means[:, 0]
+    for k in range(n_arcs):
+        mean_next, covariance_next, control_covariance = arc_fn(
+            jnp.asarray(means[:, k]),
+            jnp.asarray(state_covariances[k]),
+            jnp.asarray(feedforward[:, k]),
+            jnp.asarray(gains[k]),
+        )
+        propagated_means[:, k + 1] = np.asarray(mean_next)
+        state_covariances[k + 1] = np.asarray(covariance_next)
+        control_covariances[k] = np.asarray(control_covariance)
+    return propagated_means, state_covariances, control_covariances
+
+
+def evaluate_node_matching_defects(arc_fn, means, feedforward, gains, state_covariances):
+    """Compare each node's given mean/state_covariance against one arc's prediction from the prior node."""
+
+    n_arcs = feedforward.shape[1]
+    control_covariances = np.empty((n_arcs, NU, NU))
+    max_mean_defect = 0.0
+    max_state_covariance_defect = 0.0
+    for k in range(n_arcs):
+        mean_next, state_covariance_next, control_covariance = arc_fn(
+            jnp.asarray(means[:, k]),
+            jnp.asarray(state_covariances[k]),
+            jnp.asarray(feedforward[:, k]),
+            jnp.asarray(gains[k]),
+        )
+        control_covariances[k] = np.asarray(control_covariance)
+        mean_error = np.asarray(mean_next) - means[:, k + 1]
+        state_covariance_error = np.asarray(state_covariance_next) - state_covariances[k + 1]
+        max_mean_defect = max(max_mean_defect, float(np.max(np.abs(mean_error))))
+        max_state_covariance_defect = max(
+            max_state_covariance_defect, float(np.max(np.abs(state_covariance_error)))
+        )
+    return control_covariances, max_mean_defect, max_state_covariance_defect
 
 
 # --------------------------------------------------------------------------- #
-# TVLQR gain warm start (Bryson's rule), mirroring seed_gains/tvlqr_gains
+#                   TVLQR gain warm start (Bryson's rule)
 # --------------------------------------------------------------------------- #
 
 
-def tvlqr_gains(
-    options: Options, A: np.ndarray, B: np.ndarray
-) -> np.ndarray:
-    """Backward Riccati recursion with Bryson-rule weights, time-invariant A,B."""
+def tvlqr_gains(options: Options, A: np.ndarray, B: np.ndarray) -> np.ndarray:
+    """Return a TVLQR gain seed using componentwise weights derived from Bryson's rule.
 
-    Q = np.eye(NX) / (np.diag(options.x0_covariance).mean())
-    R = options.riccati_control_weight * np.eye(NU)
-    P = options.riccati_terminal_weight * np.eye(NX)
+    The acceptable running state deviations are the initial one-sigma values,
+    the acceptable control deviation is the maximum control in each direction,
+    and the acceptable terminal deviations are the requested terminal
+    one-sigma values.  Bryson's rule therefore gives
+
+        Q_ii = 1 / x0_sigma_i**2,
+        R_jj = 1 / u_max**2,
+        Q_N,ii = 1 / xf_sigma_i**2.
+    """
+
+    initial_variances = np.diag(options.x0_covariance)
+    terminal_variances = np.diag(options.xf_covariance)
+    if np.any(initial_variances <= 0.0):
+        raise ValueError("initial state covariance diagonal must be positive for Bryson weights")
+    if np.any(terminal_variances <= 0.0):
+        raise ValueError("final covariance diagonal must be positive for Bryson weights")
+    if options.u_max <= 0.0:
+        raise ValueError("maximum control must be positive for Bryson weights")
+
+    Q = np.diag(1.0 / initial_variances)
+    R = np.eye(NU) / options.u_max**2
+    P = np.diag(1.0 / terminal_variances)
     gains = np.zeros((options.n_arcs, NU, NX))
     for k in reversed(range(options.n_arcs)):
         gain = np.linalg.solve(R + B.T @ P @ B, B.T @ P @ A)
@@ -504,887 +669,1386 @@ def tvlqr_gains(
 
 
 # --------------------------------------------------------------------------- #
-# Deterministic nominal trajectory (no covariance, no chance constraints)
+#                        SNOPT settings and diagnostics
+# --------------------------------------------------------------------------- #
+
+
+def snopt_options(options: Options, tag: str) -> dict:
+    work_dir = Path(tempfile.mkdtemp(prefix=f"pyopt-snopt-{tag}-"))
+    return {
+        "Major iterations limit": options.major_max_iter,
+        "Minor iterations limit": max(500, options.minor_max_iter),
+        "Iterations limit": options.minor_max_iter,
+        "Major optimality tolerance": options.major_optimality_tol,
+        "Major feasibility tolerance": options.major_feasibility_tol,
+        "Minor feasibility tolerance": options.minor_feasibility_tol,
+        "Print file": str(work_dir / "SNOPT_print.out"),
+        # pyOptSparse uses Fortran unit 6 for stdout.  Send SNOPT's live major-
+        # iteration summary there when terminal output is enabled; keep the
+        # more detailed print stream in SNOPT_print.out.
+        "iSumm": 6 if options.print_level else 0,
+        "Summary file": str(work_dir / "SNOPT_summary.out"),
+        "Major print level": 1,
+        "Minor print level": 0,
+    }
+
+
+def optinform_text(sol) -> str:
+    """SNOPT's exit message.
+
+    pyoptsparse >= ~2.11 returns a ``SolutionInform`` dataclass (``.message``);
+    older releases return a plain ``{"text": ...}`` dict. Both are handled.
+    """
+
+    optInform = sol.optInform
+    if hasattr(optInform, "message"):
+        return str(optInform.message)
+    return str(optInform.get("text", "unknown"))
+
+
+def solver_diagnostics(
+    sol, optProb: Optimization, xdict: dict, funcs: dict, options: Options
+) -> dict[str, float | str]:
+    """Feasibility/optimality diagnostics."""
+
+    funcs = dict(funcs)
+    # NOTE: the linear constraints are not automatically evaluated in 
+    # the pyoptsparse solution object, so we must do it here to get the
+    # constraint values.
+    optProb.evaluateLinearConstraints(optProb.processXtoVec(xdict), funcs)
+    max_violation = 0.0
+    for con_name, con in optProb.constraints.items():
+        value = np.asarray(funcs[con_name]).ravel()
+        lower = np.asarray(con.lower, dtype=float).ravel()
+        upper = np.asarray(con.upper, dtype=float).ravel()
+        lower_violation = np.maximum(lower - value, 0.0)
+        upper_violation = np.maximum(value - upper, 0.0)
+        max_violation = max(
+            max_violation,
+            float(np.max(lower_violation)),
+            float(np.max(upper_violation)),
+        )
+
+    acceptance_tolerance = 10.0 * options.major_feasibility_tol
+    status_text = optinform_text(sol)
+    optimality_satisfied = (
+        "optimality conditions satisfied" in status_text.lower() and "infeasible" not in status_text.lower()
+    )
+    feasible = max_violation <= acceptance_tolerance
+    return {
+        "converged": float(optimality_satisfied and feasible),
+        "optimality_satisfied": float(optimality_satisfied),
+        "feasible": float(feasible),
+        "max_constraint_violation": max_violation,
+        "solver_status": status_text,
+    }
+
+
+# --------------------------------------------------------------------------- #
+#                           Deterministic trajectory 
 # --------------------------------------------------------------------------- #
 
 
 @dataclass
 class NominalTrajectory:
-    means: np.ndarray          # (NX, n_arcs+1)
-    feedforward: np.ndarray    # (NU, n_arcs)
+    means: np.ndarray
+    feedforward: np.ndarray
     converged: bool
 
 
-def solve_deterministic_nominal(
+def _linear_jacobians(options: Options, *, stochastic: bool) -> dict:
+    """Constant COO (coordinate sparse matrix) format blocks for endpoints, nominal paths, and factor diagonals."""
+
+    n_arcs = options.n_arcs
+    state_indices = np.arange(NX, dtype=np.intc)
+    mean_size = NX * (n_arcs + 1)
+
+    def build_coo_block(rows, columns, values, shape):
+        return {
+            "coo": [
+                np.asarray(rows, dtype=np.intc),
+                np.asarray(columns, dtype=np.intc),
+                np.asarray(values, dtype=float),
+            ],
+            "shape": shape,
+        }
+
+    jacobian = {
+        name: {
+            "means": build_coo_block(
+                state_indices, state_indices * (n_arcs + 1) + node,
+                np.ones(NX), (NX, mean_size),
+            )
+        }
+        for name, node in (("boundary_start", 0), ("boundary_end", n_arcs))
+    }
+    if stochastic:
+        n_tril = len(LTRI)
+        positions = np.asarray(LTRI.diagonal_positions)
+        jacobian["margin_diagonal"] = {
+            "terminal_margin": build_coo_block(state_indices, positions, np.ones(NX), (NX, n_tril))
+        }
+        arc_count  = NX * (n_arcs + 1)
+        columns = (np.arange(n_arcs + 1)[:, None] * n_tril + positions).reshape(-1)
+        jacobian["cholesky_diagonal"] = {
+            "cholesky_factor": build_coo_block(
+                np.arange(arc_count), columns, np.ones(arc_count),
+                (arc_count, (n_arcs + 1) * n_tril),
+            )
+        }
+    else:
+        path = np.zeros((len(options.path_constraints) * n_arcs, mean_size))
+        for path_index, (normal, _) in enumerate(options.path_constraints):
+            for node in range(n_arcs):
+                path[path_index * n_arcs + node, state_indices * (n_arcs + 1) + node] = normal
+        rows, columns = np.nonzero(path)
+        jacobian["path"] = {"means": build_coo_block(rows, columns, path[rows, columns], path.shape)}
+    return jacobian
+
+
+def _nominal_propagation_step(state: jnp.ndarray, control: jnp.ndarray, dt: float) -> jnp.ndarray:
+    return diffrax_step(state, control, dt)
+
+
+def _nominal_funcs(xdict: dict, options: Options):
+    means = xdict["means"].reshape(NX, options.n_arcs + 1)
+    feedforward = xdict["feedforward"].reshape(NU, options.n_arcs)
+
+    propagation_step_batch = jax.vmap(_nominal_propagation_step, in_axes=(1, 1, None), out_axes=1)
+    predicted_next = propagation_step_batch(means[:, :-1], feedforward, options.dt)
+    defects = (means[:, 1:] - predicted_next).reshape(-1)
+
+    control_energy = options.dt * jnp.sum(feedforward * feedforward)
+
+    funcs = {
+        "defects": defects,
+        "objective": control_energy,
+    }
+    return funcs
+
+
+def _nonlinear_arc_outputs_nominal(local_input: jnp.ndarray, options: Options) -> jnp.ndarray:
+    """Nonlinear (Diffrax-propagated) objective and defect quantities owned by one arc."""
+
+    mean = local_input[:NX]
+    feedforward = local_input[NX:]
+    predicted_mean = _nominal_propagation_step(mean, feedforward, options.dt)
+    local_objective = options.dt * jnp.dot(feedforward, feedforward)
+    return jnp.concatenate(
+        [predicted_mean, jnp.atleast_1d(local_objective)]
+    )
+
+
+def _nonlinear_jacobian_nominal(xdict: dict, options: Options) -> jnp.ndarray:
+    """AD-differentiate one nominal arc's nonlinear outputs and batch over all arcs."""
+
+    means = xdict["means"].reshape(NX, options.n_arcs + 1)
+    feedforward = xdict["feedforward"].reshape(NU, options.n_arcs)
+    local_inputs = jnp.concatenate([means[:, :-1].T, feedforward.T], axis=1)
+    local_jacobian = jax.jacrev(
+        lambda values: _nonlinear_arc_outputs_nominal(values, options)
+    )
+    return jax.vmap(local_jacobian)(local_inputs)
+
+
+def _assemble_nonlinear_jacobian_nominal(
+    nonlinear_jacobian_blocks: np.ndarray, options: Options
+) -> dict:
+    """Assemble the nonlinear per-arc AD Jacobian blocks in global ordering."""
+
+    n_arcs = options.n_arcs
+    mean_size = NX * (n_arcs + 1)
+    feedforward_size = NU * n_arcs
+    jacobian = {
+        "defects": {
+            "means": np.zeros((NX * n_arcs, mean_size)),
+            "feedforward": np.zeros((NX * n_arcs, feedforward_size)),
+            },
+        "objective": {
+            "means": np.zeros(mean_size),
+            "feedforward": np.zeros(feedforward_size),
+        },
+    }
+
+    state_indices = np.arange(NX)
+    control_indices = np.arange(NU)
+    for arc_index in range(n_arcs):
+        local = nonlinear_jacobian_blocks[arc_index]
+        defect_rows = state_indices * n_arcs + arc_index
+        mean_columns = state_indices * (n_arcs + 1) + arc_index
+        next_mean_columns = mean_columns + 1
+        feedforward_columns = control_indices * n_arcs + arc_index
+
+        jacobian["defects"]["means"][np.ix_(defect_rows, mean_columns)] = -local[
+            :NX, :NX
+        ]
+        jacobian["defects"]["means"][np.ix_(defect_rows, next_mean_columns)] += np.eye(
+            NX
+        )
+        jacobian["defects"]["feedforward"][np.ix_(defect_rows, feedforward_columns)] = (
+            -local[:NX, slice(NX, NX + NU)]
+        )
+
+        jacobian["objective"]["means"][mean_columns] = local[NX, :NX]
+        jacobian["objective"]["feedforward"][feedforward_columns] = local[
+            NX, slice(NX, NX + NU)
+        ]
+
+    return jacobian
+
+
+def _nonlinear_jacobian_sparsity_template_nominal(
+    A: np.ndarray, B: np.ndarray
+) -> np.ndarray:
+    """Exact local nonzero structure for the affine nominal problem."""
+
+    structure = np.zeros((NX + 1, NX + NU))
+    structure[:NX, :NX] = A != 0.0
+    structure[:NX, NX:] = B != 0.0
+    structure[-1, NX:] = 1.0
+    return structure
+
+
+def solve_deterministic_optimization(
     options: Options, A: np.ndarray, B: np.ndarray
 ) -> NominalTrajectory:
-    """Deterministic minimum-energy transfer x0 -> xN, no covariance/chance terms.
+    """Deterministic minimum-energy transfer via multiple shooting on the state vectors.
 
-    Plays the same role as the deterministic DIRTRAN solution the CR3BP script
-    loads from disk (``load_ref_traj``) to seed its iCS problem, and is
-    transcribed with the exact same Radau collocation method as
-    ``deterministic_cr3bp.solve_ocp``: each interval k of duration
-    ``h = dt`` carries ``radau_degree`` internal collocation-point state
-    variables (the Radau roots on (0, 1], via the shared
-    ``collocation_coefficients`` helper), the piecewise-constant control u_k is
-    held over the whole interval, and the dynamics are enforced at every
-    collocation point j by matching the interpolating polynomial's derivative
-    to h * f(x_j, u_k) through the differentiation matrix ``c_matrix`` -- the
-    same ``polynomial_derivative == h * f_j`` constraint pattern used there,
-    with the double integrator's linear f(x, u) = Ac x + Bc u in place of the
-    CR3BP equations of motion. Ac, Bc are the *continuous-time* dynamics
-    matrices from ``continuous_time_matrices`` (xdot = Ac x + Bc u), not the
-    discrete-time A, B this function receives -- those are the exact
-    zero-order-hold matrices from ``system_matrices`` (already integrated over
-    one full dt), so feeding them into a collocation constraint would
-    integrate the already-integrated step a second time. A, B are used here
-    only to build the straight-line initial guess via least squares, matching
-    what the stochastic phases expect as a rough seed. Boundary conditions and
-    the two position half-spaces are hard (non-probabilistic) constraints,
-    exactly as in deterministic_cr3bp.py. Its solution is the nominal
-    trajectory both stochastic phases are seeded from.
-
-    The warm-start objective is quadratic control energy,
-    ``sum_k dt * dot(u_k, u_k)``. Unlike a sum of control norms, it is smooth at
-    zero control and distributes effort over the transfer instead of promoting
-    coast arcs separated by impulse-like control concentrations. The stochastic
-    phases retain their own thesis objective; this change affects only the
-    deterministic trajectory used to initialise them.
+    Each arc is propagated with a batched fixed-step Diffrax solve.
     """
 
     n_arcs = options.n_arcs
-    degree = options.radau_degree
-    tau_root, c_matrix, _, _ = collocation_coefficients(degree)
-
-    opti = casadi.Opti()
-    means = opti.variable(NX, n_arcs + 1)
-    feedforward = opti.variable(NU, n_arcs)
-    stage_vars: list[tuple[int, int, casadi.MX]] = []
-
-    opti.subject_to(means[:, 0] == options.x0_mean)
-    opti.subject_to(means[:, n_arcs] == options.xf_mean)
-
-    Ac, Bc = continuous_time_matrices()
-    Ac_cs = casadi.DM(Ac)
-    Bc_cs = casadi.DM(Bc)
-    objective = 0.0
-    for k in range(n_arcs):
-        interval_states = [means[:, k]]
-        for j in range(1, degree):
-            x_stage = opti.variable(NX)
-            stage_vars.append((k, j, x_stage))
-            interval_states.append(x_stage)
-        interval_states.append(means[:, k + 1])
-
-        for j in range(1, degree + 1):
-            x_j = interval_states[j]
-            polynomial_derivative = c_matrix[0, j] * interval_states[0]
-            for r in range(1, degree + 1):
-                polynomial_derivative += c_matrix[r, j] * interval_states[r]
-
-            f_j = Ac_cs @ x_j + Bc_cs @ feedforward[:, k]
-            opti.subject_to(polynomial_derivative == options.dt * f_j)
-
-        for a_vec, b_val in ((options.a1, options.b1), (options.a2, options.b2)):
-            opti.subject_to(casadi.DM(a_vec).T @ means[:, k] <= b_val)
-
-        control_energy = casadi.dot(feedforward[:, k], feedforward[:, k])
-        objective = objective + options.dt * control_energy
-
-    opti.minimize(objective)
 
     means_seed = np.linspace(options.x0_mean, options.xf_mean, n_arcs + 1).T
     feedforward_seed = np.zeros((NU, n_arcs))
     for k in range(n_arcs):
-        feedforward_seed[:, k] = np.linalg.lstsq(
-            B, means_seed[:, k + 1] - A @ means_seed[:, k], rcond=None
-        )[0]
-    opti.set_initial(means, means_seed)
-    opti.set_initial(feedforward, feedforward_seed)
-    for k, j, x_stage in stage_vars:
-        theta = float(tau_root[j])
-        stage_guess = (1.0 - theta) * means_seed[:, k] + theta * means_seed[:, k + 1]
-        opti.set_initial(x_stage, stage_guess)
+        feedforward_seed[:, k] = 1e-1 
 
-    _configure_snopt(opti, options)
+    nominal_seed = {
+        "means": means_seed.reshape(-1),
+        "feedforward": feedforward_seed.reshape(-1),
+    }
+    
+    nonlinear_residual_fn = jax.jit(lambda xdict: _nominal_funcs(xdict, options))
+    nonlinear_jac_fn = jax.jit(
+        lambda xdict: _nonlinear_jacobian_nominal(xdict, options)
+    )
+    nonlinear_local_structure = _nonlinear_jacobian_sparsity_template_nominal(A, B)
+    nonlinear_global_jacobian_structure = _assemble_nonlinear_jacobian_nominal(
+        np.broadcast_to(nonlinear_local_structure, (n_arcs,) + nonlinear_local_structure.shape), options
+    )
+    nonlinear_jac_sparsity = get_jacobian_sparsity(nonlinear_global_jacobian_structure)
+    linear_jac = _linear_jacobians(options, stochastic=False)
 
-    try:
-        solution = run_snopt_solver(opti, "double-integrator-nominal")
-        converged = True
-    except RuntimeError as error:
-        print(f"  SNOPT did not converge ({error}); returning the last iterate.", flush=True)
-        solution = opti.debug
-        converged = False
+    # Compile both callbacks before entering the optimization
+    jax.block_until_ready(nonlinear_residual_fn(nominal_seed))
+    jax.block_until_ready(nonlinear_jac_fn(nominal_seed))
+
+    def objconfun(xdict):
+        funcs = nonlinear_residual_fn(xdict)
+        return {key: np.asarray(value) for key, value in funcs.items()}, False
+
+    def sens(xdict, funcs):
+        nonlinear_jacobian_blocks = nonlinear_jac_fn(xdict)
+        jacobian = _assemble_nonlinear_jacobian_nominal(
+            np.asarray(nonlinear_jacobian_blocks), options
+        )
+        return apply_jacobian_sparsity(jacobian, nonlinear_jac_sparsity), False
+
+    optProb = Optimization("nominal", objconfun)
+    optProb.addVarGroup("means", NX * (n_arcs + 1), value=means_seed.reshape(-1))
+    optProb.addVarGroup("feedforward", NU * n_arcs, value=feedforward_seed.reshape(-1))
+
+    optProb.addConGroup(
+        "defects",
+        NX * n_arcs,
+        lower=0.0,
+        upper=0.0,
+        wrt=list(nonlinear_jac_sparsity["defects"]),
+        jac=nonlinear_jac_sparsity["defects"],
+    )
+    optProb.addConGroup(
+        "boundary_start",
+        NX,
+        lower=options.x0_mean,
+        upper=options.x0_mean,
+        linear=True,
+        wrt=list(linear_jac["boundary_start"]),
+        jac=linear_jac["boundary_start"],
+    )
+    optProb.addConGroup(
+        "boundary_end",
+        NX,
+        lower=options.xf_mean,
+        upper=options.xf_mean,
+        linear=True,
+        wrt=list(linear_jac["boundary_end"]),
+        jac=linear_jac["boundary_end"],
+    )
+    upper_bounds = np.concatenate(
+        [np.full(n_arcs, b) for _, b in options.path_constraints]
+    )
+    optProb.addConGroup(
+        "path",
+        len(options.path_constraints) * n_arcs,
+        upper=upper_bounds,
+        linear=True,
+        wrt=list(linear_jac["path"]),
+        jac=linear_jac["path"],
+    )
+
+    optProb.addObj("objective")
+
+    if options.print_sparsity:
+        optProb.printSparsity()
+
+    opt = SNOPT(options=snopt_options(options, "nominal"))
+    sol = opt(optProb, sens=sens)
+
+    solved_means = np.asarray(sol.xStar["means"]).reshape(NX, n_arcs + 1)
+    solved_feedforward = np.asarray(sol.xStar["feedforward"]).reshape(NU, n_arcs)
+    converged = "optimality conditions satisfied" in optinform_text(sol).lower()
 
     return NominalTrajectory(
-        means=np.asarray(solution.value(means)),
-        feedforward=np.asarray(solution.value(feedforward)).reshape(NU, n_arcs),
-        converged=converged,
+        means=solved_means, feedforward=solved_feedforward, converged=converged
     )
 
 
 # --------------------------------------------------------------------------- #
-# Shared warm-start recipe for both stochastic phases
+#            Stochastic optimization warm start generation
 # --------------------------------------------------------------------------- #
 
 
 @dataclass
-class StochasticSeed:
+class StochasticOptimizationSeed:
     means: np.ndarray
     feedforward: np.ndarray
     gains: np.ndarray
-    covariances: np.ndarray    # (n_arcs+1, NX, NX), from propagating the seed policy
-    margin: np.ndarray         # lower-triangular entries of the terminal G, row-major
+    state_covariances: np.ndarray
+    margin: np.ndarray
 
 
-def build_stochastic_seed(
-    options: Options,
-    A: np.ndarray,
-    B: np.ndarray,
-    arc_function: casadi.Function,
-    nominal: NominalTrajectory,
-    lower_indices: list[tuple[int, int]],
-) -> StochasticSeed:
-    """Warm start shared by solve_single_shot and solve_multiple_shoot.
-
-    Both stochastic phases start from the very same deterministic nominal
-    trajectory and TVLQR gains, then make the terminal-margin variable
-    consistent with that seed by actually propagating it through the real UT
-    arc map -- mirroring build_initial_guess in the CR3BP script. Neither
-    phase is seeded from the other's converged solution. The control-norm
-    epigraph slack has no counterpart here since both phases now use the
-    epsilon-regularized ||v_k|| directly, with no separate decision variable
-    to seed.
-    """
-
-    n_arcs = options.n_arcs
+def build_stochastic_optimization_seed(
+    options: Options, A: np.ndarray, B: np.ndarray, arc_fn, nominal: NominalTrajectory
+) -> StochasticOptimizationSeed:
     gains_seed = (
         tvlqr_gains(options, A, B)
         if options.warm_start_gains
-        else np.zeros((n_arcs, NU, NX))
+        else np.zeros((options.n_arcs, NU, NX))
     )
 
-    _, seed_covariances, _ = propagate_moments(
-        arc_function, nominal.means, nominal.feedforward, gains_seed, options.x0_covariance
+    _, seed_covariances, _ = propagate_statistical_moments(
+        arc_fn, nominal.means, nominal.feedforward, gains_seed, options.x0_covariance
     )
 
-    inv_std = 1.0 / np.sqrt(np.diag(options.xf_covariance))
-    scaled = np.outer(inv_std, inv_std) * seed_covariances[-1]
-    slack_seed = np.eye(NX) - scaled
-    eigvals, eigvecs = np.linalg.eigh(0.5 * (slack_seed + slack_seed.T))
-    slack_psd = eigvecs @ np.diag(np.clip(eigvals, 0.0, None)) @ eigvecs.T
-    G_seed = np.linalg.cholesky(slack_psd + options.terminal_margin_floor ** 2 * np.eye(NX))
-    margin_seed = np.array([G_seed[row, col] for row, col in lower_indices])
+    terminal_scaling = options.inverse_terminal_std
+    scaled_terminal_state_covariance = np.outer(terminal_scaling, terminal_scaling) * seed_covariances[-1]
+    terminal_slack = np.eye(NX) - scaled_terminal_state_covariance
+    margin_factor = nearest_pd_cholesky_factor(
+        terminal_slack, options.terminal_margin_floor**2
+    )
 
-    return StochasticSeed(
+    return StochasticOptimizationSeed(
         means=nominal.means,
         feedforward=nominal.feedforward,
         gains=gains_seed,
-        covariances=seed_covariances,
-        margin=margin_seed,
+        state_covariances=seed_covariances,
+        margin=LTRI.pack_numeric(margin_factor),
     )
 
 
 # --------------------------------------------------------------------------- #
-# Phase 1: single-shot covariance, multiple-shooting mean
+# Covariance multiple-shooting solve
 # --------------------------------------------------------------------------- #
 
 
 @dataclass
-class RobustSolution:
-    means: np.ndarray                  # (NX, n_arcs+1)
-    feedforward: np.ndarray            # (NU, n_arcs)
-    gains: np.ndarray                  # (n_arcs, NU, NX)
-    covariances: np.ndarray            # (n_arcs+1, NX, NX)
-    control_covariances: np.ndarray    # (n_arcs, NU, NU)
-    radius: np.ndarray                 # (n_arcs,)
+class RobustTrajectory:
+    means: np.ndarray
+    feedforward: np.ndarray
+    gains: np.ndarray
+    state_covariances: np.ndarray
+    control_covariances: np.ndarray
+    radius: np.ndarray
     objective: float
     diagnostics: dict[str, float | str] = field(default_factory=dict)
 
 
-def propagate_moments(
-    arc_function: casadi.Function,
-    means: np.ndarray,
-    feedforward: np.ndarray,
-    gains: np.ndarray,
-    initial_covariance: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    n_arcs = feedforward.shape[1]
-    covariances = np.empty((n_arcs + 1, NX, NX))
-    control_covariances = np.empty((n_arcs, NU, NU))
-    propagated_means = np.empty((NX, n_arcs + 1))
-    covariances[0] = initial_covariance
-    propagated_means[:, 0] = means[:, 0]
-    for k in range(n_arcs):
-        mean_next, covariance_next, control_covariance = arc_function(
-            means[:, k], covariances[k], feedforward[:, k], gains[k]
+def regularized_control_norm(
+    feedforward_k: jnp.ndarray, options: Options
+) -> jnp.ndarray:
+    return jnp.sqrt(
+        jnp.dot(feedforward_k, feedforward_k) + options.control_norm_epsilon**2
+    )
+
+
+def _terminal_constraint_slack(terminal_state_covariance: jnp.ndarray, options: Options) -> jnp.ndarray:
+    """``I - diag(1/sigma_f) @ Sigma @ diag(1/sigma_f)``: terminal state covariance headroom."""
+
+    terminal_scaling = jnp.diag(jnp.asarray(options.inverse_terminal_std))
+    return jnp.eye(NX) - terminal_scaling @ terminal_state_covariance @ terminal_scaling
+
+
+def _unpack_stochastic_vars(xdict: dict, options: Options):
+    n_arcs = options.n_arcs
+    n_tril = len(LTRI)
+    means = xdict["means"].reshape(NX, n_arcs + 1)
+    feedforward = xdict["feedforward"].reshape(NU, n_arcs)
+    gains = xdict["gains"].reshape(n_arcs, NU, NX)
+    cholesky_factor_entries = xdict["cholesky_factor"].reshape(n_arcs + 1, n_tril)
+    margin_entries = xdict["terminal_margin"]
+    return means, feedforward, gains, cholesky_factor_entries, margin_entries
+
+
+def _stochastic_funcs(
+    xdict: dict, options: Options, arc_fn, psi_inv_u: float, phi_inv_path: float
+):
+    """Evaluate every independent shooting arc in one batched JAX program.
+
+    Each multiple-shooting arc starts from its own
+    decision-variable mean and state_covariance. Through `vmap` all arcs, and all sigma points inside each arc, are
+    exposed to XLA as nested batch dimensions in one compiled callback.
+    """
+
+    n_arcs = options.n_arcs
+    n_path = len(options.path_constraints)
+    means, feedforward, gains, cholesky_factor_entries, margin_entries = _unpack_stochastic_vars(
+        xdict, options
+    )
+
+    node_state_covariances = jax.vmap(
+        lambda entries: LTRI.to_matrix(entries) @ LTRI.to_matrix(entries).T
+    )(cholesky_factor_entries)
+
+    Q = jnp.asarray(options.Q)
+    R = jnp.asarray(options.R)
+    path_vectors = options.path_matrix  # (n_path, NX)
+
+    batched_propagation_arc = jax.vmap(arc_fn, in_axes=(1, 0, 1, 0), out_axes=(1, 0, 0))
+    predicted_means, predicted_covariances, control_covariances = batched_propagation_arc(
+        means[:, :-1], node_state_covariances[:-1], feedforward, gains
+    )
+
+    mean_defects = (means[:, 1:] - predicted_means).reshape(-1)
+    covariance_errors = node_state_covariances[1:] - predicted_covariances
+    covariance_defects = jax.vmap(LTRI.pack)(covariance_errors).reshape(-1)
+
+    control_norms = jax.vmap(
+        lambda control: regularized_control_norm(control, options)
+    )(feedforward.T)
+    control_radii = control_norms + psi_inv_u * jax.vmap(
+        lambda covariance: symbolic_psqrt_spectral_radius(
+            covariance,
+            options.spectral_eigenvalue_smoothing,
         )
-        propagated_means[:, k + 1] = np.asarray(mean_next.full()).ravel()
-        covariances[k + 1] = np.asarray(covariance_next.full())
-        control_covariances[k] = np.asarray(control_covariance.full())
-    return propagated_means, covariances, control_covariances
+    )(control_covariances)
+
+    path_variances = jnp.einsum(
+        "pi,kij,pj->pk", path_vectors, node_state_covariances[:-1], path_vectors
+    )
+    path_values = path_vectors @ means[:, :-1] + phi_inv_path * jnp.sqrt(
+        jnp.maximum(path_variances, 0.0)
+    )
+
+    covariance_trace_cost = jnp.einsum("ij,kji->", Q, node_state_covariances[:-1])
+    control_trace_cost = jnp.einsum("ij,kji->", R, control_covariances)
+    total_objective = options.dt * (
+        jnp.sum(control_norms) + covariance_trace_cost + control_trace_cost
+    )
+
+    terminal_slack = _terminal_constraint_slack(node_state_covariances[n_arcs], options)
+    margin_factor = LTRI.to_matrix(margin_entries)
+    terminal_residual = LTRI.pack(terminal_slack - margin_factor @ margin_factor.T)
+
+    funcs = {
+        "initial_covariance": LTRI.pack(
+            node_state_covariances[0] - jnp.asarray(options.x0_covariance)
+        ),
+        "mean_defects": mean_defects,
+        "state_covariance_defects": covariance_defects,
+        "control_chance": control_radii,
+        "terminal_residual": terminal_residual,
+        "objective": total_objective,
+    }
+    for idx in range(n_path):
+        funcs[f"path_{idx}"] = path_values[idx]
+    return funcs
 
 
-def run_snopt_solver(opti: casadi.Opti, tag: str) -> casadi.OptiSol:
-    """Solve from a unique directory so SNOPT gets a fresh output file (Windows-safe)."""
-
-    work_dir = Path(tempfile.mkdtemp(prefix=f"casadi-snopt-{tag}-"))
-    original = Path.cwd()
-    try:
-        os.chdir(work_dir)
-        return opti.solve()
-    finally:
-        os.chdir(original)
+def _packed_state_covariance(cholesky_factor_entries: jnp.ndarray) -> jnp.ndarray:
+    factor = LTRI.to_matrix(cholesky_factor_entries)
+    return LTRI.pack(factor @ factor.T)
 
 
-def solver_diagnostics(
-    opti: casadi.Opti,
-    solution,
+def _nonlinear_arc_outputs_stochastic(
+    local_input: jnp.ndarray,
     options: Options,
-    solver_accepted: bool,
-) -> dict[str, float | str]:
-    """Report solver termination separately from returned-point feasibility.
+    arc_fn,
+    psi_inv_u: float,
+    phi_inv_path: float,
+) -> jnp.ndarray:
+    """Nonlinear objective and defect quantities owned by one arc."""
 
-    CasADi raises whenever SNOPT does not return a success code, including EXIT
-    40 at an essentially feasible point.  That distinction matters for Phase 1:
-    feasibility is useful for diagnosing the transcription, but it is not an
-    optimality certificate and must not be relabelled as solver convergence.
-    """
+    n_tril = len(LTRI)
+    mean = local_input[:NX]
+    feedforward = local_input[NX : NX + NU]
+    gain = local_input[NX + NU : NX + NU + NU * NX].reshape(NU, NX)
+    cholesky_factor_entries = local_input[-n_tril:]
+    cholesky_factor = LTRI.to_matrix(cholesky_factor_entries)
+    state_covariance = cholesky_factor @ cholesky_factor.T
 
-    values = np.asarray(solution.value(opti.g), dtype=float).ravel()
-    lower = np.asarray(solution.value(opti.lbg), dtype=float).ravel()
-    upper = np.asarray(solution.value(opti.ubg), dtype=float).ravel()
-    if np.all(np.isfinite(values)):
-        lower_violation = np.maximum(lower - values, 0.0)
-        upper_violation = np.maximum(values - upper, 0.0)
-        max_violation = float(max(np.max(lower_violation), np.max(upper_violation)))
-    else:
-        max_violation = float("inf")
+    mean_next, covariance_next, control_covariance = arc_fn(
+        mean, state_covariance, feedforward, gain
+    )
+    control_norm = regularized_control_norm(feedforward, options)
+    control_chance = control_norm + psi_inv_u * symbolic_psqrt_spectral_radius(
+        control_covariance,
+        options.spectral_eigenvalue_smoothing,
+    )
 
-    # Allow a small reporting guard above SNOPT's requested feasibility
-    # tolerance for independent post-solve evaluation and roundoff.
-    acceptance_tolerance = max(10.0 * options.major_feasibility_tol, 1e-8)
-    stats = opti.stats()
-    status = str(stats.get("secondary_return_status") or stats.get("return_status", "unknown"))
-    optimality_satisfied = status.strip().lower() == "optimality conditions satisfied"
-    feasible = max_violation <= acceptance_tolerance
-    return {
-        "converged": float(solver_accepted and optimality_satisfied and feasible),
-        "solver_accepted": float(solver_accepted),
-        "optimality_satisfied": float(optimality_satisfied),
-        "feasible": float(feasible),
-        "max_constraint_violation": max_violation,
-        "solver_status": status,
-    }
+    path_vectors = options.path_matrix
+    path_variances = jnp.einsum("pi,ij,pj->p", path_vectors, state_covariance, path_vectors)
+    path_values = path_vectors @ mean + phi_inv_path * jnp.sqrt(
+        jnp.maximum(path_variances, 0.0)
+    )
 
-
-def _configure_snopt(opti: casadi.Opti, options: Options) -> None:
-    snopt_options = {
-        "Major iterations limit": options.major_max_iter,
-        "Minor iterations limit": max(500, options.minor_max_iter),
-        "Iterations limit": options.minor_max_iter,
-        "Major optimality tolerance": f"{options.major_optimality_tol:.13g}",
-        "Major feasibility tolerance": f"{options.major_feasibility_tol:.13g}",
-        "Minor feasibility tolerance": f"{options.minor_feasibility_tol:.13g}",
-        # Unlike the CR3BP script (which only notes this as an untested idea), a
-        # much larger elastic weight is set here because it was observed
-        # empirically to be load-bearing on this problem: with SNOPT's default
-        # (1e4) the penalty parameter climbs into the 1e8-1e9 range over ~2000
-        # major iterations without reaching the optimality tolerance, because a
-        # too-small elastic weight lets the QP subproblem trade feasibility for
-        # optimality too cheaply, so the SQP path crawls along the boundary of
-        # the terminal-covariance/control-chance-constraint manifold instead of
-        # converging. A large fixed elastic weight keeps constraint violations
-        # expensive throughout, which reaches the optimality tolerance in a few
-        # hundred major iterations instead.
-        "Elastic weight": f"{options.elastic_weight:.13g}",
-        "Print file": 0,
-        "Summary file": 6 if options.print_level else 0,
-        "Major print level": options.print_level,
-        "Minor print level": 0,
-    }
-    opti.solver("snopt", {"expand": False, "print_time": True}, snopt_options)
+    local_objective = options.dt * (
+        control_norm
+        + jnp.trace(jnp.asarray(options.Q) @ state_covariance)
+        + jnp.trace(jnp.asarray(options.R) @ control_covariance)
+    )
+    return jnp.concatenate(
+        [
+            mean_next,
+            LTRI.pack(covariance_next),
+            jnp.atleast_1d(control_chance),
+            path_values,
+            jnp.atleast_1d(local_objective),
+        ]
+    )
 
 
-def solve_single_shot(
-    options: Options, A: np.ndarray, B: np.ndarray, G: np.ndarray, nominal: NominalTrajectory
-) -> RobustSolution:
-    """Phase 1: mean on multiple shooting, covariance single-shot forward (UT).
+def get_terminal_residual(
+    terminal_input: jnp.ndarray, options: Options
+) -> jnp.ndarray:
+    n_tril = len(LTRI)
+    cholesky_factor = LTRI.to_matrix(terminal_input[:n_tril])
+    terminal_state_covariance = cholesky_factor @ cholesky_factor.T
+    margin_factor = LTRI.to_matrix(terminal_input[n_tril:])
+    terminal_slack = _terminal_constraint_slack(terminal_state_covariance, options)
+    return LTRI.pack(terminal_slack - margin_factor @ margin_factor.T)
 
-    Seeded by build_stochastic_seed from the deterministic nominal trajectory
-    (solve_deterministic_nominal) -- not from any other stochastic solve.
-    """
 
-    arc_function = get_arc_function(options, G)
-    psi_inv_u = psi_inverse(NU, 1.0 - options.control_confidence)
-    z_path = float(norm.ppf(options.path_confidence))
+def _nonlinear_jacobian_stochastic(
+    xdict: dict,
+    options: Options,
+    arc_fn,
+    psi_inv_u: float,
+    phi_inv_path: float,
+):
+    """AD-differentiate small nonlinear arc maps, then batch them over the trajectory."""
+
+    means, feedforward, gains, cholesky_factor_entries, margin_entries = _unpack_stochastic_vars(
+        xdict, options
+    )
+    local_inputs = jnp.concatenate(
+        [
+            means[:, :-1].T,
+            feedforward.T,
+            gains.reshape(options.n_arcs, -1),
+            cholesky_factor_entries[:-1],
+        ],
+        axis=1,
+    )
+    local_jacobian = jax.jacrev(
+        lambda values: _nonlinear_arc_outputs_stochastic(
+            values, options, arc_fn, psi_inv_u, phi_inv_path
+        )
+    )
+    nonlinear_jacobian_blocks = jax.vmap(local_jacobian)(local_inputs)
+    state_covariance_jacobians = jax.vmap(jax.jacrev(_packed_state_covariance))(cholesky_factor_entries)
+    terminal_input = jnp.concatenate([cholesky_factor_entries[-1], margin_entries])
+    terminal_jacobian = jax.jacrev(
+        lambda values: get_terminal_residual(values, options)
+    )(terminal_input)
+    return nonlinear_jacobian_blocks, state_covariance_jacobians, terminal_jacobian
+
+
+def _assemble_nonlinear_global_jacobian_stochastic(
+    nonlinear_jacobian_blocks: np.ndarray,
+    state_covariance_jacobians: np.ndarray,
+    terminal_jacobian: np.ndarray,
+    options: Options,
+) -> dict:
+    """Assemble the nonlinear per-arc AD Jacobian blocks in the global pyOptSparse ordering."""
+
     n_arcs = options.n_arcs
-    lower_indices = [(row, col) for row in range(NX) for col in range(row + 1)]
+    n_path = len(options.path_constraints)
+    n_tril = len(LTRI)
+    variable_sizes = {
+        "means": NX * (n_arcs + 1),
+        "feedforward": NU * n_arcs,
+        "gains": n_arcs * NU * NX,
+        "cholesky_factor": (n_arcs + 1) * n_tril,
+        "terminal_margin": n_tril,
+    }
 
-    seed = build_stochastic_seed(options, A, B, arc_function, nominal, lower_indices)
+    def allocate_blocks(rows: int, variables: tuple[str, ...]) -> dict[str, np.ndarray]:
+        return {
+            variable: np.zeros((rows, variable_sizes[variable]))
+            for variable in variables
+        }
 
-    opti = casadi.Opti()
-    means = opti.variable(NX, n_arcs + 1)
-    feedforward = opti.variable(NU, n_arcs)
-    gains = [opti.variable(NU, NX) for _ in range(n_arcs)]
+    jacobian = {
+        "initial_covariance": allocate_blocks(n_tril, ("cholesky_factor",)),
+        "mean_defects": allocate_blocks(
+            NX * n_arcs, ("means", "feedforward", "gains", "cholesky_factor")
+        ),
+        "state_covariance_defects": allocate_blocks(
+            n_tril * n_arcs,
+            ("means", "feedforward", "gains", "cholesky_factor"),
+        ),
+        "control_chance": allocate_blocks(n_arcs, ("means", "feedforward", "gains", "cholesky_factor")),
+        "terminal_residual": allocate_blocks(n_tril, ("cholesky_factor", "terminal_margin")),
+        "objective": {
+            variable: np.zeros(size) for variable, size in variable_sizes.items()
+        },
+    }
+    for path_index in range(n_path):
+        jacobian[f"path_{path_index}"] = allocate_blocks(n_arcs, ("means", "cholesky_factor"))
 
-    opti.subject_to(means[:, 0] == options.x0_mean)
+    state_indices = np.arange(NX)
+    control_indices = np.arange(NU)
+    gain_indices = np.arange(NU * NX)
+    tril_indices = np.arange(n_tril)
+    jacobian["initial_covariance"]["cholesky_factor"][:, :n_tril] = state_covariance_jacobians[0]
 
-    covariance = casadi.DM(options.x0_covariance)
-    objective = 0.0
-    quadratic_penalty = 0.0
-    Q_cs = casadi.DM(options.Q)
-    R_cs = casadi.DM(options.R)
+    input_mean = slice(0, NX)
+    input_feedforward = slice(NX, NX + NU)
+    input_gain = slice(NX + NU, NX + NU + NU * NX)
+    input_cholesky = slice(NX + NU + NU * NX, NX + NU + NU * NX + n_tril)
+    output_mean = slice(0, NX)
+    output_covariance = slice(NX, NX + n_tril)
+    output_control_chance = NX + n_tril
+    output_path_start = output_control_chance + 1
+    output_objective = output_path_start + n_path
 
-    for k in range(n_arcs):
-        mean_next, covariance_next, control_covariance = arc_function(
-            means[:, k], covariance, feedforward[:, k], gains[k]
+    for arc_index in range(n_arcs):
+        local_jac = nonlinear_jacobian_blocks[arc_index]
+        mean_rows = state_indices * n_arcs + arc_index
+        covariance_rows = arc_index * n_tril + tril_indices
+        mean_columns = state_indices * (n_arcs + 1) + arc_index
+        next_mean_columns = mean_columns + 1
+        feedforward_columns = control_indices * n_arcs + arc_index
+        gain_columns = arc_index * NU * NX + gain_indices
+        cholesky_factor_columns = arc_index * n_tril + tril_indices
+        next_cholesky_factor_columns = cholesky_factor_columns + n_tril
+
+        jacobian["mean_defects"]["means"][np.ix_(mean_rows, mean_columns)] = -local_jac[
+            output_mean, input_mean
+        ]
+        jacobian["mean_defects"]["means"][
+            np.ix_(mean_rows, next_mean_columns)
+        ] += np.eye(NX)
+        jacobian["mean_defects"]["feedforward"][
+            np.ix_(mean_rows, feedforward_columns)
+        ] = -local_jac[output_mean, input_feedforward]
+        jacobian["mean_defects"]["gains"][np.ix_(mean_rows, gain_columns)] = -local_jac[
+            output_mean, input_gain
+        ]
+        jacobian["mean_defects"]["cholesky_factor"][np.ix_(mean_rows, cholesky_factor_columns)] = (
+            -local_jac[output_mean, input_cholesky]
         )
-        opti.subject_to(means[:, k + 1] == mean_next)
 
-        # Epsilon-regularized control norm (matching solve_deterministic_nominal)
-        # in place of the epigraph slack variable: no separate decision variable,
-        # ||v_k|| is replaced everywhere -- objective and chance constraint alike
-        # -- by sqrt(dot(v_k,v_k) + eps^2), which has a finite, well-defined
-        # gradient at v_k = 0 (coast arcs) instead of the epigraph's kink there.
-        control_norm = casadi.sqrt(
-            casadi.dot(feedforward[:, k], feedforward[:, k])
-            + options.control_norm_epsilon ** 2
+        jacobian["state_covariance_defects"]["means"][
+            np.ix_(covariance_rows, mean_columns)
+        ] = -local_jac[output_covariance, input_mean]
+        jacobian["state_covariance_defects"]["feedforward"][
+            np.ix_(covariance_rows, feedforward_columns)
+        ] = -local_jac[output_covariance, input_feedforward]
+        jacobian["state_covariance_defects"]["gains"][
+            np.ix_(covariance_rows, gain_columns)
+        ] = -local_jac[output_covariance, input_gain]
+        jacobian["state_covariance_defects"]["cholesky_factor"][
+            np.ix_(covariance_rows, cholesky_factor_columns)
+        ] = -local_jac[output_covariance, input_cholesky]
+        jacobian["state_covariance_defects"]["cholesky_factor"][
+            np.ix_(covariance_rows, next_cholesky_factor_columns)
+        ] += state_covariance_jacobians[arc_index + 1]
+
+        control_row = np.array([arc_index])
+        for variable, columns, input_slice in (
+            ("means", mean_columns, input_mean),
+            ("feedforward", feedforward_columns, input_feedforward),
+            ("gains", gain_columns, input_gain),
+            ("cholesky_factor", cholesky_factor_columns, input_cholesky),
+        ):
+            jacobian["control_chance"][variable][np.ix_(control_row, columns)] = local_jac[
+                output_control_chance, input_slice
+            ][None, :]
+
+        for path_index in range(n_path):
+            path_name = f"path_{path_index}"
+            output_index = output_path_start + path_index
+            jacobian[path_name]["means"][arc_index, mean_columns] = local_jac[
+                output_index, input_mean
+            ]
+            jacobian[path_name]["cholesky_factor"][arc_index, cholesky_factor_columns] = local_jac[
+                output_index, input_cholesky
+            ]
+
+        for variable, columns, input_slice in (
+            ("means", mean_columns, input_mean),
+            ("feedforward", feedforward_columns, input_feedforward),
+            ("gains", gain_columns, input_gain),
+            ("cholesky_factor", cholesky_factor_columns, input_cholesky),
+        ):
+            jacobian["objective"][variable][columns] = local_jac[
+                output_objective, input_slice
+            ]
+
+    jacobian["terminal_residual"]["cholesky_factor"][:, -n_tril:] = terminal_jacobian[
+        :, :n_tril
+    ]
+    jacobian["terminal_residual"]["terminal_margin"][:, :] = terminal_jacobian[:, n_tril:]
+    return jacobian
+
+
+def solve_stochastic_optimization(
+    options: Options,
+    A: np.ndarray,
+    B: np.ndarray,
+    Lc: np.ndarray,
+    nominal_traj: NominalTrajectory,
+) -> RobustTrajectory:
+    arc_fn = build_propagation_arc_map(options, Lc)
+    psi_inv_u = psi_inverse(NU, 1.0 - options.control_confidence)
+    phi_inv_path = float(norm.ppf(options.path_confidence))
+    n_arcs = options.n_arcs
+    n_tril = len(LTRI)
+
+    seed = build_stochastic_optimization_seed(options, A, B, arc_fn, nominal_traj)
+
+    cholesky_factor_seed = np.stack(
+        [
+            LTRI.pack_numeric(np.linalg.cholesky(seed.state_covariances[k]))
+            for k in range(n_arcs + 1)
+        ]
+    )
+
+    nonlinear_residual_fn = jax.jit(
+        lambda xdict: _stochastic_funcs(xdict, options, arc_fn, psi_inv_u, phi_inv_path)
+    )
+    nonlinear_jac_fn = jax.jit(
+        lambda xdict: _nonlinear_jacobian_stochastic(
+            xdict, options, arc_fn, psi_inv_u, phi_inv_path
         )
-        radius = symbolic_psqrt_spectral_radius_2x2(
-            control_covariance,
-            options.spectral_eigenvalue_smoothing,
-            options.spectral_radius_floor,
+    )
+    n_local_inputs = NX + NU + NU * NX + n_tril
+    n_local_outputs = NX + n_tril + 1 + len(options.path_constraints) + 1
+    nonlinear_global_jacobian_structure = _assemble_nonlinear_global_jacobian_stochastic(
+        np.ones((n_arcs, n_local_outputs, n_local_inputs)),
+        np.ones((n_arcs + 1, n_tril, n_tril)),
+        np.ones((n_tril, 2 * n_tril)), 
+        options,
+    )
+    nonlinear_jac_sparsity = get_jacobian_sparsity(nonlinear_global_jacobian_structure)
+    linear_jac = _linear_jacobians(options, stochastic=True)
+
+    def objconfun(xdict):
+        funcs = nonlinear_residual_fn(xdict)
+        return {key: np.asarray(value) for key, value in funcs.items()}, False
+
+    def sens(xdict, funcs):
+        nonlinear_jacobian_blocks, state_covariance_jacobians, terminal_jacobian = (
+            nonlinear_jac_fn(xdict)
         )
-        opti.subject_to(control_norm + psi_inv_u * radius <= options.u_max)
-
-        # Two position path chance constraints (SOCP surrogate, thesis Eq. 3.52).
-        for a_vec, b_val in ((options.a1, options.b1), (options.a2, options.b2)):
-            a_cs = casadi.DM(a_vec)
-            sigma_y = casadi.sqrt(
-                casadi.fmax(a_cs.T @ covariance @ a_cs, 0.0) + options.spectral_radius_floor ** 2
-            )
-            opti.subject_to(a_cs.T @ means[:, k] + z_path * sigma_y <= b_val)
-
-        # Thesis Eq. 4.8 composite cost: ||v_k|| plus quadratic covariance-trace
-        # penalties, with NO quantile/chance-margin term (psi_inv_u * radius) in
-        # the objective. That term is used only in the control chance constraint
-        # above (control_norm + psi_inv_u*radius <= u_max), never charged into
-        # the cost.
-        objective = objective + options.dt * control_norm
-        quadratic_penalty = quadratic_penalty + options.dt * (
-            casadi.trace(Q_cs @ covariance) + casadi.trace(R_cs @ control_covariance)
+        jacobian = _assemble_nonlinear_global_jacobian_stochastic(
+            np.asarray(nonlinear_jacobian_blocks),
+            np.asarray(state_covariance_jacobians),
+            np.asarray(terminal_jacobian),
+            options,
         )
+        return apply_jacobian_sparsity(jacobian, nonlinear_jac_sparsity), False
 
-        covariance = covariance_next
-
-    opti.subject_to(means[:, n_arcs] == options.xf_mean)
-
-    inverse_target_std = casadi.DM(1.0 / np.sqrt(np.diag(options.xf_covariance)))
-    scaled_terminal = (
-        casadi.diag(inverse_target_std) @ covariance @ casadi.diag(inverse_target_std)
+    optProb = Optimization("stochastic", objconfun)
+    optProb.addVarGroup("means", NX * (n_arcs + 1), value=seed.means.reshape(-1))
+    optProb.addVarGroup("feedforward", NU * n_arcs, value=seed.feedforward.reshape(-1))
+    optProb.addVarGroup("gains", n_arcs * NU * NX, value=seed.gains.reshape(-1))
+    optProb.addVarGroup(
+        "cholesky_factor",
+        (n_arcs + 1) * n_tril,
+        value=cholesky_factor_seed.reshape(-1),
     )
-    terminal_slack = casadi.MX.eye(NX) - scaled_terminal
-
-    n_margin = NX * (NX + 1) // 2
-    margin = opti.variable(n_margin)
-    margin_matrix = [[casadi.MX(0.0)] * NX for _ in range(NX)]
-    for (row, col), entry in zip(lower_indices, casadi.vertsplit(margin)):
-        margin_matrix[row][col] = entry
-    Gmat = casadi.vertcat(*[casadi.horzcat(*row) for row in margin_matrix])
-    opti.subject_to(casadi.diag(Gmat) >= options.terminal_margin_floor)
-    residual = terminal_slack - Gmat @ Gmat.T
-    opti.subject_to(
-        casadi.vertcat(*[residual[row, col] for row, col in lower_indices]) == 0.0
+    optProb.addVarGroup("terminal_margin", n_tril, value=seed.margin)
+    optProb.addConGroup(
+        "boundary_start",
+        NX,
+        lower=options.x0_mean,
+        upper=options.x0_mean,
+        linear=True,
+        wrt=list(linear_jac["boundary_start"]),
+        jac=linear_jac["boundary_start"],
+    )
+    optProb.addConGroup(
+        "boundary_end",
+        NX,
+        lower=options.xf_mean,
+        upper=options.xf_mean,
+        linear=True,
+        wrt=list(linear_jac["boundary_end"]),
+        jac=linear_jac["boundary_end"],
+    )
+    optProb.addConGroup(
+        "initial_covariance",
+        n_tril,
+        lower=0.0,
+        upper=0.0,
+        wrt=list(nonlinear_jac_sparsity["initial_covariance"]),
+        jac=nonlinear_jac_sparsity["initial_covariance"],
+    )
+    optProb.addConGroup(
+        "mean_defects",
+        NX * n_arcs,
+        lower=0.0,
+        upper=0.0,
+        wrt=list(nonlinear_jac_sparsity["mean_defects"]),
+        jac=nonlinear_jac_sparsity["mean_defects"],
+    )
+    optProb.addConGroup(
+        "state_covariance_defects",
+        n_tril * n_arcs,
+        lower=0.0,
+        upper=0.0,
+        wrt=list(nonlinear_jac_sparsity["state_covariance_defects"]),
+        jac=nonlinear_jac_sparsity["state_covariance_defects"],
+    )
+    optProb.addConGroup(
+        "control_chance",
+        n_arcs,
+        upper=options.u_max,
+        wrt=list(nonlinear_jac_sparsity["control_chance"]),
+        jac=nonlinear_jac_sparsity["control_chance"],
+    )
+    for idx, (_, b_value) in enumerate(options.path_constraints):
+        name = f"path_{idx}"
+        optProb.addConGroup(
+            name,
+            n_arcs,
+            upper=b_value,
+            wrt=list(nonlinear_jac_sparsity[name]),
+            jac=nonlinear_jac_sparsity[name],
+        )
+    optProb.addConGroup(
+        "terminal_residual",
+        n_tril,
+        lower=0.0,
+        upper=0.0,
+        wrt=list(nonlinear_jac_sparsity["terminal_residual"]),
+        jac=nonlinear_jac_sparsity["terminal_residual"],
+    )
+    optProb.addConGroup(
+        "margin_diagonal",
+        NX,
+        lower=options.terminal_margin_floor,
+        linear=True,
+        wrt=list(linear_jac["margin_diagonal"]),
+        jac=linear_jac["margin_diagonal"],
+    )
+    optProb.addConGroup(
+        "cholesky_diagonal",
+        (n_arcs + 1) * NX,
+        lower=0.0,
+        linear=True,
+        wrt=list(linear_jac["cholesky_diagonal"]),
+        jac=linear_jac["cholesky_diagonal"],
     )
 
-    total_objective = objective + quadratic_penalty
-    opti.minimize(total_objective)
+    optProb.addObj("objective")
 
-    opti.set_initial(means, seed.means)
-    opti.set_initial(feedforward, seed.feedforward)
-    for k in range(n_arcs):
-        opti.set_initial(gains[k], seed.gains[k])
-    opti.set_initial(margin, seed.margin)
+    if options.print_sparsity:
+        optProb.printSparsity()
 
-    _configure_snopt(opti, options)
+    opt = SNOPT(options=snopt_options(options, "stochastic"))
+    sol = opt(optProb, sens=sens)
 
-    try:
-        solution = run_snopt_solver(opti, "double-integrator-phase1")
-        solver_accepted = True
-    except RuntimeError as error:
-        print(f"  SNOPT did not converge ({error}); returning the last iterate.", flush=True)
-        solution = opti.debug
-        solver_accepted = False
-
-    solve_metrics = solver_diagnostics(opti, solution, options, solver_accepted)
-
-    solved_means = np.asarray(solution.value(means))
-    solved_feedforward = np.asarray(solution.value(feedforward)).reshape(NU, n_arcs)
-    solved_gains = np.stack(
-        [np.asarray(solution.value(g)).reshape(NU, NX) for g in gains]
+    solved_means = np.asarray(sol.xStar["means"]).reshape(NX, n_arcs + 1)
+    solved_feedforward = np.asarray(sol.xStar["feedforward"]).reshape(NU, n_arcs)
+    solved_gains = np.asarray(sol.xStar["gains"]).reshape(n_arcs, NU, NX)
+    solved_cholesky = np.asarray(sol.xStar["cholesky_factor"]).reshape(n_arcs + 1, n_tril)
+    solved_state_covariances = np.stack(
+        [
+            LTRI.to_matrix_numeric(solved_cholesky[k])
+            @ LTRI.to_matrix_numeric(solved_cholesky[k]).T
+            for k in range(n_arcs + 1)
+        ]
     )
 
-    propagated_means, covariances, control_covariances = propagate_moments(
-        arc_function, solved_means, solved_feedforward, solved_gains, options.x0_covariance
+    control_covariances, mean_defect, state_covariance_defect = evaluate_node_matching_defects(
+        arc_fn, solved_means, solved_feedforward, solved_gains, solved_state_covariances
     )
-    matching_defect = float(np.max(np.abs(propagated_means[:, 1:] - solved_means[:, 1:])))
-    solved_radius, smoothing_metrics = smoothed_control_radii(control_covariances, options)
+    solved_radius, smoothing_metrics = get_smoothing_diagnostics(
+        control_covariances, options
+    )
 
-    return RobustSolution(
+    final_funcs = objconfun(sol.xStar)[0]
+    solver_metrics = solver_diagnostics(sol, optProb, sol.xStar, final_funcs, options)
+
+    return RobustTrajectory(
         means=solved_means,
         feedforward=solved_feedforward,
         gains=solved_gains,
-        covariances=covariances,
+        state_covariances=solved_state_covariances,
         control_covariances=control_covariances,
         radius=solved_radius,
-        objective=float(solution.value(total_objective)),
+        objective=float(final_funcs["objective"]),
         diagnostics={
-            **solve_metrics,
-            "matching_defect": matching_defect,
+            **solver_metrics,
+            "matching_defect": mean_defect,
+            "covariance_matching_defect": state_covariance_defect,
             **smoothing_metrics,
         },
     )
 
 
 # --------------------------------------------------------------------------- #
-# Phase 2: covariance multiple shooting via a Cholesky-factor decision variable
+#                                Verification
 # --------------------------------------------------------------------------- #
 
 
-def solve_multiple_shoot(
-    options: Options, A: np.ndarray, B: np.ndarray, G: np.ndarray, nominal: NominalTrajectory
-) -> RobustSolution:
-    """Phase 2: mean AND covariance on multiple shooting.
+def open_loop_state_covariances(
+    options: Options,
+    Lc: np.ndarray,
+    solution: RobustTrajectory,
+) -> np.ndarray:
+    """Estimate node covariances from feedforward-only SDE rollouts."""
 
-    Every node covariance P_k is represented by a lower-triangular Cholesky
-    factor L_k (P_k = L_k L_k^T), itself a decision variable -- so P_k is PSD by
-    construction at every iterate, exactly the same guarantee multiple shooting
-    on the mean gives for dynamic feasibility. The one-step UT arc map is used to
-    predict P_{k+1} from (mu_k, L_k L_k^T, v_k, K_k); the node value L_{k+1}
-    L_{k+1}^T is then tied to that prediction by a defect equality
-    (analogous to means[:, k+1] == mean_next), rather than substituting the
-    propagated covariance directly into the next arc's input as Phase 1 does.
-
-    Seeded by build_stochastic_seed from the same deterministic nominal
-    trajectory as Phase 1 (solve_single_shot) -- not from Phase 1's converged
-    solution. The two phases are independent solves of the same seed.
-    """
-
-    arc_function = get_arc_function(options, G)
-    psi_inv_u = psi_inverse(NU, 1.0 - options.control_confidence)
-    z_path = float(norm.ppf(options.path_confidence))
-    n_arcs = options.n_arcs
-    lower_indices = [(row, col) for row in range(NX) for col in range(row + 1)]
-
-    seed = build_stochastic_seed(options, A, B, arc_function, nominal, lower_indices)
-
-    def cholesky_seed(matrix: np.ndarray) -> np.ndarray:
-        eigvals, eigvecs = np.linalg.eigh(0.5 * (matrix + matrix.T))
-        psd = eigvecs @ np.diag(np.clip(eigvals, 0.0, None)) @ eigvecs.T
-        return np.linalg.cholesky(psd + options.cholesky_jitter * np.eye(NX))
-
-    def unpack_lower(vec) -> object:
-        """Assemble a full matrix from its NX*(NX+1)/2 lower-triangular entries."""
-
-        rows = [[casadi.MX(0.0)] * NX for _ in range(NX)]
-        for (row, col), entry in zip(lower_indices, casadi.vertsplit(vec)):
-            rows[row][col] = entry
-        return casadi.vertcat(*[casadi.horzcat(*row) for row in rows])
-
-    opti = casadi.Opti()
-    means = opti.variable(NX, n_arcs + 1)
-    feedforward = opti.variable(NU, n_arcs)
-    gains = [opti.variable(NU, NX) for _ in range(n_arcs)]
-    n_chol = NX * (NX + 1) // 2
-    chol_entries = [opti.variable(n_chol) for _ in range(n_arcs + 1)]
-
-    opti.subject_to(means[:, 0] == options.x0_mean)
-    for entries in chol_entries:
-        diag_positions = [i for i, (row, col) in enumerate(lower_indices) if row == col]
-        opti.subject_to(entries[diag_positions] >= options.cholesky_jitter)
-
-    L0 = unpack_lower(chol_entries[0])
-    opti.subject_to(
-        casadi.vertcat(*[(L0 @ L0.T - casadi.DM(options.x0_covariance))[r, c] for r, c in lower_indices])
-        == 0.0
-    )
-
-    objective = 0.0
-    quadratic_penalty = 0.0
-    Q_cs = casadi.DM(options.Q)
-    R_cs = casadi.DM(options.R)
-
-    node_covariances = []
-    for k in range(n_arcs + 1):
-        L_k = unpack_lower(chol_entries[k])
-        node_covariances.append(L_k @ L_k.T)
-
-    for k in range(n_arcs):
-        covariance_k = node_covariances[k]
-        mean_next, covariance_next, control_covariance = arc_function(
-            means[:, k], covariance_k, feedforward[:, k], gains[k]
-        )
-        opti.subject_to(means[:, k + 1] == mean_next)
-
-        # Covariance multiple shooting: tie the node's own Cholesky-parameterized
-        # covariance to the arc map's prediction via a defect equality.
-        covariance_defect = node_covariances[k + 1] - covariance_next
-        opti.subject_to(
-            casadi.vertcat(*[covariance_defect[r, c] for r, c in lower_indices]) == 0.0
-        )
-
-        # Epsilon-regularized control norm (matching solve_deterministic_nominal)
-        # in place of the epigraph slack variable: no separate decision variable,
-        # ||v_k|| is replaced everywhere -- objective and chance constraint alike
-        # -- by sqrt(dot(v_k,v_k) + eps^2), which has a finite, well-defined
-        # gradient at v_k = 0 (coast arcs) instead of the epigraph's kink there.
-        control_norm = casadi.sqrt(
-            casadi.dot(feedforward[:, k], feedforward[:, k])
-            + options.control_norm_epsilon ** 2
-        )
-        radius = symbolic_psqrt_spectral_radius_2x2(
-            control_covariance,
-            options.spectral_eigenvalue_smoothing,
-            options.spectral_radius_floor,
-        )
-        opti.subject_to(control_norm + psi_inv_u * radius <= options.u_max)
-
-        for a_vec, b_val in ((options.a1, options.b1), (options.a2, options.b2)):
-            a_cs = casadi.DM(a_vec)
-            sigma_y = casadi.sqrt(
-                casadi.fmax(a_cs.T @ covariance_k @ a_cs, 0.0) + options.spectral_radius_floor ** 2
-            )
-            opti.subject_to(a_cs.T @ means[:, k] + z_path * sigma_y <= b_val)
-
-        # Thesis Eq. 4.8 composite cost: ||v_k|| plus quadratic covariance-trace
-        # penalties, with NO quantile/chance-margin term (psi_inv_u * radius) in
-        # the objective. That term is used only in the control chance constraint
-        # above (control_norm + psi_inv_u*radius <= u_max), never charged into
-        # the cost.
-        objective = objective + options.dt * control_norm
-        quadratic_penalty = quadratic_penalty + options.dt * (
-            casadi.trace(Q_cs @ covariance_k) + casadi.trace(R_cs @ control_covariance)
-        )
-
-    opti.subject_to(means[:, n_arcs] == options.xf_mean)
-
-    covariance_N = node_covariances[n_arcs]
-    inverse_target_std = casadi.DM(1.0 / np.sqrt(np.diag(options.xf_covariance)))
-    scaled_terminal = (
-        casadi.diag(inverse_target_std) @ covariance_N @ casadi.diag(inverse_target_std)
-    )
-    terminal_slack = casadi.MX.eye(NX) - scaled_terminal
-
-    n_margin = NX * (NX + 1) // 2
-    margin = opti.variable(n_margin)
-    margin_matrix = [[casadi.MX(0.0)] * NX for _ in range(NX)]
-    for (row, col), entry in zip(lower_indices, casadi.vertsplit(margin)):
-        margin_matrix[row][col] = entry
-    Gmat = casadi.vertcat(*[casadi.horzcat(*row) for row in margin_matrix])
-    opti.subject_to(casadi.diag(Gmat) >= options.terminal_margin_floor)
-    residual = terminal_slack - Gmat @ Gmat.T
-    opti.subject_to(
-        casadi.vertcat(*[residual[row, col] for row, col in lower_indices]) == 0.0
-    )
-
-    total_objective = objective + quadratic_penalty
-    opti.minimize(total_objective)
-
-    # Seed from the same deterministic-nominal + TVLQR recipe as Phase 1, not
-    # from Phase 1's converged solution. The Cholesky-factor node variables have
-    # no counterpart in that shared seed, so they are derived here from
-    # seed.covariances (the seed policy's own UT-propagated covariances).
-    opti.set_initial(means, seed.means)
-    opti.set_initial(feedforward, seed.feedforward)
-    for k in range(n_arcs):
-        opti.set_initial(gains[k], seed.gains[k])
-    for k in range(n_arcs + 1):
-        L_seed = cholesky_seed(seed.covariances[k])
-        opti.set_initial(
-            chol_entries[k], np.array([L_seed[row, col] for row, col in lower_indices])
-        )
-    opti.set_initial(margin, seed.margin)
-
-    _configure_snopt(opti, options)
-
-    try:
-        solution = run_snopt_solver(opti, "double-integrator-phase2")
-        solver_accepted = True
-    except RuntimeError as error:
-        print(f"  SNOPT did not converge ({error}); returning the last iterate.", flush=True)
-        solution = opti.debug
-        solver_accepted = False
-
-    solve_metrics = solver_diagnostics(opti, solution, options, solver_accepted)
-
-    solved_means = np.asarray(solution.value(means))
-    solved_feedforward = np.asarray(solution.value(feedforward)).reshape(NU, n_arcs)
-    solved_gains = np.stack(
-        [np.asarray(solution.value(g)).reshape(NU, NX) for g in gains]
-    )
-    solved_covariances = np.empty((n_arcs + 1, NX, NX))
-    for k in range(n_arcs + 1):
-        entries = np.asarray(solution.value(chol_entries[k])).ravel()
-        L = np.zeros((NX, NX))
-        for (row, col), value in zip(lower_indices, entries):
-            L[row, col] = value
-        solved_covariances[k] = L @ L.T
-
-    # Recompute control covariances / matching defects from the solved trajectory
-    # using the same arc map, for diagnostics consistent with Phase 1.
-    _, _, control_covariances = propagate_moments(
-        arc_function, solved_means, solved_feedforward, solved_gains, solved_covariances[0]
-    )
-    propagated_means = np.empty_like(solved_means)
-    propagated_means[:, 0] = solved_means[:, 0]
-    max_cov_defect = 0.0
-    for k in range(n_arcs):
-        mean_next, covariance_next, _ = arc_function(
-            solved_means[:, k], solved_covariances[k], solved_feedforward[:, k], solved_gains[k]
-        )
-        propagated_means[:, k + 1] = np.asarray(mean_next.full()).ravel()
-        cov_pred = np.asarray(covariance_next.full())
-        max_cov_defect = max(
-            max_cov_defect, float(np.max(np.abs(cov_pred - solved_covariances[k + 1])))
-        )
-    matching_defect = float(np.max(np.abs(propagated_means[:, 1:] - solved_means[:, 1:])))
-
-    solved_radius, smoothing_metrics = smoothed_control_radii(control_covariances, options)
-
-    return RobustSolution(
-        means=solved_means,
-        feedforward=solved_feedforward,
-        gains=solved_gains,
-        covariances=solved_covariances,
-        control_covariances=control_covariances,
-        radius=solved_radius,
-        objective=float(solution.value(total_objective)),
-        diagnostics={
-            **solve_metrics,
-            "matching_defect": matching_defect,
-            "covariance_matching_defect": max_cov_defect,
-            **smoothing_metrics,
-        },
-    )
-
-
-# --------------------------------------------------------------------------- #
-# Verification: open-loop rollout and Monte Carlo
-# --------------------------------------------------------------------------- #
-
-
-def open_loop_covariances(options: Options, A: np.ndarray, B: np.ndarray, G: np.ndarray) -> np.ndarray:
-    covariance = options.x0_covariance.copy()
-    covariances = [covariance.copy()]
-    for _ in range(options.n_arcs):
-        covariance = A @ covariance @ A.T + G @ G.T
-        covariances.append(covariance.copy())
-    return np.stack(covariances)
+    return monte_carlo_rollout(options, Lc, solution, closed_loop=False)[
+        "state_covariances"
+    ]
 
 
 def monte_carlo_rollout(
     options: Options,
-    A: np.ndarray,
-    B: np.ndarray,
-    G: np.ndarray,
-    solution: RobustSolution,
+    Lc: np.ndarray,
+    solution: RobustTrajectory,
+    *,
+    closed_loop: bool = True,
 ) -> dict[str, np.ndarray]:
-    generator = np.random.default_rng(options.monte_carlo_seed)
+    """Roll out trajectories using independent scrambled Sobol input sets.
+
+    Initial states and Brownian paths use separate random streams. Random
+    pairing avoids alignment between the two Sobol sets. Each Brownian point
+    supplies all arc increments for one path; trajectories are not IID samples.
+    With ``closed_loop=False``, only the feedforward control is applied, subject
+    to the same control limit. Both modes use identical samples for a given seed.
+    """
+
     samples = options.monte_carlo_samples
-    L0 = np.linalg.cholesky(options.x0_covariance + 1e-14 * np.eye(NX))
-    states = solution.means[:, 0:1] + L0 @ generator.standard_normal((NX, samples))
+    if samples < 2 or samples & (samples - 1):
+        raise ValueError("Monte carlo samples must be a power of two and at least 2.")
+
+    noise_dimension = Lc.shape[1]
+    # Starting from one reproducible master seed, spawn three independent streams
+    initial_seed, brownian_seed, pairing_seed = np.random.SeedSequence(
+        options.monte_carlo_seed
+    ).spawn(3)
+    initial_state_sampler = qmc.Sobol(
+        d=NX,
+        scramble=True,
+        seed=np.random.default_rng(initial_seed),
+    )
+    brownian_path_sampler = qmc.Sobol(
+        d=options.n_arcs * noise_dimension,
+        scramble=True,
+        seed=np.random.default_rng(brownian_seed),
+    )
+    exponent = int(samples).bit_length() - 1
+    initial_state_uniforms = initial_state_sampler.random_base2(m=exponent)
+    brownian_path_uniforms = brownian_path_sampler.random_base2(m=exponent)
+    # Keep the inverse normal CDF finite, including at a possible zero endpoint.
+    eps = np.finfo(float).eps
+    initial_state_normals = norm.ppf(np.clip(initial_state_uniforms, eps, 1.0 - eps)).T
+    brownian_path_normals = norm.ppf(np.clip(brownian_path_uniforms, eps, 1.0 - eps)).reshape(
+        samples, options.n_arcs, noise_dimension
+    )
+    # Permute whole Brownian paths, preserving their internal Sobol coordinates.
+    pairing = np.random.default_rng(pairing_seed).permutation(samples)
+    brownian_path_normals = brownian_path_normals[pairing]
+
+    L0 = np.linalg.cholesky(options.x0_covariance)
+    states = solution.means[:, 0:1] + L0 @ initial_state_normals
     trajectories = np.empty((options.n_arcs + 1, NX, samples))
     trajectories[0] = states
 
     for k in range(options.n_arcs):
-        deviation = states - solution.means[:, k : k + 1]
-        control = solution.feedforward[:, k : k + 1] + solution.gains[k] @ deviation
+        control = np.broadcast_to(
+            solution.feedforward[:, k : k + 1], (NU, samples)
+        )
+        if closed_loop:
+            deviation = states - solution.means[:, k : k + 1]
+            control = control + solution.gains[k] @ deviation
         magnitude = np.linalg.norm(control, axis=0)
         saturated = magnitude > options.u_max
         scale = np.ones_like(magnitude)
         scale[saturated] = options.u_max / magnitude[saturated]
-        applied = control * scale[None, :]
-        noise = G @ generator.standard_normal((NX, samples))
-        states = A @ states + B @ applied + noise
+        applied_control = control * scale[None, :]
+        increments = np.sqrt(options.dt) * brownian_path_normals[:, k, :].T
+        states = np.asarray(
+            _prescribed_sde_integration_step_batch(
+                jnp.asarray(states),
+                jnp.asarray(applied_control),
+                jnp.asarray(increments),
+                jnp.asarray(Lc),
+                options.dt,
+            )
+        )
         trajectories[k + 1] = states
 
-    terminal_deviation = states - solution.means[:, -1:]
-    sampled_covariance = np.cov(terminal_deviation)
-    return {"trajectories": trajectories, "terminal_covariance": sampled_covariance}
+    state_deviations = trajectories - solution.means.T[:, :, None]
+    # np.cov centers the sampled deviations and uses the N - 1 normalization.
+    sampled_state_covariances = np.stack(
+        [np.cov(deviations) for deviations in state_deviations]
+    )
+    return {
+        "trajectories": trajectories,
+        "state_covariances": sampled_state_covariances,
+        "terminal_state_covariance": sampled_state_covariances[-1],
+    }
 
 
 # --------------------------------------------------------------------------- #
-# Plotting (Fig. 4.1 / 4.2 style)
+#                               Plotting 
 # --------------------------------------------------------------------------- #
 
 
-def covariance_ellipse_points(covariance_2x2: np.ndarray, n_sigma: float, n_points: int = 90) -> np.ndarray:
-    eigvals, eigvecs = np.linalg.eigh(0.5 * (covariance_2x2 + covariance_2x2.T))
-    eigvals = np.clip(eigvals, 0.0, None)
+def covariance_ellipse_points(
+    covariance: np.ndarray, n_sigma: float, n_points: int = 90
+) -> np.ndarray:
+    eigenvalues, eigenvectors = np.linalg.eigh(
+        0.5 * (covariance + covariance.T)
+    )
+    eigenvalues = np.clip(eigenvalues, 0.0, None)
     angle = np.linspace(0.0, 2.0 * np.pi, n_points)
     circle = np.stack([np.cos(angle), np.sin(angle)])
-    return n_sigma * (eigvecs @ np.diag(np.sqrt(eigvals)) @ circle)
+    return n_sigma * (eigenvectors @ np.diag(np.sqrt(eigenvalues)) @ circle)
 
 
 def plot_trajectory(
     options: Options,
-    solution: RobustSolution,
+    means: np.ndarray,
+    state_covariances: np.ndarray,
     monte_carlo: dict | None,
-    title: str,
     output_path: Path,
+    *,
+    feedforward: np.ndarray | None = None,
 ) -> None:
-    figure, axis = plt.subplots(figsize=(5.2, 5.2), dpi=200)
+    plotter = Plotter(output_path.with_suffix(""))
+    figure, axis = plt.subplots(
+        figsize=Plotter.SQUARE_DIAGNOSTIC_FIGSIZE, dpi=Plotter.FIGURE_DPI
+    )
 
-    # Shaded infeasible region (right of both half-space boundaries).
     x1 = np.linspace(-1.0, 12.0, 200)
     y_line1 = options.b1 - options.a1[0] * x1
     y_line2 = (options.b2 - options.a2[0] * x1) / options.a2[1]
-    axis.fill_between(x1, np.minimum(y_line1, y_line2), 8.0, color="#d9d9d9", zorder=0)
+    axis.fill_between(x1, np.minimum(y_line1, y_line2), 8.0, color=Plotter.LIGHT_GREY, zorder=0)
     axis.plot(x1, y_line1, "k--", lw=0.8)
     axis.plot(x1, y_line2, "k--", lw=0.8)
 
     if monte_carlo is not None:
         trajectories = monte_carlo["trajectories"]
         axis.plot(
-            trajectories[:, 0, :], trajectories[:, 1, :],
-            color="#008080", alpha=0.12, lw=0.4, zorder=1,
+            trajectories[:, 0, :],
+            trajectories[:, 1, :],
+            color=Plotter.BLUE,
+            alpha=0.15,
+            lw=0.4,
+            zorder=1,
         )
 
-    means = solution.means
-    axis.plot(means[0], means[1], "k-+", lw=1.2, markersize=4, zorder=3)
+    axis.plot(
+        means[0], means[1], "k-+", lw=Plotter.TRAJECTORY_LINE_WIDTH, markersize=4,
+        label=r"$\bar{x}(t_k)$", zorder=3,
+    )
 
-    for k in range(0, means.shape[1]):
-        points = covariance_ellipse_points(solution.covariances[k][0:2, 0:2], 3.0)
-        axis.plot(means[0, k] + points[0], means[1, k] + points[1], color="#333333", lw=0.6, zorder=2)
+    for k in range(1, means.shape[1] - 1):
+        points = covariance_ellipse_points(state_covariances[k][0:2, 0:2], 3.0)
+        axis.plot(
+            means[0, k] + points[0],
+            means[1, k] + points[1],
+            color=Plotter.DARK_GREY,
+            lw=0.6,
+            label=r"$\Sigma_{x(t_k)}$" if k == 1 else None,
+            zorder=2,
+        )
 
-    start_pts = covariance_ellipse_points(options.x0_covariance[0:2, 0:2], 3.0)
-    axis.plot(options.x0_mean[0] + start_pts[0], options.x0_mean[1] + start_pts[1], "k-", lw=1.4)
-    axis.text(options.x0_mean[0] - 1.6, options.x0_mean[1] - 0.3, "Start", fontsize=10)
+    start_points = covariance_ellipse_points(state_covariances[0, :2, :2], 3.0)
+    axis.plot(
+        means[0, 0] + start_points[0],
+        means[1, 0] + start_points[1],
+        color=Plotter.DEPARTURE_COLOR,
+        lw=0.8,
+        label=r"$\Sigma_{x(t_0)}$",
+        zorder=4,
+    )
 
-    target_pts = covariance_ellipse_points(options.xf_covariance[0:2, 0:2], 3.0)
-    axis.plot(options.xf_mean[0] + target_pts[0], options.xf_mean[1] + target_pts[1], "r-", lw=1.4)
-    axis.text(options.xf_mean[0] + 0.3, options.xf_mean[1] - 0.9, "Target", fontsize=10)
+    terminal_points = covariance_ellipse_points(state_covariances[-1, :2, :2], 3.0)
+    axis.plot(
+        means[0, -1] + terminal_points[0],
+        means[1, -1] + terminal_points[1],
+        color=Plotter.ENDPOINT_COLOR,
+        lw=0.8,
+        label=r"$\Sigma_{x(t_N)}$",
+        zorder=4,
+    )
 
-    axis.set_xlim(0.0, 11.0)
-    axis.set_ylim(0.0, 8.0)
+    target_points = covariance_ellipse_points(options.xf_covariance[0:2, 0:2], 3.0)
+    axis.plot(
+        options.xf_mean[0] + target_points[0],
+        options.xf_mean[1] + target_points[1],
+        color=Plotter.TARGET_COLOR,
+        linestyle="--",
+        lw=0.8,
+        label=r"$\Sigma_{x,\mathrm{target}}$",
+        zorder=5,
+    )
+
+    if feedforward is not None:
+        # One acceleration arrow at each arc's start; a common scale preserves
+        # relative magnitudes.
+        axis.quiver(
+            means[0, :-1], means[1, :-1], feedforward[0], feedforward[1],
+            angles="xy", scale_units="xy", scale=2.0,
+            color=Plotter.DARK_BLUE, width=0.004, pivot="tail",
+            label="_nolegend_", zorder=6,
+        )
+        # Use a thin line in the legend instead of Quiver's filled swatch.
+        axis.plot([], [], color=Plotter.DARK_BLUE, lw=0.8, label=r"$\bar{u}(t_k)$")
+
+    position_radii = 3.0 * np.sqrt(
+        np.maximum(np.diagonal(state_covariances[:, :2, :2], axis1=1, axis2=2), 0.0)
+    )
+    lower_bounds = np.floor(np.min(means[:2].T - position_radii, axis=0))
+    upper_bounds = np.ceil(np.max(means[:2].T + position_radii, axis=0))
+    axis.set_xlim(min(0.0, lower_bounds[0]), max(11.0, upper_bounds[0]))
+    axis.set_ylim(min(0.0, lower_bounds[1]), max(8.0, upper_bounds[1]))
     axis.set_xlabel(r"$x_1$")
     axis.set_ylabel(r"$x_2$")
-    axis.set_title(title)
     axis.set_box_aspect(1.0)
-    figure.tight_layout()
+    axis.set_axisbelow(True)
+    plotter._style_2d_axis(axis)
+    plotter._legend(
+        axis, loc="lower center", bbox_to_anchor=(0.5, 1.03), ncol=3,
+        frameon=True, fancybox=False, edgecolor=Plotter.BLACK,
+        facecolor="white", framealpha=1.0, borderpad=0.30,
+        columnspacing=0.85, handlelength=1.5,
+    )
+    figure.subplots_adjust(left=0.16, right=0.95, bottom=0.12, top=0.82)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    figure.savefig(output_path, dpi=200, bbox_inches="tight")
+    figure.savefig(output_path, dpi=Plotter.FIGURE_DPI)
     plt.close(figure)
 
 
-def print_summary(label: str, options: Options, solution: RobustSolution) -> None:
-    to_show = [
-        "",
-        "=" * 64,
-        f"{label} -- double integrator covariance steering summary",
-        "=" * 64,
-        f"solver converged          : {'yes' if solution.diagnostics['converged'] else 'no'}",
-        f"CasADi accepted solve     : {'yes' if solution.diagnostics['solver_accepted'] else 'no'}",
-        f"optimality satisfied      : {'yes' if solution.diagnostics['optimality_satisfied'] else 'no'}",
-        f"solver status             : {solution.diagnostics['solver_status']}",
-        f"returned point feasible   : {'yes' if solution.diagnostics['feasible'] else 'no'}",
-        f"max NLP constraint viol.  : {solution.diagnostics['max_constraint_violation']:.3e}",
-        f"max mean matching defect  : {solution.diagnostics['matching_defect']:.3e}",
-    ]
-    if "covariance_matching_defect" in solution.diagnostics:
-        to_show.append(
-            f"max cov. matching defect  : {solution.diagnostics['covariance_matching_defect']:.3e}"
+def plot_control_profiles(
+    options: Options,
+    solution: RobustTrajectory,
+    magnitude_path: Path,
+    covariance_path: Path,
+) -> None:
+    """Plot the feedforward norm and the 3-sigma control ellipses about each feedforward vector.
+    """
+
+    plotter = Plotter(magnitude_path.with_suffix(""))
+    magnitude_figure, magnitude_axis = plt.subplots(
+        figsize=Plotter.SQUARE_DIAGNOSTIC_FIGSIZE, dpi=Plotter.FIGURE_DPI
+    )
+    covariance_figure, covariance_axis = plt.subplots(
+        figsize=Plotter.SQUARE_DIAGNOSTIC_FIGSIZE, dpi=Plotter.FIGURE_DPI
+    )
+
+    time_edges = options.dt * np.arange(options.n_arcs + 1)
+    control_norms = np.linalg.norm(solution.feedforward, axis=0)
+    magnitude_axis.stairs(
+        control_norms, time_edges, baseline=None, color=Plotter.BLACK,
+        lw=Plotter.TRAJECTORY_LINE_WIDTH,
+        label=r"$\|\bar{u}(t_k)\|$",
+    )
+    magnitude_axis.axhline(
+        options.u_max, color=Plotter.RED, linestyle="--", lw=Plotter.GUIDE_LINE_WIDTH,
+        label=r"$u_{\max}$",
+    )
+    magnitude_axis.set_xlim(time_edges[0], time_edges[-1])
+    magnitude_axis.set_ylim(
+        -0.05 * options.u_max, 1.1 * max(options.u_max, np.max(control_norms))
+    )
+    magnitude_axis.set_xlabel("time [s]")
+    magnitude_axis.set_ylabel(r"$\|\bar{u}(t_k)\|$ [m/s$^2$]")
+
+    covariance_axis.plot(
+        solution.feedforward[0], solution.feedforward[1], "k-+",
+        lw=Plotter.TRAJECTORY_LINE_WIDTH, markersize=5,
+        label=r"$\bar{u}(t_k)$", zorder=3,
+    )
+    extent = options.u_max
+    for k, control_covariance in enumerate(solution.control_covariances):
+        ellipse = covariance_ellipse_points(control_covariance, 3.0)
+        ellipse = ellipse + solution.feedforward[:, k : k + 1]
+        covariance_axis.plot(
+            ellipse[0], ellipse[1], color=Plotter.DARK_GREY, lw=0.7,
+            label=r"$\Sigma_{u(t_k)}$" if k == 0 else None,
+            zorder=2,
         )
-    if "max_radius_smoothing_bias" in solution.diagnostics:
-        to_show += [
-            f"eigenvalue smoothing       : {options.spectral_eigenvalue_smoothing:.3e}",
-            f"max radius smoothing bias : {solution.diagnostics['max_radius_smoothing_bias']:.3e}",
-            f"max chance-margin bias    : {solution.diagnostics['max_control_margin_smoothing_bias']:.3e}",
-            f"bias / peak exact radius  : {solution.diagnostics['relative_radius_smoothing_bias']:.3e}",
-        ]
-    to_show += [
-        f"objective J               : {solution.objective:.6f}",
-        f"terminal mean             : {solution.means[:, -1]}",
-        f"terminal covariance diag  : {np.diag(solution.covariances[-1])}",
-        f"target covariance diag    : {np.diag(options.xf_covariance)}",
-        "=" * 64,
+        extent = max(extent, float(np.max(np.abs(ellipse))))
+
+    angle = np.linspace(0.0, 2.0 * np.pi, 361)
+    covariance_axis.plot(
+        options.u_max * np.cos(angle), options.u_max * np.sin(angle),
+        color=Plotter.RED, linestyle="--", lw=Plotter.GUIDE_LINE_WIDTH,
+        label=r"$u_{\max}$", zorder=1,
+    )
+    limit = 1.1 * extent
+    covariance_axis.set_xlim(-limit, limit)
+    covariance_axis.set_ylim(-limit, limit)
+    covariance_axis.set_aspect("equal", adjustable="box")
+    covariance_axis.set_xlabel(r"$u_1$ [m/s$^2$]")
+    covariance_axis.set_ylabel(r"$u_2$ [m/s$^2$]")
+
+    for figure, axis, output_path in (
+        (magnitude_figure, magnitude_axis, magnitude_path),
+        (covariance_figure, covariance_axis, covariance_path),
+    ):
+        axis.set_box_aspect(1.0)
+        axis.set_axisbelow(True)
+        plotter._style_2d_axis(axis)
+        plotter._legend(
+            axis, loc="lower center", bbox_to_anchor=(0.5, 1.03), ncol=2,
+            frameon=True, fancybox=False, edgecolor=Plotter.BLACK,
+            facecolor="white", framealpha=1.0, borderpad=0.30,
+            columnspacing=0.85, handlelength=1.5,
+        )
+        figure.subplots_adjust(left=0.16, right=0.95, bottom=0.12, top=0.82)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        figure.savefig(output_path, dpi=Plotter.FIGURE_DPI)
+        plt.close(figure)
+
+
+def print_summary(options: Options, solution: RobustTrajectory) -> None:
+    diagnostics = solution.diagnostics
+
+    feasibility_text = "true" if diagnostics["feasible"] else "no"
+
+    rows = [
+        ("solver status", diagnostics["solver_status"]),
+        ("feasibility", feasibility_text),
+        ("max constraint viol.", f"{diagnostics['max_constraint_violation']:.3e}"),
+        ("max mean matching defect", f"{diagnostics['matching_defect']:.3e}"),
+        (
+            "max state cov. matching defect",
+            f"{diagnostics['covariance_matching_defect']:.3e}",
+        ),
+        (
+            "max psqrt spectr. radius smoothing bias",
+            f"{diagnostics['max_psqrt_spectral_radius_smoothing_bias']:.3e}",
+        ),
+        (
+            "max chance con. margin bias",
+            f"{diagnostics['max_control_margin_smoothing_bias']:.3e}",
+        ),
+        (
+            "bias / peak exact psqrt spectr. radius",
+            f"{diagnostics['relative_psqrt_spectral_radius_smoothing_bias']:.3e}",
+        ),
+        ("objective function", f"{solution.objective:.6f}"),
+        ("terminal mean state", solution.means[:, -1]),
+        (
+            "terminal state covariance diag",
+            np.diag(solution.state_covariances[-1]),
+        ),
+        (
+            "target state covariance diag",
+            np.diag(options.xf_covariance),
+        ),
     ]
-    print("\n".join(to_show), flush=True)
+
+    label_width = max(len(name) for name, _ in rows)
+    separator = "=" * 88
+
+    lines = [
+        "",
+        separator,
+        f"{'Optimization Summary':^88}",
+        separator,
+    ]
+
+    for name, value in rows:
+        lines.append(f"{name:<{label_width}}  │  {value}")
+
+    lines.append(separator)
+
+    print("\n".join(lines), flush=True)
 
 
 # --------------------------------------------------------------------------- #
-# Driver
+#                                    Driver
 # --------------------------------------------------------------------------- #
 
 
 def main() -> None:
     options = Options()
-    A, B, G = system_matrices(options)
+    A, B, G = discrete_time_matrices(options)
+    Ac, _ = continuous_time_matrices()
+    Qc, Lc = calibrate_continuous_diffusion(Ac, G @ G.T, options.dt)
 
-    print("Solving the deterministic nominal trajectory...", flush=True)
-    nominal = solve_deterministic_nominal(options, A, B)
-    if not nominal.converged:
-        print("Deterministic nominal solve did not converge; aborting.", flush=True)
-        return
-
-    print("Solving Phase 1 (mean multiple-shooting, covariance single-shot UT)...", flush=True)
-    phase1_solution = solve_single_shot(options, A, B, G, nominal)
-    print_summary("Phase 1 (single-shot covariance)", options, phase1_solution)
-
-    monte_carlo_1 = monte_carlo_rollout(options, A, B, G, phase1_solution)
-    plot_trajectory(
-        options,
-        phase1_solution,
-        monte_carlo_1,
-        "Closed-loop (Phase 1: single-shot covariance)",
-        OUTPUT_DIR / "phase1_closed_loop.png",
-    )
-
-    open_loop_solution = RobustSolution(
-        means=phase1_solution.means,
-        feedforward=phase1_solution.feedforward,
-        gains=np.zeros_like(phase1_solution.gains),
-        covariances=open_loop_covariances(options, A, B, G),
-        control_covariances=phase1_solution.control_covariances,
-        radius=phase1_solution.radius,
-        objective=float("nan"),
-        diagnostics={"converged": 1.0, "matching_defect": 0.0},
-    )
-    plot_trajectory(
-        options, open_loop_solution, None, "Open-loop (no feedback)",
-        OUTPUT_DIR / "phase1_open_loop.png",
-    )
-
+    if np.max(np.abs(accumulated_process_covariance(Ac, Qc, options.dt) - G @ G.T)) > 1e-15:
+        raise ValueError("Continuous diffusion state_covariance calibration error exceeds 1e-15.")
+    
     print(
-        "\nSolving Phase 2 (covariance multiple-shooting via Cholesky-factor "
-        "decision variables, seeded independently from the same deterministic "
-        "nominal trajectory as Phase 1)...",
+        "\nSolving the deterministic trajectory optimization ... ",
         flush=True,
     )
-    phase2_solution = solve_multiple_shoot(options, A, B, G, nominal)
-    print_summary("Phase 2 (covariance multiple-shooting)", options, phase2_solution)
 
-    monte_carlo_2 = monte_carlo_rollout(options, A, B, G, phase2_solution)
+    nominal_sol = solve_deterministic_optimization(options, A, B)
+    if not nominal_sol.converged:
+        print("Deterministic nominal solve did not converge; aborting. \n", flush=True)
+        return
+
+    print(
+        "\nSolving the robust trajectory optimization ... \n",
+        flush=True,
+    )
+
+    stochastic_sol = solve_stochastic_optimization(options, A, B, Lc, nominal_sol)
+    print_summary(options, stochastic_sol)
+
     plot_trajectory(
         options,
-        phase2_solution,
-        monte_carlo_2,
-        "Closed-loop (Phase 2: covariance multiple-shooting)",
-        OUTPUT_DIR / "phase2_closed_loop.png",
+        stochastic_sol.means,
+        stochastic_sol.state_covariances,
+        None,
+        OUTPUT_DIR / "closed_loop_traj.png",
+        feedforward=stochastic_sol.feedforward,
+    )
+    plot_trajectory(
+        options,
+        stochastic_sol.means,
+        open_loop_state_covariances(options, Lc, stochastic_sol),
+        None,
+        OUTPUT_DIR / "open_loop_traj.png",
+    )
+    plot_control_profiles(
+        options,
+        stochastic_sol,
+        OUTPUT_DIR / "control_magnitude.png",
+        OUTPUT_DIR / "control_covariance.png",
     )
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     np.savez(
         OUTPUT_DIR / "solutions.npz",
-        phase1_means=phase1_solution.means,
-        phase1_covariances=phase1_solution.covariances,
-        phase1_gains=phase1_solution.gains,
-        phase1_feedforward=phase1_solution.feedforward,
-        phase2_means=phase2_solution.means,
-        phase2_covariances=phase2_solution.covariances,
-        phase2_gains=phase2_solution.gains,
-        phase2_feedforward=phase2_solution.feedforward,
+        means=stochastic_sol.means,
+        state_covariances=stochastic_sol.state_covariances,
+        gains=stochastic_sol.gains,
+        feedforward=stochastic_sol.feedforward,
     )
 
 

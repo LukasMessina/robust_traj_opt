@@ -9,3 +9,8 @@ cvxpy>=1.7
 matplotlib>=3.8
 numpy>=1.26
 scipy>=1.11
+
+# double_integrator_covariance_steering_jax.py only -- also requires a
+# SNOPT-linked pyoptsparse build; see traj_opt_uncertainty_NLP/README.md
+jax>=0.11
+diffrax>=0.7

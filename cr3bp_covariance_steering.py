@@ -1,31 +1,22 @@
 """
 Chance-constrained covariance steering for Earth-Moon CR3BP low-thrust transfers test cases.
 
-The mean trajectory is transcribed by multiple shooting (the node means are decision variables,
-tied by matching conditions) while the covariance is single-shot forward from Sigma_0, so that the
-propagated covariances are positive semi-definite by construction.
+The mean trajectory and covariance are both transcribed by multiple shooting: the node means
+and node covariance factors are treated as decision variables and are tied across consecutive
+arcs by mean and covariance matching conditions. The covariance is parameterized through Cholesky
+factors, ensuring that the node covariances are positive semi-definite by construction.
 
 Uncertainty is propagated by the Unscented Transform with
 kappa = 0 and a lower-triangular Cholesky factor. The sigma points are integrated
-with a fixed-step RK4 built directly as a CasADi expression, so the optimiser sees
+with a fixed-step integrator built directly as a CasADi expression, so the optimiser sees
 through the integration and supplies exact first and second derivatives.
 
 Configuration: one Gaussian component (no GMM split, hence a single control
 policy), navigation error (R_bar, H = I), deterministic dynamics (Q_k = 0).
 The initial guess is the energy-optimal solution restricted to its knot
-points, thus the interval durations are not uniform and the objective sum is weighted by them.
-The stochastic running objective is the mean-control epigraph plus
+points, thus the interval durations are uniform.
+The stochastic running objective is the regularized mean-control plus
 Bryson-weighted state- and control-covariance traces, with no terminal Qf cost.
-
-Before the stochastic solve, the saved reference is reoptimized on the
-stochastic NLP's RK4 mesh with a bounded deterministic minimum-energy objective.
-Set ``Options.reference_arcs`` (or pass ``--reference-arcs``) to apply the same
-procedure to only the first requested intervals and their relative endpoint.
-
-Covariance propagation defaults to single shooting. Set
-``Options.covariance_transcription="multiple_shooting"`` (or use the matching
-CLI option) for node-scaled Cholesky covariance factors and dimensionless
-continuity equalities.
 """
 
 from __future__ import annotations
@@ -78,19 +69,28 @@ INITIAL_STATE_STD_ND: dict[
         1e-4,  # sigma_ydot
         1e-4,  # sigma_zdot
     ),
+    "lyapunov_l1_to_l2": (
+        1e-5,  # sigma_x
+        1e-5,  # sigma_y
+        1e-5,  # sigma_z
+        1e-4,  # sigma_xdot
+        1e-4,  # sigma_ydot
+        1e-4,  # sigma_zdot
+    ),
 }
 # Equal-duration arcs per test case, at five arcs per day. The two transfers
 # have different times of flight -- 21.2 and 20 days -- so a single count would
 # give them different arc durations.
 UNIFORM_ARCS_BY_CASE: dict[str, int] = {
-    "nrho_l2_to_dro": 150,      
-    "halo_l2_to_halo_l1": 150,  
+    "nrho_l2_to_dro": 85,      
+    "halo_l2_to_halo_l1": 80,  
+    "lyapunov_l1_to_l2": 48,   
 }
 
 # Uniform gain used when the Riccati warm start is disabled.
 COLD_START_GAIN = 1e-3
 
-INITIAL_MASS_STD = 0.0      # [kg]
+INITIAL_MASS_STD = 1e-3      # [kg]
 MASS_SCALE = 1e-3        # [kg]
 
 @dataclass(frozen=True)
@@ -142,7 +142,7 @@ class Options:
     # Terminal covariance reduction factors relative to the corresponding
     # initial covariance blocks. They may be set independently.
     position_covariance_reduction: float = 1e4
-    velocity_covariance_reduction: float = 1e3
+    velocity_covariance_reduction: float = 1e4
     scaling_parameter: float = 0.0
     # Navigation (measurement) error covariance as a fraction of the initial state
     # covariance: R_bar = navigation_error_ratio * Sigma_0. Zero disables it and
@@ -328,7 +328,7 @@ def navigation_covariance(options: Options, normalization: "Normalization") -> n
 
 
 def unscented_weights(kappa: float, dimension: int) -> np.ndarray:
-    """Sigma-point weights c_j of Eq. 5.82-5.83; c_0 vanishes for kappa = 0."""
+    """Unscented transform weights."""
 
     weights = np.full(2 * dimension + 1, 1.0 / (2.0 * (dimension + kappa)))
     weights[0] = kappa / (dimension + kappa)
@@ -2699,7 +2699,7 @@ def main() -> None:
     parser.add_argument(
         "--case",
         action="append",
-        choices=("halo_l2_to_halo_l1", "nrho_l2_to_dro"),
+        choices=("halo_l2_to_halo_l1", "nrho_l2_to_dro", "lyapunov_l1_to_l2"),
         help="case to run; repeat for both, or omit to run both",
     )
     parser.add_argument(
@@ -2769,6 +2769,7 @@ def main() -> None:
     case_ids = arguments.case or (
         "halo_l2_to_halo_l1",
         "nrho_l2_to_dro",
+        "lyapunov_l1_to_l2",
     )
     for test_case_id in case_ids:
         run_test_case(test_case_id, options)
