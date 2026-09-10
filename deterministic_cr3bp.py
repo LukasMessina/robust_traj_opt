@@ -128,14 +128,8 @@ class TestCase(CR3BPEarthMoon):
 class NrhoL2ToDro(TestCase):
     """L2 near-rectilinear halo orbit to distant retrograde orbit.
 
-    States and time of flight are Table 3.9 of Caleb (2025), "Optimisation
-    stochastique pour l'analyse mission", ISAE-SUPAERO. Unlike the halo transfer,
-    the target lies off the x-z plane: the DRO state has non-zero y and ydot.
-
-    The table gives no orbit periods; both are recovered here by minimising the
-    closure error of a ballistic propagation from the tabulated state, giving
-    5.8e-06 for the NRHO and 2.7e-05 for the DRO. They are used only to draw the
-    departure and target orbits.
+    Orbit periods are recovered here by minimising the closure error of a ballistic
+    propagation from the tabulated state.
     """
 
     test_case_id: str = "nrho_l2_to_dro"
@@ -166,13 +160,7 @@ class NrhoL2ToDro(TestCase):
 
 @dataclass(frozen=True)
 class LyapunovL1ToL2(TestCase):
-    """Planar Lyapunov orbit at L1 to planar Lyapunov orbit at L2.
-
-    Time of flight and states are Table 3.9 of Caleb (2025), "Optimisation
-    stochastique pour l'analyse mission", ISAE-SUPAERO, at the full precision
-    the table rounds to five decimals. Both orbits are planar, so z and zdot
-    vanish at both ends.
-    """
+    """Planar Lyapunov orbit at L1 to planar Lyapunov orbit at L2."""
 
     test_case_id: str = "lyapunov_l1_to_l2"
     display_name: str = "Lyapunov L1 to Lyapunov L2"
@@ -249,21 +237,12 @@ class OCPSolution:
 
 @dataclass(frozen=True)
 class HAdaptiveOptions:
-    # Intervals the h-adaptive mesh starts from, and the node count of the
-    # Hermite-Simpson warm start. None takes the value for the objective mode in
-    # hand from INITIAL_INTERVALS_BY_OBJECTIVE_MODE; an int overrides it for
-    # both modes.
-    initial_intervals: int | None = None
     radau_degree: int = 3
     max_intervals: int = 1000
     max_adapt_iterations: int = 20
     defect_tolerance: float = 1e-11
     # Substeps used to re-integrate each collocation interval when measuring its
-    # defect. This is the yardstick the h-adaptive refinement is judged against,
-    # not part of the transcription. With the seventh-order integrator a single
-    # substep already reaches the double-precision floor (~3e-13 on a typical
-    # interval, unchanged out to 32), so the extra substeps only cost time; the
-    # value is kept because the defect tolerance was calibrated against it.
+    # defect. This is the yardstick the h-adaptive refinement is judged against.
     defect_substeps_per_interval: int = 4
     
 
@@ -272,13 +251,8 @@ CASE_REGISTRY: dict[str, type[TestCase]] = {
     case_type().test_case_id: case_type for case_type in CASE_TYPES
 }
 # Substeps per interval when integrating the ballistic initial guess that warm
-# starts the Hermite-Simpson transcription. One step per interval is enough on a
-# well-behaved arc, but the guess is a chain of a hundred intervals and the error
-# compounds: on the NRHO-to-DRO transfer, whose reference passes within 13 000 km
-# of the Moon, a single step per interval leaves the endpoint off by O(10) while
-# eight bring it to 4e-03. The guess only has to be a starting point, but it must
-# not diverge.
-GUESS_SUBSTEPS_PER_INTERVAL = 2
+# starts the Hermite-Simpson transcription. O
+INITIAL_GUESS_SUBSTEPS_PER_INTERVAL = 2
 MAX_ITER = 1e6
 PRINT_LEVEL = 0
 TOL = 1e-9
@@ -286,10 +260,7 @@ FUEL_OPTIMAL_MODE = "fuel optimal"
 ENERGY_OPTIMAL_MODE = "energy optimal"
 # Set this to "fuel optimal" or "energy optimal".
 OBJECTIVE_MODE = FUEL_OPTIMAL_MODE
-# Starting intervals per objective mode. A fuel-optimal solution is bang-bang,
-# so its mesh has to resolve the switching structure and starts finer; the
-# energy-optimal control is smooth and needs fewer intervals to begin with. The
-# h-adaptive refinement moves both from there.
+# Starting intervals per objective mode. 
 INITIAL_INTERVALS_BY_OBJECTIVE_MODE: dict[str, int] = {
     ENERGY_OPTIMAL_MODE: 50,
     FUEL_OPTIMAL_MODE: 120,
@@ -383,15 +354,12 @@ def get_collinear_lagrange_points(case: CR3BPEarthMoon) -> dict[str, float]:
 def eom(case: CR3BPEarthMoon, state, control, sigma):
     """CR3BP equations of motion with thrust.
 
-    ``sigma`` is the thrust magnitude that drives the mass flow. Callers must
+    ``sigma`` is the thrust magnitude that drives the mass flow. Users must
     supply it explicitly: the transcriptions in this module pass their epigraph
     slack, constrained by ``u'u <= sigma^2``, which makes the mass flow linear
-    and therefore smooth everywhere -- writing ``mdot = -||u||/v_e`` directly
-    would leave ``d(mdot)/du`` undefined at ``u = 0`` and its curvature growing
-    like ``1/||u||``, exactly where coast arcs live. Callers outside a
-    transcription (see ``cr3bp_covariance_steering``) pass a smoothed norm
-    instead. There is deliberately no default: a caller that omitted it would
-    silently integrate zero mass flow.
+    and therefore smooth everywhere. Callers outside a
+    transcription pass a smoothed control norm instead. There is deliberately no 
+    default: a caller that omitted it would silently integrate zero mass flow.
     """
 
     if any(isinstance(v, (casadi.MX, casadi.SX, casadi.DM)) for v in (state, control, sigma)):
@@ -440,7 +408,7 @@ def propagate_periodic_orbit(
     orbit[:, 0] = initial_state
     h = period_nd / steps
     for k in range(steps):
-        orbit[:, k + 1] = integrator.rk4(case, orbit[:, k], np.zeros(3), 0.0, h)
+        orbit[:, k + 1] = integrator.rk7(case, orbit[:, k], np.zeros(3), 0.0, h)
     return orbit
 
 def _rollout(
@@ -453,11 +421,11 @@ def _rollout(
     x_guess = np.empty((7, nodes + 1), dtype=float)
     x_guess[:, 0] = case.x0_augmented_state
     h = case.tof_nd / nodes
-    substep = h / GUESS_SUBSTEPS_PER_INTERVAL
+    substep = h / INITIAL_GUESS_SUBSTEPS_PER_INTERVAL
     for k in range(nodes):
         state = x_guess[:, k]
-        for _ in range(GUESS_SUBSTEPS_PER_INTERVAL):
-            state = integrator.rk4(
+        for _ in range(INITIAL_GUESS_SUBSTEPS_PER_INTERVAL):
+            state = integrator.rk7(
                 case, state, u_guess[:, k], sigma_guess[0, k], substep
             )
         x_guess[:, k + 1] = state
@@ -511,21 +479,13 @@ def _warm_start(
         f_mid = eom(case, x_mid, u_var[:, k], sigma_var[0, k])
         opti.subject_to(x_var[:, k + 1] - x_var[:, k] == h / 6.0 * (f_k + 4.0 * f_mid + f_kp1))
         # Control energy through the thrust-magnitude variable, matching the mass
-        # flow. Charging dot(u,u) instead leaves sigma unpenalised: the epigraph
-        # u'u <= sigma^2 only bounds it from below, so it floats free of ||u||
-        # (gaps larger than ||u|| itself are observed) and burns mass at no cost
-        # now that mdot = -sigma/v_e. At any optimum the epigraph is tight, so
+        # flow. At any optimum the epigraph is tight, so
         # sigma^2 = u'u and the minimiser is unchanged.
         energy_used_nd += h * 0.5 * sigma_var[0, k] ** 2
 
     opti.subject_to(x_var[:, 0] == case.x0_augmented_state)
     opti.subject_to(x_var[0:6, nodes] == case.xf_state)
     # Fuel from the mass state itself rather than a separate quadrature.
-    # With mdot = -sigma/v_e the running sum h*sigma/v_e reproduces the mass
-    # drop exactly, so charging it as the objective states the same quantity
-    # twice: the objective gradient and the mass-defect gradient become
-    # collinear in sigma, which IPOPT reports as local infeasibility. Reading
-    # the terminal mass keeps the objective and the dynamics distinct.
     fuel_consumed = (x_var[6, 0] - x_var[6, nodes]) * case.m0_wet
     energy_objective = energy_used_nd * case.thrust_unit**2 * case.time_unit
     if objective_mode == FUEL_OPTIMAL_MODE:
@@ -600,7 +560,7 @@ def integrate_with_dense_control(
 
     for k in range(t_grid_nd.size - 1):
         h = float(t_grid_nd[k + 1] - t_grid_nd[k])
-        x_integrated[:, k + 1] = integrator.rk4(
+        x_integrated[:, k + 1] = integrator.rk7(
             case,
             x_integrated[:, k],
             u_values[:, k],
@@ -701,10 +661,10 @@ def rollout_initial_guess(
     x_guess[:, 0] = case.x0_augmented_state
     for k in range(intervals):
         h = case.tof_nd * float(mesh[k + 1] - mesh[k])
-        substep = h / GUESS_SUBSTEPS_PER_INTERVAL
+        substep = h / INITIAL_GUESS_SUBSTEPS_PER_INTERVAL
         state = x_guess[:, k]
-        for _ in range(GUESS_SUBSTEPS_PER_INTERVAL):
-            state = integrator.rk4(
+        for _ in range(INITIAL_GUESS_SUBSTEPS_PER_INTERVAL):
+            state = integrator.rk7(
                 case, state, u_guess_nd[:, k], sigma_guess_nd[0, k], substep
             )
         x_guess[:, k + 1] = state
@@ -945,7 +905,7 @@ def estimate_interval_defects(
         x_integrated = OCPSolution.x[:, k].copy()
 
         for _ in range(substeps):
-            x_integrated = integrator.rk4(
+            x_integrated = integrator.rk7(
                 case,
                 x_integrated,
                 control,
@@ -1179,13 +1139,6 @@ def save_outputs(
     )
     plotter.plot_interval_defect(OCPSolution.mesh, case.tof_days, defects["scaled"], options.defect_tolerance)
 
-def resolve_initial_intervals(options: HAdaptiveOptions, objective_mode: str) -> int:
-    """Starting interval count: the explicit option, else the per-mode default."""
-
-    if options.initial_intervals is not None:
-        return int(options.initial_intervals)
-    return INITIAL_INTERVALS_BY_OBJECTIVE_MODE[check_objective_mode(objective_mode)]
-
 
 def h_adaptive_method(
     case: TestCase,
@@ -1196,7 +1149,7 @@ def h_adaptive_method(
     objective_mode: str = OBJECTIVE_MODE,
 ) -> tuple[OCPSolution, list[dict[str, float]], dict[str, np.ndarray]]:
     objective_mode = check_objective_mode(objective_mode)
-    initial_intervals = resolve_initial_intervals(options, objective_mode)
+    initial_intervals = INITIAL_INTERVALS_BY_OBJECTIVE_MODE[objective_mode]
     mesh = np.linspace(0.0, 1.0, initial_intervals + 1)
     degrees = np.full(initial_intervals, options.radau_degree, dtype=int)
     guess: INITIAL_GUESS = None
@@ -1205,7 +1158,7 @@ def h_adaptive_method(
     defects: dict[str, np.ndarray] | None = None
 
     print(
-        f"\n{log_prefix}Hermite-Simpson collocation method warm start: nodes={options.initial_intervals}",
+        f"\n{log_prefix}Hermite-Simpson collocation method warm start: nodes={initial_intervals}",
         flush=True,
     )
     hs_solution = _warm_start(

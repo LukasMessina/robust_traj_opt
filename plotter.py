@@ -59,6 +59,10 @@ class Plotter:
     FIGURE_DPI = 240
     SINGLE_FIGSIZE = (4.7, 4.3)
     TRIPLE_FIGSIZE = (7.4, 2.85)
+    # Three side-by-side panels drawn as congruent squares (see the covariance
+    # projection figure): proportioned so each box is ~2 in per side once the
+    # legend band at the top is reserved.
+    TRIPLE_SQUARE_FIGSIZE = (7.8, 3.6)
     WIDE_FIGSIZE = (5.8, 3.35)
     SQUARE_DIAGNOSTIC_FIGSIZE = (4.2, 4.2)
     THREE_PANEL_FIGSIZE = (7.4, 2.65)
@@ -193,9 +197,6 @@ class Plotter:
             )
 
     def _projection_axes_for_case(self, case: Any) -> tuple[tuple[int, int], ...]:
-        # A planar transfer carries no out-of-plane motion, so the x-y
-        # projection shows all of it and the other two would be flat lines.
-        # Anything else needs all three.
         if case.test_case_id == "lyapunov_l1_to_l2":
             return ((0, 1),)
         return ((0, 1), (0, 2), (1, 2))
@@ -278,7 +279,16 @@ class Plotter:
         lagrange: Mapping[str, float],
         axis_0: int,
         axis_1: int,
+        arrow_states: np.ndarray | None = None,
+        arrow_controls: np.ndarray | None = None,
     ) -> None:
+        # The thrust arrows are normally placed on the same samples as the
+        # trajectory. A caller that draws a densified trajectory can pass the
+        # coarser node arrays here instead, so the arrow count stays readable.
+        if arrow_states is None:
+            arrow_states = x_dense
+        if arrow_controls is None:
+            arrow_controls = u_dense
         departure_point = self._libration_point_from_label(case.departure_label)
         target_point = self._libration_point_from_label(case.target_label)
         departure_color = self._libration_color(departure_point)
@@ -309,7 +319,9 @@ class Plotter:
             zorder=4,
             label="Transfer",
         )
-        self._plot_thrust_arrows_2d(ax, case, x_dense, u_dense, axis_0, axis_1)
+        self._plot_thrust_arrows_2d(
+            ax, case, arrow_states, arrow_controls, axis_0, axis_1
+        )
         self._plot_system_points_2d(ax, case, axis_0, axis_1, lagrange)
         ax.scatter(
             x_dense[axis_0, 0],

@@ -10,10 +10,7 @@ import deterministic_cr3bp
 # not an embedded pair -- there is one weight vector, no second solution, no
 # error estimate and no step-size adaptation.
 #
-# Chosen over the classical RK4 because the arc map is evaluated at a fixed step
-# and the optimiser differentiates through it. Measured on a transfer arc, it is
-# five times more accurate than RK4 at four substeps while using eleven
-# right-hand-side evaluations against sixteen.
+
 RK7_C = np.array(
     [0.0, 2/27, 1/9, 1/6, 5/12, 1/2, 5/6, 1/6, 2/3, 1/3, 1.0]
 )
@@ -48,9 +45,7 @@ RK7_A, RK7_B = _rk7_tableau()
 assert np.allclose(RK7_A.sum(axis=1), RK7_C, atol=1e-14)
 assert abs(RK7_B.sum() - 1.0) < 1e-14
 
-# Stages whose weight is non-zero, and stages any later stage depends on. Every
-# stage here is needed, but the lists make the intent explicit for readers
-# comparing against the published tableau.
+
 RK7_STAGES = RK7_A.shape[0]
 
 
@@ -67,14 +62,11 @@ def rk7(
 
     By default `control` and `sigma` are held constant across the step; passing
     `control_end`/`sigma_end` makes them vary linearly, each stage evaluating
-    them at its own stage time, which keeps the step accurate for time-varying
+    them at its own stage time, which keeps the step accurate for linear time-varying
     controls.
     """
 
-    # `varying` is decided from whether the caller supplied end values at all,
-    # not by comparing them: comparison would break for non-array inputs and
-    # would silently switch behaviour when a constant control happens to equal
-    # its endpoint.
+    # `varying` is decided from whether the caller supplied end values at all
     varying = control_end is not None or sigma_end is not None
     if control_end is None:
         control_end = control
@@ -104,7 +96,3 @@ def rk7(
             propagated = propagated + step_size * RK7_B[i] * stages[i]
     return propagated
 
-
-# The name the rest of the project calls; kept so call sites read as "the
-# integrator" rather than naming an order they do not depend on.
-rk4 = rk7
