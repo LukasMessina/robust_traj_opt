@@ -15,13 +15,13 @@ from pathlib import Path
 
 # Replace 'cpu' with 'cuda' if GPU capability is requested,
 # while avoiding unnecessary GPU memory allocation for this small problem.
-os.environ.setdefault("JAX_PLATFORMS", "cpu")
+os.environ.setdefault("JAX_PLATFORMS", "cuda")
 
 # If switching JAX_PLATFORMS to "cuda", these control how much GPU memory jax
 # grabs up front. Uncomment and adjust as needed -- all three must be set before
 # `import jax` to take effect.
 # os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")   # no upfront grab; allocate on demand
-# os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.3")    # or: preallocate exactly this fraction (0-1) instead of ~0.75
+os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.5")    # or: preallocate exactly this fraction (0-1) instead of ~0.75
 # os.environ.setdefault("XLA_PYTHON_CLIENT_ALLOCATOR", "platform")  # or: most conservative allocator, grows as needed, no big block
 
 import jax
@@ -35,13 +35,15 @@ from scipy.integrate import quad_vec
 from scipy.linalg import expm
 
 from diffrax import (
+    AbstractPath,
     ControlTerm,
     ODETerm,
     MultiTerm,
     SaveAt,
     ConstantStepSize,
+    SpaceTimeLevyArea,
     diffeqsolve,
-    Heun,
+    ShARK,
     Tsit5,
 )
 
@@ -62,7 +64,7 @@ plt.rcParams.update(
 NX = 4  # state: [x1, x2, x3, x4] = [px, py, vx, vy]
 NU = 2  # control: [ux, uy]
 
-OUTPUT_DIR = Path("output/double_integrator_covariance_steering")
+OUTPUT_DIR = Path("output/double_integrator_stochastic_traj_opt")
 
 
 # --------------------------------------------------------------------------- #
@@ -398,24 +400,72 @@ def _diffusion_vector_field(t, state, Lc):
     return Lc
 
 
-_SDE_SOLVER = Heun()
+_SDE_SOLVER = ShARK()
+
+
+class PrescribedSpaceTimeLevyPath(AbstractPath):
+    """A deterministic one-arc Brownian driver carrying prescribed ``W`` and ``H``.
+
+    ShARK requests the control over the complete integration step with
+    ``use_levy=True``. The path therefore exposes both the Brownian increment
+    ``W`` and Diffrax's normalized space-time Levy area ``H``. The linear
+    interpolation below only defines the ordinary path value outside that
+    full-step request; no Brownian subincrements are reconstructed from the
+    two supplied random variables.
+    """
+
+    brownian_increment: jnp.ndarray
+    space_time_levy_area: jnp.ndarray
+    duration: float
+
+    @property
+    def t0(self):
+        return 0.0
+
+    @property
+    def t1(self):
+        return self.duration
+
+    def evaluate(self, t0, t1=None, left=True, use_levy=False):
+        del left
+        if t1 is None:
+            t1 = t0
+            t0 = 0.0
+
+        interval = t1 - t0
+        fraction = interval / self.duration
+        increment = fraction * self.brownian_increment
+        if use_levy:
+            return SpaceTimeLevyArea(
+                dt=interval,
+                W=increment,
+                H=fraction * self.space_time_levy_area,
+            )
+        return increment
 
 
 def prescribed_integration_sde_step(
     state: jnp.ndarray,
     control: jnp.ndarray,
     brownian_increment: jnp.ndarray,
+    space_time_levy_area: jnp.ndarray,
     Lc: jnp.ndarray,
     step: float,
 ) -> jnp.ndarray:
-    """Take one SDE integration step using exactly the supplied Brownian increment.
+    """Take one ShARK step using exactly the supplied ``W`` and ``H``.
 
-    The linear control path has the requested total increment over this sole
-    fixed step. It contains no random key and therefore cannot introduce an
-    independent Brownian realization during optimization or differentiation.
+    The prescribed path contains no random key, so the integration cannot
+    introduce another Brownian realization during optimization or automatic
+    differentiation. For one interval of length ``step``, callers supply
+    independent standard-normal coordinates ``xi`` and ``eta`` through
+    ``W = sqrt(step) xi`` and ``H = sqrt(step / 12) eta``.
     """
 
-    prescribed_path = lambda t0, t1: (t1 - t0) * brownian_increment / step
+    prescribed_path = PrescribedSpaceTimeLevyPath(
+        brownian_increment=brownian_increment,
+        space_time_levy_area=space_time_levy_area,
+        duration=step,
+    )
     terms = MultiTerm(
         ODETerm(lambda t, y, args: _drift_vector_field(t, y, args[0])),
         ControlTerm(
@@ -438,8 +488,59 @@ def prescribed_integration_sde_step(
 
 
 _prescribed_sde_integration_step_batch = jax.vmap(
-    prescribed_integration_sde_step, in_axes=(1, 1, 1, None, None), out_axes=1
+    prescribed_integration_sde_step,
+    in_axes=(1, 1, 1, 1, None, None),
+    out_axes=1,
 )
+
+
+def validate_shark_process_covariance(
+    Ac: np.ndarray,
+    Qc: np.ndarray,
+    Lc: np.ndarray,
+    duration: float,
+) -> float:
+    """Compare one ShARK step with the exact linear-SDE process covariance.
+
+    A symmetric sigma rule integrates the covariance exactly because this
+    double-integrator's one-step stochastic map is affine in the independent
+    Gaussian variables defining ``W`` and ``H``.
+    """
+
+    noise_dimension = Lc.shape[1]
+    stochastic_dimension = 2 * noise_dimension
+    stochastic_coordinates = np.concatenate(
+        [
+            np.zeros((stochastic_dimension, 1)),
+            np.sqrt(stochastic_dimension) * np.eye(stochastic_dimension),
+            -np.sqrt(stochastic_dimension) * np.eye(stochastic_dimension),
+        ],
+        axis=1,
+    )
+    weights = unscented_weights(0.0, stochastic_dimension)
+    brownian_increments = (
+        np.sqrt(duration) * stochastic_coordinates[:noise_dimension]
+    )
+    space_time_levy_areas = (
+        np.sqrt(duration / 12.0) * stochastic_coordinates[noise_dimension:]
+    )
+    n_sigma = stochastic_coordinates.shape[1]
+    propagated = np.asarray(
+        _prescribed_sde_integration_step_batch(
+            jnp.zeros((NX, n_sigma)),
+            jnp.zeros((NU, n_sigma)),
+            jnp.asarray(brownian_increments),
+            jnp.asarray(space_time_levy_areas),
+            jnp.asarray(Lc),
+            duration,
+        )
+    )
+    propagated_mean = propagated @ weights
+    residuals = propagated - propagated_mean[:, None]
+    numerical_covariance = (residuals * weights[None, :]) @ residuals.T
+    numerical_covariance = 0.5 * (numerical_covariance + numerical_covariance.T)
+    exact_covariance = accumulated_process_covariance(Ac, Qc, duration)
+    return float(np.max(np.abs(numerical_covariance - exact_covariance)))
 
 
 # --------------------------------------------------------------------------- #
@@ -506,13 +607,17 @@ def build_propagation_arc_map(options: Options, Lc: np.ndarray):
     """Return an arc propagation map.
 
     Uses an augmented-UT construction implementation:
-    sigma points over ``z_k = [x_k; w_k]`` with state_covariance ``blkdiag(P_k, I)``
-    and a batched propagation.
+    sigma points over ``z_k = [x_k; xi_k; eta_k]`` with covariance
+    ``blkdiag(P_k, I, I)`` and a batched propagation. The two independent
+    standard-normal coordinates define the Brownian increment and normalized
+    space-time Levy area as ``W = sqrt(dt) xi`` and
+    ``H = sqrt(dt / 12) eta``.
     """
 
     noise_matrix = np.asarray(Lc, dtype=float)
     noise_dimension = noise_matrix.shape[1]
-    total_dimension = NX + noise_dimension
+    stochastic_dimension = 2 * noise_dimension
+    total_dimension = NX + stochastic_dimension
     ut_scale = total_dimension + options.scaling_parameter
     if ut_scale <= 0.0:
         raise ValueError("unscented transform scale must be positive")
@@ -531,12 +636,12 @@ def build_propagation_arc_map(options: Options, Lc: np.ndarray):
     ):
         state_spread = jnp.linalg.cholesky(ut_scale * state_covariance)
         state_offsets = jnp.concatenate(
-            [state_spread, jnp.zeros((NX, noise_dimension))], axis=1
+            [state_spread, jnp.zeros((NX, stochastic_dimension))], axis=1
         )
-        noise_offsets = jnp.concatenate(
+        stochastic_offsets = jnp.concatenate(
             [
-                jnp.zeros((noise_dimension, NX)),
-                jnp.sqrt(ut_scale) * jnp.eye(noise_dimension),
+                jnp.zeros((stochastic_dimension, NX)),
+                jnp.sqrt(ut_scale) * jnp.eye(stochastic_dimension),
             ],
             axis=1,
         )
@@ -548,17 +653,32 @@ def build_propagation_arc_map(options: Options, Lc: np.ndarray):
             ],
             axis=1,
         )
-        noise_matrix_pts = jnp.concatenate(
-            [jnp.zeros((noise_dimension, 1)), noise_offsets, -noise_offsets], axis=1
+        stochastic_matrix_pts = jnp.concatenate(
+            [
+                jnp.zeros((stochastic_dimension, 1)),
+                stochastic_offsets,
+                -stochastic_offsets,
+            ],
+            axis=1,
         )
 
         controls = feedforward[:, None] + gain @ (
             state_matrix_pts - mean[:, None]
         )  # (NU, n_sigma)
 
-        brownian_increments = jnp.sqrt(dt) * noise_matrix_pts
+        brownian_increments = (
+            jnp.sqrt(dt) * stochastic_matrix_pts[:noise_dimension]
+        )
+        space_time_levy_areas = (
+            jnp.sqrt(dt / 12.0) * stochastic_matrix_pts[noise_dimension:]
+        )
         propagated_states = _prescribed_sde_integration_step_batch(
-            state_matrix_pts, controls, brownian_increments, diffusion_j, dt
+            state_matrix_pts,
+            controls,
+            brownian_increments,
+            space_time_levy_areas,
+            diffusion_j,
+            dt,
         )
 
         mean_next = propagated_states @ weights
@@ -1637,9 +1757,10 @@ def monte_carlo_rollout(
 ) -> dict[str, np.ndarray]:
     """Roll out trajectories using independent scrambled Sobol input sets.
 
-    Initial states and Brownian paths use separate random streams. Random
+    Initial states and stochastic paths use separate random streams. Random
     pairing avoids alignment between the two Sobol sets. Each Brownian point
-    supplies all arc increments for one path; trajectories are not IID samples.
+    supplies independent standard-normal coordinates for both ``W`` and ``H``
+    on every arc of one path; trajectories are not IID samples.
     With ``closed_loop=False``, only the feedforward control is applied, subject
     to the same control limit. Both modes use identical samples for a given seed.
     """
@@ -1659,7 +1780,7 @@ def monte_carlo_rollout(
         seed=np.random.default_rng(initial_seed),
     )
     brownian_path_sampler = qmc.Sobol(
-        d=options.n_arcs * noise_dimension,
+        d=options.n_arcs * 2 * noise_dimension,
         scramble=True,
         seed=np.random.default_rng(brownian_seed),
     )
@@ -1670,7 +1791,7 @@ def monte_carlo_rollout(
     eps = np.finfo(float).eps
     initial_state_normals = norm.ppf(np.clip(initial_state_uniforms, eps, 1.0 - eps)).T
     brownian_path_normals = norm.ppf(np.clip(brownian_path_uniforms, eps, 1.0 - eps)).reshape(
-        samples, options.n_arcs, noise_dimension
+        samples, options.n_arcs, 2 * noise_dimension
     )
     # Permute whole Brownian paths, preserving their internal Sobol coordinates.
     pairing = np.random.default_rng(pairing_seed).permutation(samples)
@@ -1693,12 +1814,17 @@ def monte_carlo_rollout(
         scale = np.ones_like(magnitude)
         scale[saturated] = options.u_max / magnitude[saturated]
         applied_control = control * scale[None, :]
-        increments = np.sqrt(options.dt) * brownian_path_normals[:, k, :].T
+        arc_normals = brownian_path_normals[:, k, :].T
+        increments = np.sqrt(options.dt) * arc_normals[:noise_dimension]
+        space_time_levy_areas = (
+            np.sqrt(options.dt / 12.0) * arc_normals[noise_dimension:]
+        )
         states = np.asarray(
             _prescribed_sde_integration_step_batch(
                 jnp.asarray(states),
                 jnp.asarray(applied_control),
                 jnp.asarray(increments),
+                jnp.asarray(space_time_levy_areas),
                 jnp.asarray(Lc),
                 options.dt,
             )
@@ -1757,13 +1883,16 @@ def plot_trajectory(
 
     if monte_carlo is not None:
         trajectories = monte_carlo["trajectories"]
-        axis.plot(
-            trajectories[:, 0, :],
-            trajectories[:, 1, :],
-            color=Plotter.BLUE,
+        axis.scatter(
+            trajectories[-1, 0, :],
+            trajectories[-1, 1, :],
+            s=1.0,
+            color=Plotter.GREY,
             alpha=0.15,
-            lw=0.4,
-            zorder=1,
+            linewidths=0.0,
+            rasterized=True,
+            label="MC",
+            zorder=2,
         )
 
     axis.plot(
@@ -2001,6 +2130,20 @@ def main() -> None:
 
     if np.max(np.abs(accumulated_process_covariance(Ac, Qc, options.dt) - G @ G.T)) > 1e-15:
         raise ValueError("Continuous diffusion state_covariance calibration error exceeds 1e-15.")
+
+    shark_covariance_error = validate_shark_process_covariance(
+        Ac, Qc, Lc, options.dt
+    )
+    if shark_covariance_error > 1e-13:
+        raise ValueError(
+            "ShARK process covariance error exceeds 1e-13: "
+            f"{shark_covariance_error:.3e}."
+        )
+    print(
+        "One-step ShARK process covariance validation: "
+        f"max absolute error = {shark_covariance_error:.3e}",
+        flush=True,
+    )
     
     print(
         "\nSolving the deterministic trajectory optimization ... ",
@@ -2020,19 +2163,26 @@ def main() -> None:
     stochastic_sol = solve_stochastic_optimization(options, A, B, Lc, nominal_sol)
     print_summary(options, stochastic_sol)
 
+    closed_loop_monte_carlo = monte_carlo_rollout(
+        options, Lc, stochastic_sol, closed_loop=True
+    )
+    open_loop_monte_carlo = monte_carlo_rollout(
+        options, Lc, stochastic_sol, closed_loop=False
+    )
+
     plot_trajectory(
         options,
         stochastic_sol.means,
         stochastic_sol.state_covariances,
-        None,
+        closed_loop_monte_carlo,
         OUTPUT_DIR / "closed_loop_traj.png",
         feedforward=stochastic_sol.feedforward,
     )
     plot_trajectory(
         options,
         stochastic_sol.means,
-        open_loop_state_covariances(options, Lc, stochastic_sol),
-        None,
+        open_loop_monte_carlo["state_covariances"],
+        open_loop_monte_carlo,
         OUTPUT_DIR / "open_loop_traj.png",
     )
     plot_control_profiles(

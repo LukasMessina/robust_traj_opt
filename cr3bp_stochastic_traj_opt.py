@@ -31,17 +31,17 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.stats import chi2
 
-import deterministic_cr3bp
+import cr3bp_deterministic_traj_opt
 import integrator
-from deterministic_cr3bp import CASE_REGISTRY, TestCase
+from cr3bp_deterministic_traj_opt import CASE_REGISTRY, TestCase
 from plotter import Plotter 
 
 NX = 7                       # augmented state dimension
 NU = 3                       # control dimension
 NP = 6                       # primed (position-velocity) state dimension
 
-REFERENCE_DIR = Path("output/cr3bp_energy_optimal")
-OUTPUT_DIR = Path("output/cr3bp_covariance_steering")
+REFERENCE_DIR = Path("output/cr3bp_deterministic_traj_opt/energy_optimal")
+OUTPUT_DIR = Path("output/cr3bp_stochastic_traj_opt")
 
 # Initial position and velocity standard deviations per test case [-].
 # Order: (sigma_x, sigma_y, sigma_z, sigma_xdot, sigma_ydot, sigma_zdot).
@@ -102,7 +102,7 @@ class Options:
     # When set, restrict the uniform mesh arcs to the first specified number of arcs
     # and use the state at that relative endpoint as the terminal
     # mean target. None preserves the complete uniform mesh.
-    truncated_uniform_mesh_arcs: int | None = None
+    truncated_uniform_mesh_arcs: int | None = 30
     # Control-norm regularizer: the thrust magnitude is carried as
     # sqrt(u'u + eps_1^2) on the up-to-the-unit control, everywhere it appears.
     control_norm_eps: float = 1e-6
@@ -370,7 +370,7 @@ class Dynamics:
     def __init__(self, case: TestCase) -> None:
         state = casadi.SX.sym("state", NX)
         control = casadi.SX.sym("control", NU)
-        eom = deterministic_cr3bp.eom(
+        eom = cr3bp_deterministic_traj_opt.eom(
             case, state, control, casadi.sqrt(casadi.dot(control, control))
         )
         self._augm_state_derivatives = casadi.Function("augm_state_derivatives", [state, control], [eom])
@@ -391,7 +391,7 @@ class Dynamics:
         self._augm_state_derivatives_with_regularization = casadi.Function(
             "slack_derivatives",
             [state, control, magnitude],
-            [deterministic_cr3bp.eom(case, state, control, magnitude)],
+            [cr3bp_deterministic_traj_opt.eom(case, state, control, magnitude)],
         )
         self._augm_state_derivatives_maps: dict[int, casadi.Function] = {}
         self._full_derivatives_maps: dict[int, casadi.Function] = {}
@@ -2341,17 +2341,17 @@ def plot_outputs(
         )
         projection_axes = list(np.atleast_1d(axes))
 
-    lagrange = deterministic_cr3bp.get_collinear_lagrange_points(case)
+    lagrange = cr3bp_deterministic_traj_opt.get_collinear_lagrange_points(case)
     departure_orbit = None
     target_orbit = None
     if case.departure_period_nd is not None:
-        departure_orbit = deterministic_cr3bp.propagate_periodic_orbit(
+        departure_orbit = cr3bp_deterministic_traj_opt.propagate_periodic_orbit(
             case, case.x0_augmented_state, case.departure_period_nd
         )
     # A truncated transfer ends at a relative reference node, not at the full
     # target periodic orbit.
     if options.truncated_uniform_mesh_arcs is None and case.target_period_nd is not None:
-        target_orbit = deterministic_cr3bp.propagate_periodic_orbit(
+        target_orbit = cr3bp_deterministic_traj_opt.propagate_periodic_orbit(
             case, case.xf_augmented_state, case.target_period_nd
         )
 
@@ -2368,9 +2368,7 @@ def plot_outputs(
         samples_per_arc=dense_samples_per_arc,
     )
 
-    magnification = plotter.get_projection_magnification(
-        solution, normalization
-    )
+    magnification = 20.0
     projection_scale_label = plotter.plot_magnification_label(magnification)
     covariance_stride = max(solution.covariances.shape[0] // 24, 1)
     covariance_nodes = list(range(0, solution.covariances.shape[0], covariance_stride))
@@ -2696,7 +2694,7 @@ def main() -> None:
     options = Options(
         # Use only the first N source-reference arcs and their relative terminal
         # state (for example, 30). None runs the full transfer.
-        truncated_uniform_mesh_arcs=None,
+        truncated_uniform_mesh_arcs=30,
         # Equal-duration arcs the reference is resampled onto: an int applies to
         # every case, a dict keys per case. Defaults to UNIFORM_ARCS_BY_CASE.
         uniform_mesh_arcs=dict(UNIFORM_ARCS_BY_CASE),

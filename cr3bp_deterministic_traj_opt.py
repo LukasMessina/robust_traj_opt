@@ -271,8 +271,8 @@ DEFECT_TOLERANCE_BY_CASE: dict[str, float] = {
     "lyapunov_l1_to_l2": 1e-11,
 }
 OUTPUT_DIR_BY_OBJECTIVE_MODE: dict[str, Path] = {
-    FUEL_OPTIMAL_MODE: Path("output/cr3bp_fuel_optimal"),
-    ENERGY_OPTIMAL_MODE: Path("output/cr3bp_energy_optimal"),
+    FUEL_OPTIMAL_MODE: Path("output/cr3bp_deterministic_traj_opt/fuel_optimal"),
+    ENERGY_OPTIMAL_MODE: Path("output/cr3bp_deterministic_traj_opt/energy_optimal"),
 }
 DEFAULT_OUTPUT_PREFIX = ""
 INITIAL_GUESS = OCPSolution | None
