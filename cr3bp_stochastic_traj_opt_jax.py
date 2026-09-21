@@ -125,7 +125,7 @@ class Options:
     # When set, restrict the uniform mesh arcs to the first specified number of arcs
     # and use the state at that relative endpoint as the terminal
     # mean target. None preserves the complete uniform mesh.
-    truncated_uniform_mesh_arcs: int | None = 30
+    truncated_uniform_mesh_arcs: int | None = None
     # Control-norm regularizer: the thrust magnitude is carried as
     # sqrt(u'u + eps_1^2) on the up-to-the-unit control, everywhere it appears.
     control_norm_eps: float = 1e-6
@@ -2286,7 +2286,7 @@ def plot_outputs(
         )
     )
 
-    magnification = 50.0
+    magnification = 100.0
     projection_scale_label = plotter.plot_magnification_label(magnification)
     covariance_stride = max(solution.covariances.shape[0] // 24, 1)
     covariance_nodes = list(range(0, solution.covariances.shape[0], covariance_stride))
@@ -2340,7 +2340,7 @@ def plot_outputs(
             displayed_0.T,
             displayed_1.T,
             color=Plotter.DARK_GREY,
-            alpha=0.15,
+            alpha=0.2,
             lw=0.38,
             zorder=1,
         )

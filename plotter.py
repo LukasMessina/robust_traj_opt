@@ -315,7 +315,7 @@ class Plotter:
             x_dense[axis_0],
             x_dense[axis_1],
             color=self.TRAJECTORY_COLOR,
-            lw=self.TRAJECTORY_LINE_WIDTH,
+            lw=self.TRAJECTORY_LINE_WIDTH - 0.5,
             zorder=4,
             label="Transfer",
         )
