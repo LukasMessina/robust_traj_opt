@@ -3,11 +3,11 @@
 # shooting defects are an ExaModels oracle with exact derivatives; everything else
 # is native ExaModels algebra.
 
-struct NominalParams
+struct NominalParams{G<:GravityModel}
     n::Int
     ff_offset::Int     # local-vector offset of the feedforward block
     tmax::Float64
-    mu::Float64
+    gravity::G
     ve::Float64
     eps::Float64
 end
@@ -20,7 +20,7 @@ end
 
 "Dopri8 arc map with thrust T_max f and regularized mass-flow magnitude T_max ||f||_eps."
 @inline nominal_map(m, f, h, p::NominalParams) =
-    rk_step(Dopri8, m, p.tmax * f, p.tmax * control_norm(f, p.eps), zero(SVector{7,eltype(m)}), h, p.mu, p.ve)
+    rk_step(Dopri8, m, p.tmax * f, p.tmax * control_norm(f, p.eps), zero(SVector{7,eltype(m)}), h, p.gravity, p.ve)
 
 @kernel function nominal_value_kernel!(out, @Const(x), @Const(steps), p::NominalParams)
     a = @index(Global, Linear)
@@ -47,8 +47,8 @@ end
     md, fd = seed(TagPoint, m, 0, Val(10)), seed(TagPoint, f, 7, Val(10))
     ud, nd = p.tmax * fd, control_norm(fd, p.eps)
     h = @inbounds steps[a]
-    _, stages = rk_step_stages(Dopri8, md, ud, p.tmax * nd, zero(SVector{7,PointDual}), h, p.mu, p.ve)
-    xb, ub, mb = rk_adjoint(Dopri8, stages, ud, p.tmax * nd, g, h, p.mu, p.ve)
+    _, stages = rk_step_stages(Dopri8, md, ud, p.tmax * nd, zero(SVector{7,PointDual}), h, p.gravity, p.ve)
+    xb, ub, mb = rk_adjoint(Dopri8, stages, ud, p.tmax * nd, g, h, p.gravity, p.ve)
     zb = vcat(xb, p.tmax * ub + mb * (p.tmax * fd / nd))
     for r in 1:10, q in 1:r
         @inbounds vals[55(a-1)+lower_position(r, q)] = (partial(zb[r], q) + partial(zb[q], r)) / 2
@@ -70,7 +70,7 @@ function reoptimize_reference(case::CaseData, o::Options, source::ReferenceTraj;
     @add_con(c, means[t.i, last] - t.v for t in [(i = i, v = target[i]) for i in 1:NP])
     @add_con(c, defects, means[t.i, t.k+1] for t in [(i = i, k = k) for k in 1:n for i in 1:NX])
     @add_con(c, sqrt(ff[1, k]^2 + ff[2, k]^2 + ff[3, k]^2 + epsilon2) for k in 1:n; lcon = -Inf, ucon = 1.0)
-    p = NominalParams(n, NX * (n + 1), case.tmax, case.mu, case.ve, o.control_norm_eps)
+    p = NominalParams(n, NX * (n + 1), case.tmax, case.gravity, case.ve, o.control_norm_eps)
     steps = copy(source.steps)
     local_index(a, q) = q <= 7 ? 7(a-1) + q : p.ff_offset + 3(a-1) + (q - 7)
     jac_rows = [7(a-1)+i for a in 1:n for i in 1:7 for _ in 1:10]

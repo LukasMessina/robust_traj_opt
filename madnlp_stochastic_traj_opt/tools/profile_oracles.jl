@@ -17,7 +17,7 @@ const BACKEND = C.execution_backend(OPTIONS)
 
 function profile(o, backend)
     case = C.case_data(o.case_id)
-    normalization = C.build_normalization(case)
+    normalization = C.build_normalization(case, o)
     p = C.ut_params(case, o, normalization)
     ref = C.load_reference(case, o)
     seed = C.build_initial_guess(case, o, normalization, p, ref)

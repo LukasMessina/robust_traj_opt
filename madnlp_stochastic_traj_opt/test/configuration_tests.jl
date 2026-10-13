@@ -4,7 +4,7 @@
     runs = C.parse_cli(["--mode=gpu", "--case=all", "--tol=1e-7", "--quiet"])
     @test [o.case_id for o in runs] == collect(C.CASE_IDS)
     @test all(o -> o.execution_mode == :gpu && !o.verbose, runs)
-    @test runs[1].condensed_relaxation == 1e-7 / 10          # default: tol / 10
+    @test runs[1].condensed_relaxation == 1e-7 / 100         # default: tol / 100
     @test C.output_directory(runs[2]) == joinpath(C.PROJECT_ROOT, "output", "gpu", "nrho_l2_to_dro")
     @test C.output_directory(C.Options()) == joinpath(C.PROJECT_ROOT, "output", "cpu", "lyapunov_l1_to_l2")
     cpu = C.stochastic_solver_options(C.Options())

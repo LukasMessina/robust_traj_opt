@@ -1,0 +1,15 @@
+name: det_traj_opt_env
+channels:
+  - tudat-team/label/dev
+  - tudat-team
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.12
+  - tudatpy>1.0.0.dev
+  - numpy>=1.26
+  - scipy>=1.11
+  - matplotlib>=3.8
+  - pip
+  - pip:
+      - casadi==3.7.2

@@ -8,5 +8,9 @@
 # Licensed solver
 solvers/
 
+# Downloaded JPL kernels (sources and hashes are saved with each solution).
+data/jpl_kernels/
+
 # Generated optimization summaries
 output/**/summary.txt
+output/**/*.log

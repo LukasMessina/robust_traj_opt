@@ -11,7 +11,7 @@ function normalized_arc_jacobians(case::CaseData, n::Normalization, states, cont
     for k in eachindex(steps)
         J = ForwardDiff.jacobian([states[:, k]; controls[:, k]]) do v
             u = SVector{3}(v[8], v[9], v[10])
-            Vector(deterministic_step(SVector{7}(v[1:7]), u, norm(u), steps[k], case.mu, case.ve))
+            Vector(deterministic_step(SVector{7}(v[1:7]), u, norm(u), steps[k], case.gravity, case.ve))
         end
         push!(A_list, D_inv * J[:, 1:7] * D)
         push!(B_list, D_inv * J[:, 8:10] * case.tmax)
@@ -37,18 +37,18 @@ function tvlqr_gains(state_weight, control_weight, terminal_weights, A_list, B_l
     return gains
 end
 
-"Bryson weights Q~ = I/c^2, R~ = I, Qf~ = diag(r_p I3, r_v I3)/c^2."
+"Bryson weights Q~ = I/c^2, R~ = w I (w = control_covariance_weight, as in the cost), Qf~ = diag(r_p I3, r_v I3)/c^2."
 function seed_gains(o::Options, A_list, B_list)
     state_weight = 1.0 / o.bryson_sigma_factor^2
     terminal = state_weight .* [fill(o.position_covariance_reduction, 3); fill(o.velocity_covariance_reduction, 3)]
-    return tvlqr_gains(state_weight, 1.0, terminal, A_list, B_list)
+    return tvlqr_gains(state_weight, o.control_covariance_weight, terminal, A_list, B_list)
 end
 
 struct InitialGuess
     means::Matrix{Float64}          # 7 x (N+1)
     feedforward::Matrix{Float64}    # 3 x N, normalized by T_max
     gains::Array{Float64,3}         # 3 x 6 x N, K_tilde
-    gain_scale::Vector{Float64}     # 1 / ||B~_k||_2
+    gain_scale::Vector{Float64}     # 1 / ||B~_k[1:6, :]||_2
     terminal_margin::Vector{Float64}
     covariances::Array{Float64,3}   # 7 x 7 x (N+1), normalized, propagated
     control_covariances::Array{Float64,3}
@@ -59,7 +59,9 @@ function build_initial_guess(case::CaseData, o::Options, n::Normalization, p::UT
     means[:, 1] = case.x0
     feedforward = ref.controls ./ case.tmax
     A_list, B_list = normalized_arc_jacobians(case, n, ref.states, ref.controls, ref.steps)
-    gain_scale = [1.0 / max(opnorm(B, 2), 1e-300) for B in B_list]
+    # Position/velocity rows only: the gains never act on mass, and the mass row
+    # (normalised by the mass scale) would otherwise dominate the norm by ~1e3.
+    gain_scale = [1.0 / max(opnorm(B[1:NP, :], 2), 1e-300) for B in B_list]
     gains = seed_gains(o, A_list, B_list)
     _, covariances, controls = propagate_stochastic_moments(p, means, feedforward, gains,
         initial_covariance(n), ref.steps)

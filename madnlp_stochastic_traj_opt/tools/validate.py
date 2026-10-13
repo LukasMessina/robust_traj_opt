@@ -1,6 +1,6 @@
 """Validate Julia runs with the unchanged JAX reference code and draw their figures.
 
-    python madnlp_stochastic_traj_opt/tools/validate.py cpu|gpu [--case CASE] [--samples N]
+    python madnlp_stochastic_traj_opt/tools/validate.py cpu|gpu|hybrid [--case CASE] [--samples N]
 
 For every case solved in the given execution mode (output/<mode>/<case>/<case>.npz,
 written by run.jl):
@@ -14,8 +14,9 @@ written by run.jl):
    eigenvalue formula (s^2 = 1e-30), whatever smoothing the Julia run used.
 3. The reference's `monte_carlo_rollouts`, `compute_diagnostics` and
    `save_outputs`: the same Monte Carlo validation (NumPy streams, seed 42), NPZ/CSV
-   export and the four figures (dispersion evolution, thrust budget, projections,
-   terminal distribution).
+   export and figures (CR3BP: dispersion evolution, thrust budget, projections,
+   terminal distribution; Earth--Mars also the no-feedback ensemble and its
+   projections, as in the reference's `run_test_case`).
 
 Everything is written to output/<mode>/<case>/validation/. Runs from any directory.
 """
@@ -44,7 +45,14 @@ sys.modules["pyoptsparse.pySNOPT.pySNOPT"].SNOPT = object
 
 import numpy as np  # noqa: E402
 import jax  # noqa: E402
-import cr3bp_stochastic_traj_opt_jax as J  # noqa: E402
+import stochastic_traj_opt_jax as J  # noqa: E402
+
+
+RUN_PROBLEM_DATA = (
+    "initial_position_std_km", "initial_velocity_std_km_s", "initial_mass_std_kg", "mass_scale_kg",
+    "position_covariance_reduction", "velocity_covariance_reduction",
+    "navigation_position_std_km", "navigation_velocity_std_km_s",
+)
 
 
 def max_rel(a, b):
@@ -102,15 +110,22 @@ def seed_check(case, options, normalization, dynamics, arc, ref, data):
 
 
 def validate(path: Path, samples: int | None):
-    case = J.CASE_REGISTRY[path.stem]()
+    case = J.load_case(path.stem)
     data = dict(np.load(path))
-    options = J.Options(truncated_uniform_mesh_arcs=None)
+    options = replace(J.default_options(path.stem), truncated_uniform_mesh_arcs=None)
     options = replace(options, terminal_margin_floor=float(data["terminal_margin_floor"]),
                       spectral_radius_floor=float(data["spectral_radius_floor"]),
                       control_norm_eps=float(data["control_norm_eps"]))
+    # The run's own problem data, where it records them (it may deviate from the JAX defaults).
+    options = replace(options, **{name: float(data[name]) for name in RUN_PROBLEM_DATA if name in data})
+    # The run's gain bound (runs saved before the bound existed had none).
+    options = replace(options, gain_bound=float(data["gain_bound"]) if "gain_bound" in data else None)
+    # The run's control-covariance weight (runs saved before the option existed were unweighted).
+    options = replace(options, control_covariance_weight=float(data["control_covariance_weight"])
+                      if "control_covariance_weight" in data else 1.0)
     if samples is not None:
         options = replace(options, monte_carlo_samples=samples)
-    normalization = J.build_normalization(case)
+    normalization = J.build_normalization(case, options)
     dynamics = J.Dynamics(case)
     ref = reference_trajectory(case, data)
     arc = jax.jit(J.build_propagation_arc_map(case, options, normalization))
@@ -126,6 +141,9 @@ def validate(path: Path, samples: int | None):
 
     print(f"[{case.test_case_id}] Monte Carlo ({options.monte_carlo_samples} samples) and figures ...", flush=True)
     monte_carlo = J.monte_carlo_rollouts(case, options, normalization, solution, ref.steps)
+    if case.test_case_id == "earth_mars":
+        monte_carlo["no_feedback"] = J.monte_carlo_rollouts(
+            case, options, normalization, solution, ref.steps, feedback_enabled=False)
     psi = J.psi_inverse(J.NU, options.violation_parameter)
     diagnostics = {**J.compute_diagnostics(case, options, ref, solution, normalization, monte_carlo, psi),
                    **solution.diagnostics}
@@ -156,13 +174,13 @@ def print_summary(case, r, options):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("mode", choices=("cpu", "gpu"), help="execution mode of the runs")
-    parser.add_argument("--case", choices=sorted(J.CASE_REGISTRY), default=None,
+    parser.add_argument("mode", choices=("cpu", "gpu", "hybrid"), help="execution mode of the runs")
+    parser.add_argument("--case", choices=sorted(J.STOCHASTIC_CASE_REGISTRY), default=None,
                         help="validate only this case; default: every solved case of the mode")
     parser.add_argument("--samples", type=int, default=None, help="Monte Carlo samples (reference default 50000)")
     args = parser.parse_args()
     os.chdir(ROOT)  # the reference resolves its data directories relative to the repository
-    cases = [args.case] if args.case else sorted(J.CASE_REGISTRY)
+    cases = [args.case] if args.case else sorted(J.STOCHASTIC_CASE_REGISTRY)
     results = [OUTPUT / args.mode / case / f"{case}.npz" for case in cases]
     results = [path for path in results if path.is_file()]
     if not results:

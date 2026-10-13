@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import numpy as np
-import cr3bp_deterministic_traj_opt
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import deterministic_traj_opt
 
 # Eleven-stage explicit Runge-Kutta of order seven, fixed step. The coefficients
 # are Fehlberg's (NASA TR R-287, 1968); this is the seventh-order formula alone,
@@ -50,7 +53,7 @@ RK7_STAGES = RK7_A.shape[0]
 
 
 def rk7(
-    case: cr3bp_deterministic_traj_opt.CR3BPEarthMoon,
+    case: deterministic_traj_opt.CR3BPEarthMoon,
     state: np.ndarray,
     control: np.ndarray,
     sigma: float,
@@ -65,6 +68,9 @@ def rk7(
     them at its own stage time, which keeps the step accurate for linear time-varying
     controls.
     """
+
+    # Lazy import avoids the solver/integrator circular import at module load.
+    from deterministic_traj_opt import eom
 
     # `varying` is decided from whether the caller supplied end values at all
     varying = control_end is not None or sigma_end is not None
@@ -87,7 +93,7 @@ def rk7(
         else:
             stage_control, stage_sigma = control, sigma
         stages.append(
-            cr3bp_deterministic_traj_opt.eom(case, stage_state, stage_control, stage_sigma)
+            eom(case, stage_state, stage_control, stage_sigma)
         )
 
     propagated = state

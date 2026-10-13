@@ -69,7 +69,7 @@ end
 
 function diagnose(case_id, after)
     o = C.Options(; case_id)
-    case = C.case_data(case_id); normalization = C.build_normalization(case); p = C.ut_params(case, o, normalization)
+    case = C.case_data(case_id); normalization = C.build_normalization(case, o); p = C.ut_params(case, o, normalization)
     scratch = mktempdir()
     ref, _ = C.reoptimize_reference(case, o, C.load_reference(case, o); output_file = joinpath(scratch, "nominal.log"))
     seed = C.build_initial_guess(case, o, normalization, p, ref)

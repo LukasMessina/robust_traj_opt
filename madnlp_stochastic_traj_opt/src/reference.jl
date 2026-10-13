@@ -47,10 +47,24 @@ function numpy_interp(x::AbstractVector, xp::AbstractVector, fp::AbstractVector)
 end
 
 function load_reference(case::CaseData, o::Options)
-    path = joinpath(REFERENCE_DIR, case.id * ".npz")
-    isfile(path) || error("missing deterministic reference $path; run cr3bp_deterministic_traj_opt.py first")
+    path = joinpath(case.reference_dir, case.id * ".npz")
+    isfile(path) || error("missing deterministic reference $path; run deterministic_traj_opt.py first")
     data = NPZ.npzread(path, ["t_dense_days", "x_dense", "u_dense", "mesh_fraction", "x"])
+    case.id == "earth_mars" && check_earth_mars_reference(case, path, data["x"])
     return build_uniform_reference(case, o, data)
+end
+
+"The JAX script's checks of the archived Earth--Mars reference: same units and ephemeris boundary states."
+function check_earth_mars_reference(case::CaseData, path, states)
+    units = NPZ.npzread(path, ["length_unit_km", "time_unit_s", "mass_unit_kg"])
+    for (key, expected) in (("length_unit_km", case.length_unit), ("time_unit_s", case.time_unit),
+                            ("mass_unit_kg", case.m0_wet))
+        isapprox(Float64(units[key][]), expected; rtol = 1e-13, atol = 0) ||
+            error("Reference normalization mismatch: $key")
+    end
+    # numpy.allclose(rtol=0, atol=1e-12) is elementwise.
+    (all(abs.(states[1:NP, 1] .- case.x0[1:NP]) .<= 1e-12) && all(abs.(states[1:NP, end] .- case.xf) .<= 1e-12)) ||
+        error("Reference boundary states do not match archived ephemerides")
 end
 
 function build_uniform_reference(case::CaseData, o::Options, data)

@@ -1,11 +1,26 @@
-# Nondimensional rotating-frame CR3BP with thrust and variable mass, and the
-# fixed-step explicit Runge-Kutta maps of the JAX script: Diffrax Dopri8 for the
+# Nondimensional dynamics with thrust and variable mass, and the fixed-step
+# explicit Runge-Kutta maps of the JAX script: Diffrax Dopri8 for the
 # deterministic arcs and the XMDS2 RK9 tableau for the stochastic arcs. All
 # functions are generic in the number type: the oracles evaluate them with
 # Float64 values and with ForwardDiff dual numbers.
 
-"Same arithmetic as `vector_field` in the JAX script."
-@inline function cr3bp_vector_field(state::SVector{7}, control::SVector{3}, magnitude, mu, ve)
+"""
+Gravity model of a case, an isbits value that is also passed to the device kernels:
+the rotating-frame CR3BP with mass parameter `mu`, or the heliocentric two-body
+problem in units where the Sun's gravitational parameter is one.
+"""
+abstract type GravityModel end
+struct CR3BPGravity <: GravityModel
+    mu::Float64
+end
+struct HeliocentricGravity <: GravityModel end
+
+gravity_model(dynamics::AbstractString, mu) =
+    dynamics == "heliocentric" ? HeliocentricGravity() : CR3BPGravity(mu)
+
+"Same arithmetic as `vector_field` in the JAX script (rotating-frame branch)."
+@inline function vector_field(state::SVector{7}, control::SVector{3}, magnitude, model::CR3BPGravity, ve)
+    mu = model.mu
     x, y, z, vx, vy, vz, mass = state
     r1 = sqrt((x + mu)^2 + y * y + z * z)
     r2 = sqrt((x - 1 + mu)^2 + y * y + z * z)
@@ -17,8 +32,21 @@
         -magnitude / ve)
 end
 
+"Same arithmetic as `vector_field` in the JAX script (heliocentric branch): -r/|r|^3 + u/m."
+@inline function vector_field(state::SVector{7}, control::SVector{3}, magnitude, ::HeliocentricGravity, ve)
+    x, y, z, vx, vy, vz, mass = state
+    r3 = sqrt(x * x + y * y + z * z)^3
+    return SVector(vx, vy, vz,
+        -x / r3 + control[1] / mass,
+        -y / r3 + control[2] / mass,
+        -z / r3 + control[3] / mass,
+        -magnitude / ve)
+end
+
 "Gradients of `w' f` with respect to the state, the control vector and the mass-flow magnitude."
-@inline function cr3bp_vjp(state::SVector{7}, control::SVector{3}, magnitude, w::SVector{7}, mu, ve)
+@inline function vector_field_vjp(state::SVector{7}, control::SVector{3}, magnitude, w::SVector{7},
+        model::CR3BPGravity, ve)
+    mu = model.mu
     x, y, z, vx, vy, vz, mass = state
     d1 = SVector(x + mu, y, z)
     d2 = SVector(x - 1 + mu, y, z)
@@ -33,6 +61,19 @@ end
     position = -(g1 + g2) * a + s1 * d1 + s2 * d2
     state_bar = SVector(position[1] + w[4], position[2] + w[5], position[3],
         w[1] - 2w[5], w[2] + 2w[4], w[3], -dot(a, control) / mass^2)
+    return state_bar, a / mass, -w[7] / ve
+end
+
+@inline function vector_field_vjp(state::SVector{7}, control::SVector{3}, magnitude, w::SVector{7},
+        ::HeliocentricGravity, ve)
+    x, y, z, vx, vy, vz, mass = state
+    r = SVector(x, y, z)
+    rn = sqrt(x * x + y * y + z * z)
+    a = SVector(w[4], w[5], w[6])
+    # Gravity gradient: d/dr of -r/|r|^3, contracted with a.
+    position = -a / rn^3 + (3 * dot(a, r) / rn^5) * r
+    state_bar = SVector(position[1], position[2], position[3],
+        w[1], w[2], w[3], -dot(a, control) / mass^2)
     return state_bar, a / mass, -w[7] / ve
 end
 
@@ -64,7 +105,7 @@ function _rk_forward_body(TB)
         terms = [:($(A[i][j]) * $(_increment(j))) for j in 1:i-1 if A[i][j] != 0]
         push!(body, :($(_stage(i)) = $(isempty(terms) ? :y0 : :(y0 + $(Expr(:call, :+, terms...))))))
         # Diffrax: k_i = f(Y_i) dt + G dW, with the control increment of the whole step.
-        push!(body, :($(_increment(i)) = h * cr3bp_vector_field($(_stage(i)), control, magnitude, mu, ve) + gdw))
+        push!(body, :($(_increment(i)) = h * vector_field($(_stage(i)), control, magnitude, gravity, ve) + gdw))
     end
     terms = [:($(B[j]) * $(_increment(j))) for j in eachindex(B) if B[j] != 0]
     push!(body, :(y1 = y0 + $(Expr(:call, :+, terms...))))
@@ -76,7 +117,7 @@ One explicit RK step `y1 = y0 + sum_j b_j k_j`, `k_j = h f(Y_j) + gdw`, with the
 control and its magnitude held over the step (zero-order hold).
 """
 @generated function rk_step(::Type{TB}, y0::SVector{7}, control::SVector{3}, magnitude,
-        gdw::SVector{7}, h, mu, ve) where {TB<:RKTableau}
+        gdw::SVector{7}, h, gravity, ve) where {TB<:RKTableau}
     body, _ = _rk_forward_body(TB)
     return quote
         Base.@_inline_meta
@@ -87,7 +128,7 @@ end
 
 "Like `rk_step`, but also returns the stage states used by `rk_adjoint`."
 @generated function rk_step_stages(::Type{TB}, y0::SVector{7}, control::SVector{3}, magnitude,
-        gdw::SVector{7}, h, mu, ve) where {TB<:RKTableau}
+        gdw::SVector{7}, h, gravity, ve) where {TB<:RKTableau}
     body, stages = _rk_forward_body(TB)
     return quote
         Base.@_inline_meta
@@ -102,7 +143,7 @@ and `dl/dmagnitude` (`gdw` constant). Evaluated with dual-number stages it is th
 forward-over-reverse second derivative of `g' y1`.
 """
 @generated function rk_adjoint(::Type{TB}, stages::Tuple, control::SVector{3}, magnitude,
-        g::SVector{7}, h, mu, ve) where {TB<:RKTableau}
+        g::SVector{7}, h, gravity, ve) where {TB<:RKTableau}
     A, B = tableau(TB)
     need = needed_stages(A, B)
     position = Dict(i => p for (p, i) in enumerate(findall(need)))
@@ -117,7 +158,7 @@ forward-over-reverse second derivative of `g' y1`.
         end
         increment_bar = length(terms) == 1 ? terms[1] : Expr(:call, :+, terms...)
         push!(body, quote
-            sb, cb, mb = cr3bp_vjp(stages[$(position[j])], control, magnitude, $increment_bar, mu, ve)
+            sb, cb, mb = vector_field_vjp(stages[$(position[j])], control, magnitude, $increment_bar, gravity, ve)
             $(stage_bar(j)) = h * sb
             control_bar = control_bar + h * cb
             magnitude_bar = magnitude_bar + h * mb
@@ -136,5 +177,5 @@ end
     SVector{7,T}(zero(T), zero(T), zero(T), sigma * dw[1], sigma * dw[2], sigma * dw[3], zero(T))
 
 "JAX `integration_map` with one substep: Dopri8 on t in [0, 1] with rhs `duration * f`."
-deterministic_step(state, control, magnitude, duration, mu, ve) =
-    rk_step(Dopri8, state, control, magnitude, zero(SVector{7,eltype(state)}), duration, mu, ve)
+deterministic_step(state, control, magnitude, duration, gravity, ve) =
+    rk_step(Dopri8, state, control, magnitude, zero(SVector{7,eltype(state)}), duration, gravity, ve)

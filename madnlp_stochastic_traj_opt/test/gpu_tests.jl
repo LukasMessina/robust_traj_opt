@@ -5,9 +5,9 @@
 # Loads CUDA into the module; a separate top-level statement so the new methods are visible.
 const GPU_BACKEND = C.execution_backend(C.Options(execution_mode = :gpu))
 
-@testset "GPU kernels match the CPU model" begin
-    cpu = truncated_setup()
-    gpu = truncated_setup(; backend = GPU_BACKEND)
+@testset "GPU kernels match the CPU model ($case_id)" for case_id in ("lyapunov_l1_to_l2", "earth_mars")
+    cpu = truncated_setup(; case_id)
+    gpu = truncated_setup(; case_id, backend = GPU_BACKEND)
     mc, mg = cpu.blocks.model, gpu.blocks.model
     rng = Xoshiro(5)
     x = Array(mc.meta.x0) .* (1 .+ 1e-3 .* randn(rng, mc.meta.nvar))

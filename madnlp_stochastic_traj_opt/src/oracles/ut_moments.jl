@@ -134,7 +134,7 @@ end
 end
 
 @inline sigma_step(p::UTParams, x, u, dw, h) =
-    rk_step(XMDS2RK9, x, u, sigma_mass_flow(p, u), diffusion_increment(p.sigma_nd, dw), h, p.mu, p.ve)
+    rk_step(XMDS2RK9, x, u, sigma_mass_flow(p, u), diffusion_increment(p.sigma_nd, dw), h, p.gravity, p.ve)
 
 @inline point_state(z) = SVector{7}(ntuple(i -> z[i], Val(7)))
 @inline point_control(z) = SVector{3}(ntuple(i -> z[7+i], Val(3)))
@@ -162,8 +162,8 @@ point `y` and `zb = J_s' g_s`, both as duals over the 10 point inputs.
     xd, ud = seed(TagPoint, point_state(z), 0, Val(10)), seed(TagPoint, point_control(z), 7, Val(10))
     magnitude = sigma_mass_flow(p, ud)
     gdw = diffusion_increment(p.sigma_nd, dw)
-    y, stages = rk_step_stages(XMDS2RK9, xd, ud, magnitude, gdw, h, p.mu, p.ve)
-    xb, ub, mb = rk_adjoint(XMDS2RK9, stages, ud, magnitude, g, h, p.mu, p.ve)
+    y, stages = rk_step_stages(XMDS2RK9, xd, ud, magnitude, gdw, h, p.gravity, p.ve)
+    xb, ub, mb = rk_adjoint(XMDS2RK9, stages, ud, magnitude, g, h, p.gravity, p.ve)
     return y, vcat(xb, ub + mb * (ud / magnitude))
 end
 

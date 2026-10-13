@@ -4,7 +4,7 @@ log_line(args...) = (println(args...); flush(stdout))
 
 function _solve_problem(o::Options, backend)
     case = case_data(o.case_id)
-    normalization = build_normalization(case)
+    normalization = build_normalization(case, o)
     p = ut_params(case, o, normalization)
     directory = mkpath(output_directory(o))
     tag = "[$(case.id)]"
@@ -70,8 +70,10 @@ function solver_settings_report(o::Options, solver)
         "alpha_min_frac" => o.alpha_min_frac, "barrier_mu_init" => o.barrier_mu_init,
         "barrier_mu_min" => o.barrier_mu_min, "max_consecutive_restoration" => something(o.max_consecutive_restoration, "none"),
         "control_norm_eps" => o.control_norm_eps, "mass_flow_smoothing" => o.mass_flow_smoothing,
+        "gain_bound" => o.gain_bound, "control_covariance_weight" => o.control_covariance_weight,
         "eigenvalue_smoothing" => o.eigenvalue_smoothing, "spectral_radius_floor" => o.spectral_radius_floor,
-        "terminal_margin_floor" => o.terminal_margin_floor)
+        "terminal_margin_floor" => o.terminal_margin_floor, "chance_formulation" => string(o.chance_formulation),
+        "chance_slack_floor" => o.chance_slack_floor)
     settings["kkt_system"] = string(stochastic_linear_system(o).kkt_system)
     # Effective values, including the MadNLP defaults of options that are not passed.
     settings["bound_relax_factor"] = solver.opt.bound_relax_factor

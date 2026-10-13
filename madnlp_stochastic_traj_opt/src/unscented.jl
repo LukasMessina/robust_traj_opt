@@ -16,7 +16,7 @@ Everything the arc map needs, as an isbits value that is also passed to the
 device kernels. Column classes of the augmented spread (reference model):
 1..7 state, 8..13 navigation, 14..16 Wiener increments.
 """
-struct UTParams
+struct UTParams{G<:GravityModel}
     d::Int
     n_points::Int                 # 2d outer points times 6 Gates points
     w_point::Float64              # outer weight 1/(2d) times inner weight 1/6
@@ -25,7 +25,7 @@ struct UTParams
     nav_root::SVector{6,Float64}  # sqrt(d * normalized navigation variance)
     nav_var::SVector{6,Float64}
     tmax::Float64
-    mu::Float64
+    gravity::G
     ve::Float64
     sigma_nd::Float64
     jitter::Float64
@@ -48,7 +48,7 @@ function ut_params(case::CaseData, o::Options, n::Normalization)
     smoothing_sq = o.eigenvalue_smoothing == JAX_EIGENVALUE_SMOOTHING ? 1e-30 : o.eigenvalue_smoothing^2
     return UTParams(d, 2d * 6, unscented_weights(d)[2] * (1.0 / 6.0), 1.0 / d,
         n.scale, SVector{6}(sqrt.(max.(d .* nav_var, 0.0))), SVector{6}(nav_var),
-        case.tmax, case.mu, case.ve, acceleration_diffusion_nd(case, o), o.cholesky_jitter,
+        case.tmax, case.gravity, case.ve, acceleration_diffusion_nd(case, o), o.cholesky_jitter,
         o.gates_proportional_magnitude_std^2, o.gates_proportional_pointing_std^2,
         sqrt(Float64(d)), sqrt(3.0), psi_inverse(NU, o.violation_parameter),
         o.control_norm_eps, o.spectral_radius_floor, smoothing_sq, 1.0 / o.bryson_sigma_factor^2,
@@ -171,7 +171,7 @@ function propagation_arc(p::UTParams, mean::AbstractVector, P::AbstractMatrix, f
             push!(executed, e)
             # delta = 0 keeps the reference's norm bitwise.
             magnitude = p.flow_sq == 0 ? norm(u) : sigma_mass_flow(p, u)
-            push!(propagated, rk_step(XMDS2RK9, states[i], u, magnitude, gdw, duration, p.mu, p.ve))
+            push!(propagated, rk_step(XMDS2RK9, states[i], u, magnitude, gdw, duration, p.gravity, p.ve))
         end
     end
     mean_next = sum(weights .* propagated)

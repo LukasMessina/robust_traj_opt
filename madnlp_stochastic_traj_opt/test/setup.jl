@@ -8,7 +8,7 @@ const C = CR3BPStochastic
 function truncated_setup(; arcs = 3, backend = nothing, options...)
     o = C.Options(; truncated_uniform_mesh_arcs = arcs, options...)
     case = C.case_data(o.case_id)
-    normalization = C.build_normalization(case)
+    normalization = C.build_normalization(case, o)
     p = C.ut_params(case, o, normalization)
     ref = C.load_reference(case, o)
     seed = C.build_initial_guess(case, o, normalization, p, ref)

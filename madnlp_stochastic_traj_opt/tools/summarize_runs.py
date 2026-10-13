@@ -1,6 +1,6 @@
 """Tabulate the diagnostics of every run of an execution mode into output/<mode>/summary.csv.
 
-    python madnlp_stochastic_traj_opt/tools/summarize_runs.py [cpu|gpu]    (default: both modes)
+    python madnlp_stochastic_traj_opt/tools/summarize_runs.py [cpu|gpu|hybrid]    (default: all modes)
 """
 
 import csv
@@ -9,7 +9,7 @@ import tomllib
 from pathlib import Path
 
 OUTPUT = Path(__file__).resolve().parents[1] / "output"
-MODES = ("cpu", "gpu")
+MODES = ("cpu", "gpu", "hybrid")
 COLUMNS = (
     ("case", ("case",)),
     ("status", ("madnlp_status",)),

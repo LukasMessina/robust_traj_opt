@@ -1,6 +1,6 @@
 # CR3BP stochastic trajectory optimization with ExaModels and MadNLP
 
-Julia port of [`../cr3bp_stochastic_traj_opt_jax.py`](../cr3bp_stochastic_traj_opt_jax.py). It
+Julia port of [`../stochastic_traj_opt_jax.py`](../stochastic_traj_opt_jax.py). It
 solves the same chance-constrained covariance-steering NLP with the same methodology:
 
 - the same normalization and nondimensionalization;
@@ -10,14 +10,23 @@ solves the same chance-constrained covariance-steering NLP with the same methodo
 - the same decision variables (56N + 28) and constraints (36N + 34).
 
 The model is built with ExaModels and solved by MadNLP with **exact Hessians only**, in
-one of two execution modes:
+one of three execution modes:
 
 | Mode | KKT system and linear solver | Equality constraints |
 |---|---|---|
 | `cpu` (default) | `SparseKKTSystem` + MUMPS | exact |
-| `gpu` | `SparseCondensedKKTSystem` (Lifted-KKT) + cuDSS LDL on a CUDA device | relaxed by `bound_relax_factor` = `--condensed-relaxation` (default `tol`/10) |
+| `gpu` | `SparseCondensedKKTSystem` (Lifted-KKT) + cuDSS LDL on a CUDA device | relaxed by `bound_relax_factor` = `--condensed-relaxation` (default `tol`/100) |
+| `hybrid` | `HybridKKT.HybridCondensedKKTSystem` (HyKKT) + cuDSS LDL on a CUDA device | exact: `K + γ GᵀG` is factorized and the equality multipliers come from a CG solve on its Schur complement; `γ` = `--hybrid-gamma` (default 1000) |
 
-Both modes build the same model; only the array backend, the kernel layout (see
+`hybrid` follows the HybridKKT setting of the MadNLP GPU tutorial
+(<https://madsuite.org/MadNLP.jl/stable/tutorials/gpu/>) and the HybridKKT README
+(<https://github.com/MadNLP/HybridKKT.jl>): `EnforceEquality`, `MakeParameter`, cuDSS with
+LDL, and `γ` set on the KKT system before the solve; bounds are exact, as in `cpu` mode.
+HybridKKT is not in the General registry: `Project.toml` pins it to its GitHub repository
+(`[sources]`, version 0.4.0), and it is loaded only in `hybrid` mode. The diagnostics report
+the effective `γ` and the CG statistics (`settings.hybrid_*`).
+
+All modes build the same model; only the array backend, the kernel layout (see
 [Kernels](#kernels)) and the linear algebra differ. CPU and GPU evaluations agree to
 rounding (about 1e-12 relative, `test/gpu_tests.jl`). The energy-optimal seed is always
 solved on the CPU.
@@ -39,6 +48,9 @@ julia --project=madnlp_stochastic_traj_opt --threads=auto madnlp_stochastic_traj
 # GPU (condensed KKT system)
 julia --project=madnlp_stochastic_traj_opt --threads=auto madnlp_stochastic_traj_opt/run.jl --mode=gpu --case=all
 
+# GPU (HybridKKT, exact equalities)
+julia --project=madnlp_stochastic_traj_opt --threads=auto madnlp_stochastic_traj_opt/run.jl --mode=hybrid --case=earth_mars --hybrid-gamma=1e3
+
 # Monte Carlo validation and figures with the reference code (Python, JAX on the CPU)
 python madnlp_stochastic_traj_opt/tools/validate.py cpu
 python madnlp_stochastic_traj_opt/tools/validate.py gpu --case=nrho_l2_to_dro
@@ -50,7 +62,7 @@ GPU process at a time: two processes oversubscribe the device and WDDM paging st
 
 ## Outputs
 
-Every file of a run goes to `output/<mode>/<case>/` (`<mode>` is `cpu` or `gpu`); a new
+Every file of a run goes to `output/<mode>/<case>/` (`<mode>` is `cpu`, `gpu` or `hybrid`); a new
 run of the same case and mode replaces it.
 
 | File | Content |
@@ -87,16 +99,18 @@ accepts a solution only when SNOPT succeeds **and** every original residual is a
 The process exit status is 1 when a run does not end with `SOLVE_SUCCEEDED` or breaks
 the restoration requirement. In `gpu` mode the equalities are relaxed by
 `bound_relax_factor`, so their residuals end near that value and `converged` is
-normally `no`.
+normally `no`. `hybrid` mode enforces the equalities exactly, like `cpu`.
 
 ## Defaults
 
 Problem data are the JAX defaults. These robustification settings differ from the
-reference and are the same in both modes:
+reference and are the same in every mode:
 
 | Setting | Default | JAX reference |
 |---|---|---|
-| control norm ε in `sqrt(‖S‖² + ε²)` (seed and stochastic solves) | 1e-6 | 1e-6 |
+| control norm ε in `sqrt(‖S‖² + ε²)` (seed and stochastic solves) | 1e-5 | 1e-5 |
+| box bound on the scaled feedback gains, `|K̂| ≤ B` (`--gain-bound`, `Inf` disables) | 20 | 20 |
+| weight `w` of `tr(T)` (control covariance) in the cost and TVLQR seed `R~ = w I` (`--control-covariance-weight`) | CR3BP 1, Earth–Mars 1000 | CR3BP 1, Earth–Mars 1000 |
 | sigma-point mass flow `T_max·sqrt(‖e‖² + δ²)` | δ = ε | δ = 0 (plain ‖u‖) |
 | eigenvalue smoothing `s` in `p = sqrt(p2/6 + s²)` | 1e-6 | 1e-15 (literal 1e-30 for s²) |
 | spectral radius floor `f` in `sqrt(λ_max + f²)` | 1e-6 | 1e-7 |
@@ -109,10 +123,11 @@ Solver settings of the stochastic solve:
 | `tol` = `acceptable_tol` | 1e-6 (SNOPT reference: optimality 1e-6, feasibility 1e-8) |
 | `max_iter` | 5000 |
 | `alpha_min_frac` | 0.05 |
-| barrier | monotone, μ from 0.1 down to 1e-8 |
+| barrier | monotone, μ from 0.1 down to 1e-10 |
 | consecutive restoration limit | none (the ≤ 5 requirement is still checked) |
-| `gpu`: `bound_relax_factor` | `tol`/10 = 1e-7 |
-| `cpu`: `bound_relax_factor` | 0 (exact bounds) |
+| `gpu`: `bound_relax_factor` | `tol`/100 = 1e-8 |
+| `cpu`, `hybrid`: `bound_relax_factor` | 0 (exact bounds) |
+| `hybrid`: `γ` | 1000 (HybridKKT default) |
 
 The energy-optimal seed is solved with `tol` = 1e-8, exact equalities and MUMPS.
 
@@ -157,7 +172,7 @@ eigenvalue formula.
 
 ## Method
 
-| JAX (`cr3bp_stochastic_traj_opt_jax.py`) | Julia (`src/`) |
+| JAX (`stochastic_traj_opt_jax.py`) | Julia (`src/`) |
 |---|---|
 | `load_ref_traj`, `_build_uniform_ref_traj` (incl. `np.linspace`, `np.interp`) | `reference.jl` |
 | `reoptimize_reference_trajectory` (Dopri8 shooting, SNOPT) | `nominal.jl` (MadNLP/MUMPS) |
@@ -249,5 +264,5 @@ tools/
   oracle_snapshot.jl         bitwise regression check of the NLP evaluations
   profile_oracles.jl         timing of the oracle callbacks and model evaluations
   export_reference_data.py   regenerate src/generated/ from the Python sources
-output/cpu/<case>/  output/gpu/<case>/
+output/cpu/<case>/  output/gpu/<case>/  output/hybrid/<case>/
 ```

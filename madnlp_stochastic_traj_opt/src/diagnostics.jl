@@ -68,7 +68,8 @@ function evaluate_solution(case::CaseData, o::Options, ref::ReferenceTraj, sol::
     control_term = [tr(sol.control_covariances[:, :, k]) for k in 1:n]
     ratio = eigvals(Symmetric(target))
     return Dict{String,Any}(
-        "objective" => sum(norms) + sum(state_term) + sum(control_term),
+        # weighted like the NLP cost; the components below are the physical (unweighted) terms
+        "objective" => sum(norms) + sum(state_term) + o.control_covariance_weight * sum(control_term),
         "objective_mean_control" => sum(ref.steps .* norms),
         "objective_state_covariance" => sum(ref.steps .* state_term),
         "objective_control_covariance" => sum(ref.steps .* control_term),

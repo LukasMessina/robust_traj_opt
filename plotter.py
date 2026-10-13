@@ -349,6 +349,33 @@ class Plotter:
         ax.set_ylabel(self.AXIS_LABELS[axis_1])
         self._style_2d_axis(ax, equal_axis=True, tick_size=self.PROJECTION_TICK_SIZE)
 
+    def _square_projection_panels(self, fig, axes, gap: float = 0.85) -> None:
+        """Redraw side-by-side projection panels as congruent squares.
+
+        The side of every square is the height of the left panel after
+        tight_layout. Each panel's data limits are widened about their centre to
+        a common span, so the equal aspect fills the whole square; ``gap`` [in]
+        leaves room for the next panel's y tick labels and axis label.
+        """
+        fig.canvas.draw()
+        fig_w, fig_h = fig.get_size_inches()
+        reference = axes[0].get_position()
+        side = reference.height * fig_h
+        left = reference.x0 * fig_w
+        bottom = reference.y0 * fig_h
+        width = left + len(axes) * side + (len(axes) - 1) * gap + 0.15
+        fig.set_size_inches(width, fig_h)
+        for index, ax in enumerate(axes):
+            x_low, x_high = ax.get_xlim()
+            y_low, y_high = ax.get_ylim()
+            half_span = 0.5 * max(x_high - x_low, y_high - y_low)
+            x_mid, y_mid = 0.5 * (x_low + x_high), 0.5 * (y_low + y_high)
+            ax.set_xlim(x_mid - half_span, x_mid + half_span)
+            ax.set_ylim(y_mid - half_span, y_mid + half_span)
+            ax.set_aspect("equal", adjustable="box")
+            ax.set_position([(left + index * (side + gap)) / width, bottom / fig_h,
+                             side / width, side / fig_h])
+
     def plot_traj_projection(
         self,
         case: Any,
@@ -400,6 +427,8 @@ class Plotter:
             borderpad=0.35,
         )
         fig.tight_layout(rect=(0.0, 0.0, 1.0, layout_top))
+        if not is_single_projection:
+            self._square_projection_panels(fig, axes_array)
         suffix = self.PROJECTION_SUFFIXES[axes_to_plot[0]] if len(axes_to_plot) == 1 else "projections"
         output_path = self._path(suffix)
         fig.savefig(output_path, dpi=self.FIGURE_DPI, bbox_inches="tight")
@@ -463,10 +492,10 @@ class Plotter:
             label="Thrust direction",
         )
 
-    def _plot_trajectory_projections_3d(self, ax, x_dense: np.ndarray) -> None:
+    def _plot_trajectory_projections_3d(self, ax, x_dense: np.ndarray, *, xz_far_side: bool = False) -> None:
         """Project only the transfer trajectory onto the three visible box planes."""
         x_min = ax.get_xlim3d()[0]
-        y_min = ax.get_ylim3d()[0]
+        y_min = ax.get_ylim3d()[1 if xz_far_side else 0]
         z_min = ax.get_zlim3d()[0]
         projection_style = {
             "color": self.GREY,
@@ -562,6 +591,128 @@ class Plotter:
         fig.savefig(output_path, dpi=self.FIGURE_DPI, bbox_inches="tight")
         plt.close(fig)
         return output_path
+
+    SUN_COLOR = "#f4d03f"
+    EARTH_COLOR = "#0088ab"
+    MARS_COLOR = "#c65d3b"
+
+    def _heliocentric_tracks(self, case):
+        for key, name, color in (("earth_track_si", "Earth", self.EARTH_COLOR),
+                                 ("mars_track_si", "Mars", self.MARS_COLOR)):
+            yield np.asarray(case.ephemeris[key])[:3] / (case.length_unit * 1000.0), name, color
+
+    def _heliocentric_arrows(self, case, time_days, states, controls):
+        indices = np.searchsorted(time_days, np.linspace(time_days[0], time_days[-1], 45))
+        active = np.linalg.norm(controls[:, indices], axis=0) > 0.03 * case.max_thrust_nd
+        indices = indices[active]
+        return states[:3, indices], 0.25 * controls[:, indices] / case.max_thrust_nd
+
+    def _heliocentric_legend(self, fig, ax, *, gap=0.02):
+        # Anchor just above the rendered axes, including ticks and labels.
+        fig.canvas.draw()
+        axes_top = ax.get_tightbbox(fig.canvas.get_renderer()).transformed(fig.transFigure.inverted()).y1
+        self._figure_legend(fig, [ax], loc="lower center", bbox_to_anchor=(0.5, axes_top + gap), ncol=3,
+                     fontsize=7.4,
+                     frameon=True, fancybox=False, edgecolor=self.BLACK,
+                     facecolor="white", framealpha=1.0, columnspacing=1.0,
+                     handlelength=1.7, borderpad=0.35)
+
+    def plot_heliocentric_transfer(self, case, time_days: np.ndarray, states: np.ndarray, controls: np.ndarray) -> Path:
+        """Sun-centered J2000 x-y projection, using CR3BP marker/legend styles."""
+        fig, ax = plt.subplots(figsize=self.SINGLE_FIGSIZE, dpi=self.FIGURE_DPI)
+        for track, name, color in self._heliocentric_tracks(case):
+            ax.plot(track[0], track[1], "--", color=color, lw=self.REFERENCE_LINE_WIDTH,
+                    label=f"{name} orbit", zorder=3)
+        ax.plot(states[0], states[1], color=self.TRAJECTORY_COLOR,
+                lw=self.TRAJECTORY_LINE_WIDTH, label="Transfer", zorder=4)
+        for position, name, color in ((np.zeros(3), "Sun", self.SUN_COLOR),
+                                      (states[:3, 0], "Earth", self.EARTH_COLOR),
+                                      (states[:3, -1], "Mars", self.MARS_COLOR)):
+            ax.scatter(position[0], position[1], marker="o", s=58 / 1.5**2 if name == "Sun" else 58 / 2.5**2, color=color,
+                       edgecolor=self.BLACK, linewidth=0.6, label=name, zorder=6)
+        points, arrows = self._heliocentric_arrows(case, time_days, states, controls)
+        ax.quiver(points[0], points[1], arrows[0], arrows[1],
+                  angles="xy", scale_units="xy", scale=1,
+                  color=self.THRUST_ARROW_3D_COLOR, width=0.0046,
+                  headwidth=3.0, headlength=3.8, alpha=0.82, zorder=5, label="Thrust")
+        ax.set_xlabel("x [AU]")
+        ax.set_ylabel("y [AU]")
+        self._style_2d_axis(ax, equal_axis=True)
+        ax.set_axisbelow(True)
+        ax.margins(0.12)
+        fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.76))
+        self._heliocentric_legend(fig, ax)
+        path = self._path("projections")
+        fig.savefig(path, dpi=self.FIGURE_DPI, bbox_inches="tight")
+        plt.close(fig)
+        return path
+
+    def plot_heliocentric_3d(self, case, time_days: np.ndarray, states: np.ndarray, controls: np.ndarray) -> Path:
+        """Match the CR3BP 3D axes and dashed gray wall projections."""
+        fig = plt.figure(figsize=self.THREE_D_FIGSIZE, dpi=self.FIGURE_DPI)
+        ax = fig.add_subplot(111, projection="3d", computed_zorder=False)
+        for track, name, color in self._heliocentric_tracks(case):
+            ax.plot(*track, "--", color=color, lw=self.REFERENCE_LINE_WIDTH,
+                    label=f"{name} orbit", zorder=3)
+        ax.plot(*states[:3], color=self.TRAJECTORY_COLOR,
+                lw=self.TRAJECTORY_LINE_WIDTH, label="Transfer", zorder=4)
+        points, arrows = self._heliocentric_arrows(case, time_days, states, controls)
+        ax.quiver(*points, *arrows, color=self.THRUST_ARROW_3D_COLOR,
+                  arrow_length_ratio=0.18, linewidths=0.75, alpha=0.82,
+                  label="Thrust", zorder=5)
+        for position, name, color in ((np.zeros(3), "Sun", self.SUN_COLOR),
+                                      (states[:3, 0], "Earth", self.EARTH_COLOR),
+                                      (states[:3, -1], "Mars", self.MARS_COLOR)):
+            ax.scatter(*position, marker="o", s=58 / 1.5**2 if name == "Sun" else 58 / 2.5**2, color=color, edgecolor=self.BLACK,
+                       linewidth=0.6, label=name, depthshade=False, zorder=6)
+        ax.set_xlabel("x [AU]")
+        ax.set_ylabel("y [AU]")
+        ax.set_zlabel("z [AU]")
+        self._style_3d_axis(ax)
+        # The CR3BP camera looks nearly edge-on to the heliocentric orbital
+        # plane; keep its styling but use an oblique view for this geometry.
+        ax.view_init(azim=-60, elev=30)
+        ax.tick_params(axis="z", which="major", pad=6.0)
+        ax.zaxis.labelpad = 8.0
+        ax.set_axisbelow(True)
+        self._set_axes_equal_3d(ax)
+        # Move the far XZ wall away from the transfer without changing its data.
+        y_lower, y_upper = ax.get_ylim3d()
+        ax.set_ylim3d(y_lower, y_upper + 0.10 * (y_upper - y_lower))
+        self._plot_trajectory_projections_3d(ax, states, xz_far_side=True)
+        fig.subplots_adjust(left=0.02, right=0.82, bottom=0.10, top=0.73)
+        self._heliocentric_legend(fig, ax, gap=0.003)
+        path = self._path("3d")
+        fig.savefig(path, dpi=self.FIGURE_DPI, bbox_inches="tight",
+                    bbox_extra_artists=(ax.xaxis.label, ax.yaxis.label, ax.zaxis.label, *fig.legends))
+        plt.close(fig)
+        return path
+
+    def plot_inertial_control(self, time_days: np.ndarray, thrust_n: np.ndarray, max_thrust_n: float) -> Path:
+        """Paper Fig. 1(b): J2000 thrust longitude, latitude and magnitude."""
+        norm = np.linalg.norm(thrust_n, axis=0)
+        alpha = np.degrees(np.arctan2(thrust_n[1], thrust_n[0]))
+        beta = np.degrees(np.arctan2(thrust_n[2], np.hypot(thrust_n[0], thrust_n[1])))
+        coast = norm <= 1e-6 * max_thrust_n
+        alpha[coast] = np.nan
+        beta[coast] = np.nan
+        fig, axes = plt.subplots(3, 1, sharex=True, figsize=(5.8, 6.0), dpi=self.FIGURE_DPI)
+        for ax, values, label in zip(axes, (alpha, beta, norm),
+                                      (r"$\alpha$ [deg]", r"$\beta$ [deg]", "thrust [N]")):
+            ax.plot(time_days, values, color=self.TRAJECTORY_COLOR, lw=self.TRAJECTORY_LINE_WIDTH)
+            ax.set_ylabel(label)
+            self._style_2d_axis(ax)
+        axes[-1].axhline(max_thrust_n, color=self.RED, ls=":", lw=self.GUIDE_LINE_WIDTH,
+                        label="Maximum thrust")
+        axes[-1].set_xlabel("time [days]")
+        axes[-1].set_xlim(0, time_days[-1])
+        self._legend(axes[-1], loc="best", frameon=True, fancybox=False,
+                     edgecolor=self.BLACK, facecolor="white", framealpha=1.0)
+        fig.tight_layout()
+        path = self._path("thrust")
+        fig.savefig(path, dpi=self.FIGURE_DPI, bbox_inches="tight")
+        plt.close(fig)
+        return path
 
     def plot_moon_distance_time_evolution(self, t_dense_days: np.ndarray, moon_distance_km: np.ndarray) -> Path:
         fig, ax = plt.subplots(figsize=self.SQUARE_DIAGNOSTIC_FIGSIZE, dpi=self.FIGURE_DPI)
@@ -812,7 +963,7 @@ class Plotter:
 
         primed_dimension = solution.gains.shape[2]
         units = np.array(
-            [case.length_unit * 1e3] * 3
+            [case.length_unit] * 3
             + [case.velocity_unit * 1e3] * 3,
             dtype=float,
         )
@@ -846,17 +997,17 @@ class Plotter:
         )
         target_covariance = np.diag(target_ratios * physical_scale**2)
         labels = (
-            r"$x$ [m]",
-            r"$y$ [m]",
-            r"$z$ [m]",
+            r"$x$ [km]",
+            r"$y$ [km]",
+            r"$z$ [km]",
             r"$\dot{x}$ [m/s]",
             r"$\dot{y}$ [m/s]",
             r"$\dot{z}$ [m/s]",
         )
         pdf_labels = (
-            r"PDF [$\mathrm{m}^{-1}$]",
-            r"PDF [$\mathrm{m}^{-1}$]",
-            r"PDF [$\mathrm{m}^{-1}$]",
+            r"PDF [$\mathrm{km}^{-1}$]",
+            r"PDF [$\mathrm{km}^{-1}$]",
+            r"PDF [$\mathrm{km}^{-1}$]",
             r"PDF [$\mathrm{s}\,\mathrm{m}^{-1}$]",
             r"PDF [$\mathrm{s}\,\mathrm{m}^{-1}$]",
             r"PDF [$\mathrm{s}\,\mathrm{m}^{-1}$]",
@@ -908,19 +1059,19 @@ class Plotter:
                     axis,
                     grid=True,
                     grid_which="major",
-                    tick_size=7.0,
-                    label_size=9.0,
+                    tick_size=12.0,
+                    label_size=15.0,
                 )
                 axis.tick_params(
                     axis="both", which="major", pad=2.0
                 )
                 axis.xaxis.set_major_locator(LinearLocator(3))
                 axis.xaxis.set_major_formatter(
-                    FormatStrFormatter("%.1e")
+                    FormatStrFormatter("%.3g")
                 )
                 axis.yaxis.set_major_locator(LinearLocator(3))
                 axis.yaxis.set_major_formatter(
-                    FormatStrFormatter("%.1e")
+                    FormatStrFormatter("%.3g")
                 )
 
                 if row == column:
@@ -943,7 +1094,7 @@ class Plotter:
                             predicted_covariance[row, row],
                         ),
                         color=self.RED,
-                        lw=1.1,
+                        lw=2.4,
                         label="Predicted distribution",
                     )
                     sample_line, = axis.plot(
@@ -954,7 +1105,7 @@ class Plotter:
                             sample_covariance[row, row],
                         ),
                         color=self.BLUE,
-                        lw=0.95,
+                        lw=2.2,
                         ls="--",
                         label="Sample distribution",
                     )
@@ -970,9 +1121,9 @@ class Plotter:
                         label="Target distribution",
                     )
                     axis.set_xlim(limits[row])
-                    axis.set_xlabel(labels[row], fontsize=8.0, labelpad=2.0)
+                    axis.set_xlabel(labels[row], fontsize=15.0, labelpad=3.0)
                     axis.set_ylabel(
-                        pdf_labels[row], fontsize=8.0, labelpad=2.0
+                        pdf_labels[row], fontsize=15.0, labelpad=3.0
                     )
                     # Put each density scale in the empty upper-triangle space
                     # to the right of its diagonal panel. This prevents its PDF
@@ -1039,15 +1190,15 @@ class Plotter:
                             center[row] + points[1],
                             color=color,
                             ls=linestyle,
-                            lw=0.95,
+                            lw=0.95 if color == self.GREEN else 2.2,
                         )
                     axis.set_xlim(limits[column])
                     axis.set_ylim(limits[row])
                     axis.set_xlabel(
-                        labels[column], fontsize=8.0, labelpad=2.0
+                        labels[column], fontsize=15.0, labelpad=3.0
                     )
                     axis.set_ylabel(
-                        labels[row], fontsize=8.0, labelpad=2.0
+                        labels[row], fontsize=15.0, labelpad=3.0
                     )
 
                 # Every diagonal density panel is self-contained, with visible
@@ -1074,15 +1225,17 @@ class Plotter:
                 edgecolor=self.BLACK,
                 facecolor="white",
                 framealpha=1.0,
-                fontsize=10.0,
+                fontsize=21.0,
+                handlelength=2.6,
+                borderpad=0.6,
             )
         figure.subplots_adjust(
             left=0.085,
-            right=0.985,
+            right=0.94,
             bottom=0.075,
-            top=0.94,
-            wspace=0.32,
-            hspace=0.32,
+            top=0.96,
+            wspace=0.42,
+            hspace=0.48,
         )
         output_path = self._path("terminal_distribution")
         figure.savefig(

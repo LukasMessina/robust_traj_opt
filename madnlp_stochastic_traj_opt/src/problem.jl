@@ -1,10 +1,10 @@
 # Case data and the normalization of the JAX script.
 
-"Case-dependent constants (exported bitwise from the Python case registry)."
-struct CaseData
+"Case-dependent constants (exported bitwise from the JAX script's `load_case`)."
+struct CaseData{G<:GravityModel}
     id::String
     display_name::String
-    mu::Float64
+    gravity::G                    # CR3BP mass parameter or heliocentric two-body problem
     length_unit::Float64
     time_unit::Float64
     velocity_unit::Float64
@@ -17,13 +17,15 @@ struct CaseData
     x0::SVector{7,Float64}        # x0_augmented_state
     xf::SVector{6,Float64}        # xf_state
     uniform_arcs::Int
+    reference_dir::String         # deterministic energy-optimal reference of the case
 end
 
 function case_data(case_id::AbstractString)
-    c = CASE_DATA[case_id]
-    return CaseData(c.id, c.display_name, c.mu, c.length_unit, c.time_unit, c.velocity_unit,
-        c.thrust_unit, c.m0_wet, c.max_thrust_nd, c.max_thrust_n, c.exhaust_velocity_nd,
-        c.tof_nd, SVector{7}(c.x0_augmented), SVector{6}(c.xf_state), c.uniform_arcs)
+    c = case_entry(case_id)
+    return CaseData(c.id, c.display_name, gravity_model(c.dynamics, c.mu), c.length_unit, c.time_unit,
+        c.velocity_unit, c.thrust_unit, c.m0_wet, c.max_thrust_nd, c.max_thrust_n, c.exhaust_velocity_nd,
+        c.tof_nd, SVector{7}(c.x0_augmented), SVector{6}(c.xf_state), c.uniform_arcs,
+        joinpath(REPOSITORY_ROOT, c.reference_dir))
 end
 
 """
@@ -35,11 +37,11 @@ struct Normalization
     initial_std::SVector{7,Float64}
 end
 
-function build_normalization(case::CaseData)
-    pv = [fill(INITIAL_POSITION_STD_KM / case.length_unit, 3);
-          fill(INITIAL_VELOCITY_STD_KM_S / case.velocity_unit, 3)]
-    return Normalization(SVector{7}([pv; MASS_SCALE / case.m0_wet]),
-                         SVector{7}([pv; INITIAL_MASS_STD / case.m0_wet]))
+function build_normalization(case::CaseData, o::Options)
+    pv = [fill(o.initial_position_std_km / case.length_unit, 3);
+          fill(o.initial_velocity_std_km_s / case.velocity_unit, 3)]
+    return Normalization(SVector{7}([pv; o.mass_scale_kg / case.m0_wet]),
+                         SVector{7}([pv; o.initial_mass_std_kg / case.m0_wet]))
 end
 
 initial_covariance(n::Normalization) = Matrix(Diagonal(Vector((n.initial_std ./ n.scale) .^ 2)))

@@ -4,12 +4,16 @@ CUDSS = "45b445bb-4962-46a0-9369-b4df9d0f772e"
 Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
 ExaModels = "1037b233-b668-4ce9-9b63-f9f681f55dd2"
 ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
+HybridKKT = "59d292e8-f99c-4495-a4cc-613f4397570f"
 KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
 MadNLP = "2621e9c9-9eb4-46b1-8089-e8c72242dfb6"
 MadNLPGPU = "d72a61cc-809d-412f-99be-fd81f4b8a598"
 NLPModels = "a4795742-8479-5a88-8948-cc11e1c8c1a6"
 NPZ = "15e1cf62-19b3-5cfa-8e77-841668bca605"
 StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+
+[sources]
+HybridKKT = {rev = "fc1751c1f3b2f41afaa7168659270c2d13168d79", url = "https://github.com/MadNLP/HybridKKT.jl"}
 
 [compat]
 CUDA = "6"

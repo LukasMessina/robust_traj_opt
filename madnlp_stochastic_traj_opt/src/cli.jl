@@ -3,27 +3,36 @@ Usage: julia --project=madnlp_stochastic_traj_opt --threads=auto madnlp_stochast
 
   --mode=cpu|gpu                    cpu: sparse KKT system + MUMPS (default)
                                     gpu: condensed KKT system + cuDSS on a CUDA device
-  --case=lyapunov_l1_to_l2|nrho_l2_to_dro|halo_l2_to_halo_l1|all   (default lyapunov_l1_to_l2)
+  --case=lyapunov_l1_to_l2|nrho_l2_to_dro|halo_l2_to_halo_l1|earth_mars|cr3bp|all
+                                    (default lyapunov_l1_to_l2; cr3bp: the three CR3BP cases)
   --quiet                           no MadNLP iteration log on the terminal
+  --feasibility                     zero objective: only find a feasible point
+                                    (results in output/<mode>/<case>_feasibility/)
   --help
 
 Every result, log and diagnostic goes to output/<mode>/<case>/.
 
 Problem robustification (JAX reference values in brackets):
-  --control-norm-eps=1e-6           eps in ||S||_eps = sqrt(||S||^2 + eps^2), seed and stochastic solves [1e-6]
+  --control-norm-eps=1e-5           eps in ||S||_eps = sqrt(||S||^2 + eps^2), seed and stochastic solves [1e-5]
+  --gain-bound=20                   |K_hat| <= B on the scaled feedback gains, Inf disables [20]
+  --control-covariance-weight=100   factor of tr(control covariance) in the cost and TVLQR seed R [CR3BP 1, Earth-Mars 1000]
   --mass-flow-smoothing=D           delta in the sigma-point mass flow T_max sqrt(||e||^2 + delta^2)
                                     (default: --control-norm-eps) [0, the plain ||u||]
   --eigenvalue-smoothing=1e-6       s in p = sqrt(p2/6 + s^2), at most 1e-4 [1e-15]
   --spectral-radius-floor=1e-6      f in sqrt(lambda_max + f^2), at most 1e-4 [1e-7]
   --terminal-margin-floor=1e-5      terminal margin factor diagonal floor, 0 to 1e-4 [1e-4]
+  --chance-formulation=spectral|slack
+                                    thrust chance constraint: smoothed largest eigenvalue [spectral],
+                                    or tau with tau^2 I - T = G G' (Kumagai & Oguri 2025)
+  --chance-slack-floor=1e-4         slack: floor of the G diagonal (T_max units), at most 1e-2
 
 MadNLP, stochastic solve:
   --tol=1e-6  --acceptable-tol=TOL  --max-iter=5000  --alpha-min-frac=0.05
-  --barrier-mu-init=0.1  --barrier-mu-min=1e-8   (monotone barrier rule)
+  --barrier-mu-init=0.1  --barrier-mu-min=1e-10   (monotone barrier rule)
   --max-restoration=none|0..5       consecutive restoration limit (default none; the report
                                     always checks the <= 5 requirement)
   --condensed-relaxation=R          gpu: bound_relax_factor of the relaxed equalities
-                                    (default TOL/10, at most TOL)
+                                    (default TOL/100 = 1e-8 at the default TOL, at most TOL)
 """
 
 real_option(field) = (field, v -> parse(Float64, v))
@@ -31,10 +40,14 @@ real_option(field) = (field, v -> parse(Float64, v))
 const CLI_OPTIONS = Dict(
     "--mode" => (:execution_mode, Symbol),
     "--control-norm-eps" => real_option(:control_norm_eps),
+    "--gain-bound" => real_option(:gain_bound),
+    "--control-covariance-weight" => real_option(:control_covariance_weight),
     "--mass-flow-smoothing" => real_option(:mass_flow_smoothing),
     "--eigenvalue-smoothing" => real_option(:eigenvalue_smoothing),
     "--spectral-radius-floor" => real_option(:spectral_radius_floor),
     "--terminal-margin-floor" => real_option(:terminal_margin_floor),
+    "--chance-formulation" => (:chance_formulation, Symbol),
+    "--chance-slack-floor" => real_option(:chance_slack_floor),
     "--tol" => real_option(:tol),
     "--acceptable-tol" => real_option(:acceptable_tol),
     "--max-iter" => (:max_iter, v -> parse(Int, v)),
@@ -55,9 +68,11 @@ function parse_cli(args)
             print(CLI_HELP)
             return nothing
         elseif key == "--case" && !isempty(value)
-            cases = value == "all" ? collect(CASE_IDS) : [value]
+            cases = value == "all" ? collect(CASE_IDS) : value == "cr3bp" ? collect(CR3BP_CASE_IDS) : [value]
         elseif key == "--quiet"
             settings[:verbose] = false
+        elseif key == "--feasibility"
+            settings[:feasibility_only] = true
         elseif haskey(CLI_OPTIONS, key) && !isempty(value)
             field, parser = CLI_OPTIONS[key]
             settings[field] = parser(value)

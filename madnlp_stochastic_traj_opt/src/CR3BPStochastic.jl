@@ -1,7 +1,8 @@
 """
-CR3BP stochastic low-thrust trajectory optimization with ExaModels and MadNLP.
+CR3BP and heliocentric (Earth--Mars) stochastic low-thrust trajectory optimization
+with ExaModels and MadNLP.
 
-Julia port of `cr3bp_stochastic_traj_opt_jax.py`: the same normalized
+Julia port of `stochastic_traj_opt_jax.py`: the same normalized
 multiple-shooting NLP (node means, feedforward, gains, seed-scaled covariance
 Cholesky factors and the terminal margin factor), augmented unscented transform
 with navigation error, XMDS2 RK9 acceleration diffusion and nested Gates
@@ -39,8 +40,8 @@ include("generated/tableaux.jl")
 include("generated/cases.jl")
 include("options.jl")
 include("packing.jl")
-include("problem.jl")
 include("dynamics.jl")
+include("problem.jl")
 include("unscented.jl")
 include("reference.jl")
 include("initialization.jl")
@@ -50,7 +51,7 @@ include("oracles/dual_numbers.jl")
 include("nominal.jl")
 include("oracles/ut_moments.jl")
 include("oracles/chance.jl")
-include("model.jl")
+include("model.jl") 
 include("diagnostics.jl")
 include("solve.jl")
 include("output.jl")

@@ -17,7 +17,16 @@ function save_results(result)
         "restoration_requirement_met" => Int(report["restoration_requirement_met"]),
         "eigenvalue_smoothing" => o.eigenvalue_smoothing, "terminal_margin_floor" => o.terminal_margin_floor,
         "spectral_radius_floor" => o.spectral_radius_floor, "control_norm_eps" => o.control_norm_eps,
-        "mass_flow_smoothing" => o.mass_flow_smoothing,
+        "mass_flow_smoothing" => o.mass_flow_smoothing, "gain_bound" => o.gain_bound,
+        "control_covariance_weight" => o.control_covariance_weight,
+        "chance_slack" => Int(o.chance_formulation == :slack), "chance_slack_floor" => o.chance_slack_floor,
+        # problem data of the run (may differ from the JAX defaults; tools/validate.py reads them)
+        "initial_position_std_km" => o.initial_position_std_km, "initial_velocity_std_km_s" => o.initial_velocity_std_km_s,
+        "initial_mass_std_kg" => o.initial_mass_std_kg, "mass_scale_kg" => o.mass_scale_kg,
+        "position_covariance_reduction" => o.position_covariance_reduction,
+        "velocity_covariance_reduction" => o.velocity_covariance_reduction,
+        "navigation_position_std_km" => o.navigation_position_std_km,
+        "navigation_velocity_std_km_s" => o.navigation_velocity_std_km_s,
         # time grid and energy-optimal reference
         "node_times_nd" => ref.node_times, "node_days" => ref.node_times .* case.time_unit ./ 86400.0,
         "steps_nd" => ref.steps, "ref_states" => ref.states, "ref_controls" => ref.controls,
