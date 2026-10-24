@@ -1,0 +1,76 @@
+PSYCHE FIXED ARRIVAL TARGET: 1 AUGUST 2029, 12:00:00 UTC
+
+Verified prediction from a 2023 merged reference kernel; not reconstructed 2029 flight data.
+Target: spacecraft -255; origin: Sun 10; J2000; geometric NONE; SI units.
+Epoch: {'et_tdb_s': 933552069.1832606, 'utc': '2029-08-01T12:00:00.000000Z', 'tdb_calendar': '2029-08-01 12:01:09.183260'}
+Sun-relative [m, m/s]: [274725019857.04028, -278199235060.4656, -113367912753.97002, 12155.200587002737, 13349.754987911092, 4696.671351495263]
+Asteroid-relative context [m, m/s]: [597012.3286247253, 6424525.142431259, 5608108.096495271, 6.3661726011776665, -10.535330710142787, -13.082261456845323]
+Asteroid centre distance: 8548.790759414 km
+Asteroid-relative speed: 17.962931598 m/s
+
+KERNEL COVERAGE AND PROVENANCE
+Selected: psyche_ref_231013-311101_231016_v1_merged.bsp
+SHA256: ac66af58c0e02230e5f652ae323df64c784dc1d4bd242f65fc5aa467779d3958
+Binary spacecraft coverage: [{'start': {'et_tdb_s': 750483837.872274, 'utc': '2023-10-13T15:42:48.689916Z', 'tdb_calendar': '2023-10-13 15:43:57.872274'}, 'end': {'et_tdb_s': 1004529988.18554, 'utc': '2031-11-01T00:05:19.003032Z', 'tdb_calendar': '2031-11-01 00:06:28.185539'}}]
+Selected segment: {'file': 'C:\\Users\\lukas\\OneDrive\\Desktop\\MIT\\Code\\data\\jpl_kernels\\psyche_ref_231013-311101_231016_v1_merged.bsp', 'target': -255, 'centre': 10, 'frame_id': 1, 'spk_type': 13, 'identifier': 'mystic', 'start': {'et_tdb_s': 933536653.234281, 'utc': '2029-08-01T07:43:04.051016Z', 'tdb_calendar': '2029-08-01 07:44:13.234280'}, 'end': {'et_tdb_s': 933572982.971779, 'utc': '2029-08-01T17:48:33.788525Z', 'tdb_calendar': '2029-08-01 17:49:42.971778'}}
+Arrival source piece: psyche_ref_231005-290817_230322_v1_SUNcenter.bsp
+Audited reference labels: 38
+Label-covered candidates: ['psyche_ref_231013-311101_231016_v1_merged.bsp']
+Newest reference binary: psyche_ref_261102-290224_261007_v1.bsp
+Newest reference coverage: [{'start': {'et_tdb_s': 846907869.182533, 'utc': '2026-11-02T16:10:00.000000Z', 'tdb_calendar': '2026-11-02 16:11:09.182533'}, 'end': {'et_tdb_s': 919940661.9417, 'utc': '2029-02-24T23:03:12.756387Z', 'tdb_calendar': '2029-02-24 23:04:21.941699'}}]
+No extrapolation or stitching from an uncovered newer reference was attempted.
+
+DATE CONSISTENCY
+MSc thesis, MIS-REQ-01, printed p.15 / PDF p.33: Defines the fixed arrival boundary as 1 August 2029, 12:00:00 UTC.
+NASA/JPL Psyche mission press kit: Plans capture around late July 2029 and science operations beginning in August; no exact 1 August noon UTC capture epoch.
+NASA mission update, 22 October 2026: Still describes rendezvous by summer 2029, without an exact arrival day or time.
+Ermakov (2026), Interrogating 16 Psyche's Interior with Rotational Dynamics and Gravity Field, PSJ 7, 170: Uses 1 August 2029, 12:00:00 TDB as the pole-deviation analysis reference epoch, approximating the science-phase start. This is not an exact capture event and its time scale differs from the thesis.
+Polanskey et al. (2025), Psyche Mission Description and Design Rationale: Table 9 gives 17 August 2029 as the changeable Orbit A planning start, consistent with the old reference's Orbit A piece. Capture occurs during normal electric-thrust approach rather than as a separate targeted capture maneuver.
+NAIF Psyche SPK archive: Archive snapshot and all reference-SPK labels audited; selected merged and newest reference binaries inspected directly.
+UTC versus published TDB comparison: {'published_clock_time_scale': 'TDB', 'published_epoch': {'et_tdb_s': 933552000.0, 'utc': '2029-08-01T11:58:50.816739Z', 'tdb_calendar': '2029-08-01 12:00:00.000000'}, 'requested_utc_epoch_minus_published_epoch_s': 69.1832605600357, 'heliocentric_position_difference_m': 1290640.5249973277, 'velocity_difference_m_s': 0.05447659694683941, 'interpretation': 'Literature epoch is an approximate science reference date, not an exact mission event. User UTC boundary retained.'}
+The exact UTC boundary remains the thesis/user choice; no exact capture epoch is asserted.
+
+VALIDATION
+{
+  "spacecraft_and_asteroid_binary_coverage_verified": true,
+  "selected_segment_contains_epoch": true,
+  "tudat_vs_spiceypy_position_error_m": 0.0,
+  "tudat_vs_spiceypy_velocity_error_m_s": 0.0,
+  "translation_closure_position_error_m": 2.7340540756801803e-05,
+  "translation_closure_velocity_error_m_s": 4.627264660020084e-13,
+  "finite_difference_step_s": 10.0,
+  "dposition_dt_minus_velocity_m_s": 2.2582356184505314e-06,
+  "de440_addition_max_state_component_change": 0.0,
+  "utc_roundtrip_error_s": 0.0,
+  "latest_out_of_coverage_rejected": true,
+  "kernel_pools_cleared": true,
+  "meaning": "Numerical extraction checks only; not independent physical accuracy estimates. Both APIs use CSPICE.",
+  "passed": true
+}
+
+LIMITATIONS
+A future 2029 state is predicted, not reconstructed flight data.
+Only the old 2023 merged reference label covers this epoch among the 38 reference kernels in the inspected directory. Selected and newest binaries were verified; the other kernels were audited via labels only.
+The target combines an older arrival design with the reconstructed 2026 Mars boundary. Joint feasibility under the chosen four-phase model is not established.
+No primary source reviewed establishes 1 August 2029 at noon UTC as the exact physical capture or orbit-insertion event. It is retained as the user/thesis boundary.
+UTC-to-ET conversion uses naif0012.tls; leap seconds announced before 2029 could change the ET associated with the fixed future UTC clock time. Recompute then.
+Asteroid gravity can matter near this endpoint. The requested final Sun-only phase is a modelling approximation; matching a state does not validate its force model.
+Numerical precision shown is not a claim of physical orbit accuracy. No covariance is available here.
+Validation track samples are separate from all dynamics-only initial guesses. No solar rollout or optimisation is performed in this stage.
+
+Artifacts: arrival_result.json and arrival_state.csv contain the fixed target.
+kernel_coverage_audit.json distinguishes sidecar-label checks from binary checks.
+Full segment metadata and original merged comments are retained separately.
+validation_only_arrival_track.npz and arrival_context.png/svg are reference diagnostics, not seeds.
+problem_definition.json records the hard target; OCP assembly remains pending.
+
+Reproduce in det_traj_opt_env: python -m psyche_reconstruction.arrival
+Plot with a matplotlib-capable Python: python -m psyche_reconstruction.plot_arrival
+
+Sources:
+C:/Users/lukas/Downloads/MSc_Thesis_Lukas_Messina_Final_Version (9).pdf
+https://www.jpl.nasa.gov/press-kits/psyche/mission/
+https://science.nasa.gov/blogs/psyche/2026/10/22/pedal-to-the-metal-nasas-psyche-heads-toward-asteroid-belt/
+https://doi.org/10.3847/PSJ/ae7f03
+https://pmc.ncbi.nlm.nih.gov/articles/PMC12521304/
+https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/

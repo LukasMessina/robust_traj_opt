@@ -1,0 +1,31 @@
+{
+  "verified": true,
+  "data_directory": "C:\\Users\\lukas\\OneDrive\\Desktop\\MIT\\Code\\psyche_mission_events_reconstruction\\artifacts",
+  "events": [
+    {
+      "event": "TIP",
+      "et_tdb_s": 750483103.1823578,
+      "state_exactly_reproduced": true,
+      "coverage_verified": true
+    },
+    {
+      "event": "Mars entry",
+      "et_tdb_s": 832017139.3590969,
+      "state_exactly_reproduced": true,
+      "coverage_verified": true
+    },
+    {
+      "event": "Asteroid arrival",
+      "et_tdb_s": 933552000.0,
+      "state_exactly_reproduced": true,
+      "coverage_verified": true
+    }
+  ],
+  "mars_soi_residual_m": 9.47713851928711e-05,
+  "tip_c3_km2_s2": 34.00229061369918,
+  "nominal_c3_km2_s2": 34.0,
+  "cache_sha256": "b315830a03c8ba2ea365d7b95d85f1a3f45bd5bee6a21a1dca9bfd6ae4953459",
+  "cache_interpolation": "natural cubic state-component splines",
+  "cache_step_s": 5400.0,
+  "qualification": "Numerical and provenance consistency; not an ephemeris uncertainty bound."
+}

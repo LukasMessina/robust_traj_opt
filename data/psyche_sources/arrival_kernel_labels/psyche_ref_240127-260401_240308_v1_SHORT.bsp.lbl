@@ -1,0 +1,33 @@
+ 
+; psyche_ref_240127-260401_240308_v1_SHORT.bsp LOG FILE
+ 
+; Created 2024-03-07/14:45:32.59.
+;
+; BEGIN SPKMERGE COMMANDS
+ 
+LEAPSECONDS_KERNEL   = /nav/psyche/import/leapsec/leapseconds.tls
+ 
+SPK_KERNEL           = psyche_ref_240127-260401_240308_v1_SHORT.bsp
+  SOURCE_SPK_KERNEL  = 240305_240127_lubey_noFutureThrust_newSFF.bsp
+    INCLUDE_COMMENTS = NO
+    BODIES           = -255
+    BEGIN_TIME       = 2024 JAN 27 12:00:00.000
+    END_TIME         = 2024 MAR 27 22:00:00.999
+  SOURCE_SPK_KERNEL  = psyche_ref_240327-290716_240307_v1.bsp
+    INCLUDE_COMMENTS = NO
+    BODIES           = -255
+    BEGIN_TIME       = 2024 MAR 27 22:00:01.000
+    END_TIME         = 2026 APR 01 11:58:50.814
+ 
+; END SPKMERGE COMMANDS
+ 
+ 
+BRIEF -- Version 4.1.0, September 17, 2021 -- Toolkit Version N0067
+ 
+ 
+Summary for: psyche_ref_240127-260401_240308_v1_SHORT.bsp
+ 
+Bodies     Start of Interval (ET)          End of Interval (ET)
+-------    -----------------------------   -----------------------------
+-255 PSYC  2024 JAN 27 12:01:09.184        2024 MAR 27 22:01:10.184
+           2024 MAR 27 22:01:10.185        2026 APR 01 12:00:00.000

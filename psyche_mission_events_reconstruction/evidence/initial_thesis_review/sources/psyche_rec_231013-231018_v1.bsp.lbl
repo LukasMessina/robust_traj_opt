@@ -1,0 +1,17 @@
+ 
+Created by Monte 166.1 on 2023/12/13 23:53 UTC.
+ 
+This SPK is a reconstruction of the Psyche spacecraft trajectory
+Produced by the Psyche Mission Design and Navigation team at the Jet Propulsion Laboratory
+ 
+Email contact: psyche.mdnav@jpl.nasa.gov
+ 
+ 
+BRIEF -- Version 4.1.0, September 17, 2021 -- Toolkit Version N0067
+ 
+ 
+Summary for: psyche_rec_231013-231018_v1.bsp
+ 
+Bodies     Start of Interval (ET)          End of Interval (ET)
+-------    -----------------------------   -----------------------------
+-255 PSYC  2023 OCT 13 15:22:57.139        2023 OCT 18 16:01:09.182

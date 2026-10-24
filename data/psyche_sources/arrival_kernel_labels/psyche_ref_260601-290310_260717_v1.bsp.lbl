@@ -1,0 +1,16 @@
+ 
+Created by Monte 176.1 on 2026/07/17 22:26 UTC.
+This SPK is a reference trajectory of the Psyche spacecraft for future planning purposes.
+At the time of this file's creation, its entire duration is in the future.
+Produced by the Psyche Mission Design and Navigation team at the Jet Propulsion Laboratory
+Email contact: psyche.mdnav@jpl.nasa.gov
+ 
+ 
+BRIEF -- Version 4.1.0, September 17, 2021 -- Toolkit Version N0067
+ 
+ 
+Summary for: psyche_ref_260601-290310_260717_v1.bsp
+ 
+Bodies     Start of Interval (ET)          End of Interval (ET)
+-------    -----------------------------   -----------------------------
+-255 PSYC  2026 JUN 01 23:08:15.184        2029 MAR 10 09:56:49.100

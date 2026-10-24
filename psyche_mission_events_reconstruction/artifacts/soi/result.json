@@ -1,0 +1,804 @@
+{
+  "status": "Fixed-a convention selected; events verified and both planetary coast seeds regenerated",
+  "earth": {
+    "body_id": 399,
+    "spacecraft_spk_metadata": {
+      "file": "psyche_rec_231013-231018_v1.bsp",
+      "coverage": {
+        "-255": [
+          {
+            "start": {
+              "et_tdb_s": 750482577.1393577,
+              "utc": "2023-10-13T15:21:47.957000Z",
+              "tdb_calendar": "2023-10-13 15:22:57.139357"
+            },
+            "end": {
+              "et_tdb_s": 750916869.182383,
+              "utc": "2023-10-18T16:00:00.000000Z",
+              "tdb_calendar": "2023-10-18 16:01:09.182382"
+            }
+          }
+        ]
+      },
+      "segments": [
+        {
+          "start": {
+            "et_tdb_s": 750482577.1393577,
+            "utc": "2023-10-13T15:21:47.957000Z",
+            "tdb_calendar": "2023-10-13 15:22:57.139357"
+          },
+          "end": {
+            "et_tdb_s": 750633520.0616113,
+            "utc": "2023-10-15T09:17:30.879246Z",
+            "tdb_calendar": "2023-10-15 09:18:40.061611"
+          },
+          "target": -255,
+          "centre": 399,
+          "frame_id": 1,
+          "frame": "J2000",
+          "spk_type": 1,
+          "identifier": "MONTE Difference Line Table"
+        },
+        {
+          "start": {
+            "et_tdb_s": 750633520.0616113,
+            "utc": "2023-10-15T09:17:30.879246Z",
+            "tdb_calendar": "2023-10-15 09:18:40.061611"
+          },
+          "end": {
+            "et_tdb_s": 750916869.182383,
+            "utc": "2023-10-18T16:00:00.000000Z",
+            "tdb_calendar": "2023-10-18 16:01:09.182382"
+          },
+          "target": -255,
+          "centre": 10,
+          "frame_id": 1,
+          "frame": "J2000",
+          "spk_type": 1,
+          "identifier": "MONTE Difference Line Table"
+        }
+      ],
+      "comments": "Created by Monte 166.1 on 2023/12/13 23:53 UTC.\n\nThis SPK is a reconstruction of the Psyche spacecraft trajectory\nProduced by the Psyche Mission Design and Navigation team at the Jet Propulsion Laboratory\n\nEmail contact: psyche.mdnav@jpl.nasa.gov"
+    },
+    "events": {
+      "fixed_a": [
+        {
+          "et_tdb_s": 750633519.6868194,
+          "residual_m": 0.00025069713592529297,
+          "initial_bracket_et_tdb_s": [
+            750633477.1393577,
+            750633520.0616113
+          ],
+          "bisection_bracket_et_tdb_s": [
+            750633519.6868193,
+            750633519.6868197
+          ],
+          "bisection_width_s": 3.5762786865234375e-07,
+          "brent_iterations": 7,
+          "absolute_epoch_ulp_s": 1.1920928955078125e-07,
+          "direction": "exit",
+          "crossing_rate_m_s": 5898.738623703045,
+          "soi_radius_m": 924646789.2005551,
+          "planet_relative_state_si": [
+            -315432519.6800681,
+            754408197.8565383,
+            431673813.56122714,
+            -2091.2497072303054,
+            4769.725204480878,
+            2771.2632338235094
+          ],
+          "planet_sun_state_si": [
+            138876557520.77682,
+            50029586799.82914,
+            21686228093.663403,
+            -11378.365489666028,
+            25346.82083466309,
+            10988.8265824416
+          ],
+          "epoch": {
+            "et_tdb_s": 750633519.6868194,
+            "utc": "2023-10-15T09:17:30.504454Z",
+            "tdb_calendar": "2023-10-15 09:18:39.686819"
+          },
+          "coarse_fine_epoch_difference_s": 0.0,
+          "selected_spacecraft_segment": {
+            "file": "C:\\Users\\lukas\\OneDrive\\Desktop\\MIT\\Code\\data\\jpl_kernels\\psyche_rec_231013-231018_v1.bsp",
+            "target": -255,
+            "centre": 399,
+            "frame_id": 1,
+            "spk_type": 1,
+            "identifier": "MONTE Difference Line Table"
+          },
+          "sun_relative_state_si": [
+            138561125001.09674,
+            50783994997.68568,
+            22117901907.22463,
+            -13469.615196896331,
+            30116.54603914397,
+            13760.089816265106
+          ],
+          "cached_sun_relative_link_state_si": [
+            138561125001.09634,
+            50783994997.68556,
+            22117901907.22458,
+            -13469.615196896313,
+            30116.546039143486,
+            13760.089816264854
+          ],
+          "residual_one_second_before_m": -5898.738619565964,
+          "residual_one_second_after_m": 5898.74022424221,
+          "tudat_vs_raw_position_m": 0.0,
+          "tudat_vs_raw_velocity_m_s": 0.0,
+          "cache_planet_position_difference_m": 0.0004450788941342399,
+          "event_minus_nearest_segment_join_s": -0.37479186058044434
+        }
+      ],
+      "instantaneous_distance": [
+        {
+          "et_tdb_s": 750633100.5880662,
+          "residual_m": -0.00020563602447509766,
+          "initial_bracket_et_tdb_s": [
+            750632877.1393577,
+            750633177.1393577
+          ],
+          "bisection_bracket_et_tdb_s": [
+            750633100.5880661,
+            750633100.5880663
+          ],
+          "bisection_width_s": 2.384185791015625e-07,
+          "brent_iterations": 8,
+          "absolute_epoch_ulp_s": 1.1920928955078125e-07,
+          "direction": "exit",
+          "crossing_rate_m_s": 5902.002809231842,
+          "soi_radius_m": 922174591.8059719,
+          "planet_relative_state_si": [
+            -314556061.7714141,
+            752409176.8279039,
+            430512360.33376086,
+            -2091.3345332319836,
+            4769.893048249403,
+            2771.360003073572
+          ],
+          "planet_sun_state_si": [
+            138881325689.77673,
+            50018963802.057335,
+            21681622613.501945,
+            -11376.028126165278,
+            25347.664336822512,
+            10989.192312510839
+          ],
+          "epoch": {
+            "et_tdb_s": 750633100.5880662,
+            "utc": "2023-10-15T09:10:31.405701Z",
+            "tdb_calendar": "2023-10-15 09:11:40.588066"
+          },
+          "coarse_fine_epoch_difference_s": 0.0,
+          "selected_spacecraft_segment": {
+            "file": "C:\\Users\\lukas\\OneDrive\\Desktop\\MIT\\Code\\data\\jpl_kernels\\psyche_rec_231013-231018_v1.bsp",
+            "target": -255,
+            "centre": 399,
+            "frame_id": 1,
+            "spk_type": 1,
+            "identifier": "MONTE Difference Line Table"
+          },
+          "sun_relative_state_si": [
+            138566769628.00534,
+            50771372978.88523,
+            22112134973.83571,
+            -13467.362659397262,
+            30117.557385071916,
+            13760.552315584413
+          ],
+          "cached_sun_relative_link_state_si": [
+            138566769628.00513,
+            50771372978.88518,
+            22112134973.835682,
+            -13467.362659397251,
+            30117.55738507169,
+            13760.552315584293
+          ],
+          "residual_one_second_before_m": -5902.003262519836,
+          "residual_one_second_after_m": 5902.002355694771,
+          "tudat_vs_raw_position_m": 0.0,
+          "tudat_vs_raw_velocity_m_s": 0.0,
+          "cache_planet_position_difference_m": 0.0001943624756295318,
+          "event_minus_nearest_segment_join_s": -419.4735450744629
+        }
+      ],
+      "fixed_EMB_coefficient_sensitivity": [
+        {
+          "et_tdb_s": 750633520.0959452,
+          "residual_m": -0.00014662742614746094,
+          "initial_bracket_et_tdb_s": [
+            750633520.0616113,
+            750633777.1393577
+          ],
+          "bisection_bracket_et_tdb_s": [
+            750633520.0959449,
+            750633520.0959454
+          ],
+          "bisection_width_s": 4.76837158203125e-07,
+          "brent_iterations": 5,
+          "absolute_epoch_ulp_s": 1.1920928955078125e-07,
+          "direction": "exit",
+          "crossing_rate_m_s": 5898.738421882291,
+          "soi_radius_m": 924649202.5286747,
+          "planet_relative_state_si": [
+            -315433375.26485324,
+            754410149.2755189,
+            431674947.35709953,
+            -2091.2496245862185,
+            4769.725041044491,
+            2771.263139591207
+          ],
+          "planet_sun_state_si": [
+            138876552865.5934,
+            50029597169.867455,
+            21686232589.47585,
+            -11378.367771372099,
+            25346.820011138996,
+            10988.82622537304
+          ],
+          "epoch": {
+            "et_tdb_s": 750633520.0959452,
+            "utc": "2023-10-15T09:17:30.913580Z",
+            "tdb_calendar": "2023-10-15 09:18:40.095945"
+          },
+          "coarse_fine_epoch_difference_s": 0.0,
+          "selected_spacecraft_segment": {
+            "file": "C:\\Users\\lukas\\OneDrive\\Desktop\\MIT\\Code\\data\\jpl_kernels\\psyche_rec_231013-231018_v1.bsp",
+            "target": -255,
+            "centre": 10,
+            "frame_id": 1,
+            "spk_type": 1,
+            "identifier": "MONTE Difference Line Table"
+          },
+          "sun_relative_state_si": [
+            138561119490.32855,
+            50784007319.142975,
+            22117907536.832947,
+            -13469.617395958318,
+            30116.545052183486,
+            13760.089364964248
+          ],
+          "cached_sun_relative_link_state_si": [
+            138561119490.32816,
+            50784007319.14286,
+            22117907536.83291,
+            -13469.6173959583,
+            30116.545052183006,
+            13760.089364963995
+          ],
+          "residual_one_second_before_m": -5898.740391373634,
+          "residual_one_second_after_m": 5898.738038659096,
+          "tudat_vs_raw_position_m": 0.0,
+          "tudat_vs_raw_velocity_m_s": 0.0,
+          "cache_planet_position_difference_m": 0.00041503134888605514,
+          "event_minus_nearest_segment_join_s": 0.03433394432067871
+        }
+      ]
+    },
+    "origin_transitions": [
+      {
+        "epoch": {
+          "et_tdb_s": 750633520.0616113,
+          "utc": "2023-10-15T09:17:30.879246Z",
+          "tdb_calendar": "2023-10-15 09:18:40.061611"
+        },
+        "origin_before": 399,
+        "origin_after": 10,
+        "extrapolated_position_gap_m": 0.0014759474727443261,
+        "extrapolated_velocity_gap_m_s": 3.186718108528214e-10,
+        "check_step_s": 0.01
+      }
+    ],
+    "closest_approach_reference_only": null,
+    "coverage_checked": true,
+    "mu_m3_s2": {
+      "399": 398600435507022.6,
+      "10": 1.3271244004127939e+20
+    }
+  },
+  "mars": {
+    "body_id": 499,
+    "spacecraft_spk_metadata": {
+      "file": "psyche_rec_260501-260713_260804_v1.bsp",
+      "coverage": {
+        "-255": [
+          {
+            "start": {
+              "et_tdb_s": 830952068.1854712,
+              "utc": "2026-05-01T23:59:59.000000Z",
+              "tdb_calendar": "2026-05-02 00:01:08.185471"
+            },
+            "end": {
+              "et_tdb_s": 837254469.1837611,
+              "utc": "2026-07-13T22:40:00.000000Z",
+              "tdb_calendar": "2026-07-13 22:41:09.183761"
+            }
+          }
+        ]
+      },
+      "segments": [
+        {
+          "start": {
+            "et_tdb_s": 830952068.1854712,
+            "utc": "2026-05-01T23:59:59.000000Z",
+            "tdb_calendar": "2026-05-02 00:01:08.185471"
+          },
+          "end": {
+            "et_tdb_s": 832017140.9724041,
+            "utc": "2026-05-14T07:51:11.787124Z",
+            "tdb_calendar": "2026-05-14 07:52:20.972404"
+          },
+          "target": -255,
+          "centre": 10,
+          "frame_id": 1,
+          "frame": "J2000",
+          "spk_type": 1,
+          "identifier": "MONTE Difference Line Table"
+        },
+        {
+          "start": {
+            "et_tdb_s": 832017140.9724041,
+            "utc": "2026-05-14T07:51:11.787124Z",
+            "tdb_calendar": "2026-05-14 07:52:20.972404"
+          },
+          "end": {
+            "et_tdb_s": 832273567.3695002,
+            "utc": "2026-05-17T07:04:58.184275Z",
+            "tdb_calendar": "2026-05-17 07:06:07.369500"
+          },
+          "target": -255,
+          "centre": 4,
+          "frame_id": 1,
+          "frame": "J2000",
+          "spk_type": 1,
+          "identifier": "MONTE Difference Line Table"
+        },
+        {
+          "start": {
+            "et_tdb_s": 832273567.3695002,
+            "utc": "2026-05-17T07:04:58.184275Z",
+            "tdb_calendar": "2026-05-17 07:06:07.369500"
+          },
+          "end": {
+            "et_tdb_s": 836565684.610599,
+            "utc": "2026-07-05T23:20:15.426615Z",
+            "tdb_calendar": "2026-07-05 23:21:24.610599"
+          },
+          "target": -255,
+          "centre": 10,
+          "frame_id": 1,
+          "frame": "J2000",
+          "spk_type": 1,
+          "identifier": "MONTE Difference Line Table"
+        },
+        {
+          "start": {
+            "et_tdb_s": 836565684.610599,
+            "utc": "2026-07-05T23:20:15.426615Z",
+            "tdb_calendar": "2026-07-05 23:21:24.610599"
+          },
+          "end": {
+            "et_tdb_s": 837254469.1837611,
+            "utc": "2026-07-13T22:40:00.000000Z",
+            "tdb_calendar": "2026-07-13 22:41:09.183761"
+          },
+          "target": -255,
+          "centre": 10,
+          "frame_id": 1,
+          "frame": "J2000",
+          "spk_type": 1,
+          "identifier": "MONTE Difference Line Table"
+        }
+      ],
+      "comments": "Created by Monte 176.1 on 2026/08/04 17:12 UTC.\nThis SPK is a reconstruction of the Psyche spacecraft trajectory\nProduced by the Psyche Mission Design and Navigation team at the\nJet Propulsion Laboratory.\nEmail contact: psyche.mdnav@jpl.nasa.gov\nSpacecraft name: PSYC\nSpacecraft ID: -255\nPlanetary ephemeris: de440, mar097\nFilename     : psyche_rec_260501-260713_260804_v1.bsp\nStart Epoch  : 01-MAY-2026 23:59:59.0000 UTC\nEnd Epoch    : 13-JUL-2026 22:40:00.0000 UTC"
+    },
+    "events": {
+      "fixed_a": [
+        {
+          "et_tdb_s": 832017139.3590969,
+          "residual_m": 9.47713851928711e-05,
+          "initial_bracket_et_tdb_s": [
+            832017068.1854712,
+            832017140.9724041
+          ],
+          "bisection_bracket_et_tdb_s": [
+            832017139.3590968,
+            832017139.359097
+          ],
+          "bisection_width_s": 2.384185791015625e-07,
+          "brent_iterations": 5,
+          "absolute_epoch_ulp_s": 1.1920928955078125e-07,
+          "direction": "entry",
+          "crossing_rate_m_s": -4454.604277147173,
+          "soi_radius_m": 577239186.7537631,
+          "planet_relative_state_si": [
+            523275290.6052172,
+            -228950990.3131053,
+            -83483489.39119093,
+            -4052.725386430632,
+            1714.0028059569695,
+            697.8440470639757
+          ],
+          "planet_sun_state_si": [
+            207562415111.17557,
+            25163030472.328335,
+            5943504208.347054,
+            -2018.4770769584236,
+            23727.71825556923,
+            10937.803879032675
+          ],
+          "epoch": {
+            "et_tdb_s": 832017139.3590969,
+            "utc": "2026-05-14T07:51:10.173817Z",
+            "tdb_calendar": "2026-05-14 07:52:19.359096"
+          },
+          "coarse_fine_epoch_difference_s": 0.0,
+          "selected_spacecraft_segment": {
+            "file": "C:\\Users\\lukas\\OneDrive\\Desktop\\MIT\\Code\\data\\jpl_kernels\\psyche_rec_260501-260713_260804_v1.bsp",
+            "target": -255,
+            "centre": 10,
+            "frame_id": 1,
+            "spk_type": 1,
+            "identifier": "MONTE Difference Line Table"
+          },
+          "sun_relative_state_si": [
+            208085690401.7808,
+            24934079482.01523,
+            5860020718.955862,
+            -6071.202463389056,
+            25441.721061526197,
+            11635.64792609665
+          ],
+          "cached_sun_relative_link_state_si": [
+            208085690401.7814,
+            24934079482.01452,
+            5860020718.955115,
+            -6071.202463237721,
+            25441.721061752603,
+            11635.647926133845
+          ],
+          "residual_one_second_before_m": 4454.604329109192,
+          "residual_one_second_after_m": -4454.604258298874,
+          "tudat_vs_raw_position_m": 0.0,
+          "tudat_vs_raw_velocity_m_s": 0.0,
+          "cache_planet_position_difference_m": 0.001197912127202873,
+          "event_minus_nearest_segment_join_s": -1.613307237625122
+        },
+        {
+          "et_tdb_s": 832273568.9829991,
+          "residual_m": -0.00011157989501953125,
+          "initial_bracket_et_tdb_s": [
+            832273568.1854712,
+            832273868.1854712
+          ],
+          "bisection_bracket_et_tdb_s": [
+            832273568.9829988,
+            832273568.9829992
+          ],
+          "bisection_width_s": 3.5762786865234375e-07,
+          "brent_iterations": 6,
+          "absolute_epoch_ulp_s": 1.1920928955078125e-07,
+          "direction": "exit",
+          "crossing_rate_m_s": 4454.1615901243,
+          "soi_radius_m": 577239186.7537631,
+          "planet_relative_state_si": [
+            -440851960.4232609,
+            364009634.403415,
+            -79697012.34347932,
+            -3362.1049455740417,
+            2845.056044078351,
+            -668.7609173572575
+          ],
+          "planet_sun_state_si": [
+            206946084054.6455,
+            31234573601.24543,
+            8745005750.59206,
+            -2787.598653164365,
+            23623.06278739436,
+            10910.54502827502
+          ],
+          "epoch": {
+            "et_tdb_s": 832273568.9829991,
+            "utc": "2026-05-17T07:04:59.797774Z",
+            "tdb_calendar": "2026-05-17 07:06:08.982999"
+          },
+          "coarse_fine_epoch_difference_s": 0.0,
+          "selected_spacecraft_segment": {
+            "file": "C:\\Users\\lukas\\OneDrive\\Desktop\\MIT\\Code\\data\\jpl_kernels\\psyche_rec_260501-260713_260804_v1.bsp",
+            "target": -255,
+            "centre": 10,
+            "frame_id": 1,
+            "spk_type": 1,
+            "identifier": "MONTE Difference Line Table"
+          },
+          "sun_relative_state_si": [
+            206505232094.22226,
+            31598583235.648846,
+            8665308738.24858,
+            -6149.703598738407,
+            26468.11883147271,
+            10241.784110917763
+          ],
+          "cached_sun_relative_link_state_si": [
+            206505232094.22305,
+            31598583235.64926,
+            8665308738.248333,
+            -6149.703598849236,
+            26468.11883163609,
+            10241.7841110662
+          ],
+          "residual_one_second_before_m": -4454.161752939224,
+          "residual_one_second_after_m": 4454.161435484886,
+          "tudat_vs_raw_position_m": 0.0,
+          "tudat_vs_raw_velocity_m_s": 0.0,
+          "cache_planet_position_difference_m": 0.0009294876046016644,
+          "event_minus_nearest_segment_join_s": 1.6134989261627197
+        }
+      ],
+      "instantaneous_distance": [
+        {
+          "et_tdb_s": 832027805.40365,
+          "residual_m": -0.0001513361930847168,
+          "initial_bracket_et_tdb_s": [
+            832027568.1854712,
+            832027868.1854712
+          ],
+          "bisection_bracket_et_tdb_s": [
+            832027805.4036498,
+            832027805.4036502
+          ],
+          "bisection_width_s": 3.5762786865234375e-07,
+          "brent_iterations": 8,
+          "absolute_epoch_ulp_s": 1.1920928955078125e-07,
+          "direction": "entry",
+          "crossing_rate_m_s": -4458.825233535179,
+          "soi_radius_m": 529719608.34739625,
+          "planet_relative_state_si": [
+            480042477.7180976,
+            -210665962.89350358,
+            -76039036.89540844,
+            -4053.9405523485107,
+            1714.6562251783494,
+            698.0778323252797
+          ],
+          "planet_sun_state_si": [
+            207540714739.69968,
+            25416090542.553215,
+            6060162375.148162,
+            -2050.5783775218383,
+            23723.806054522196,
+            10936.875228492794
+          ],
+          "epoch": {
+            "et_tdb_s": 832027805.40365,
+            "utc": "2026-05-14T10:48:56.218372Z",
+            "tdb_calendar": "2026-05-14 10:50:05.403650"
+          },
+          "coarse_fine_epoch_difference_s": 0.0,
+          "selected_spacecraft_segment": {
+            "file": "C:\\Users\\lukas\\OneDrive\\Desktop\\MIT\\Code\\data\\jpl_kernels\\psyche_rec_260501-260713_260804_v1.bsp",
+            "target": -255,
+            "centre": 4,
+            "frame_id": 1,
+            "spk_type": 1,
+            "identifier": "MONTE Difference Line Table"
+          },
+          "sun_relative_state_si": [
+            208020757217.4178,
+            25205424579.65971,
+            5984123338.252753,
+            -6104.51892987035,
+            25438.462279700547,
+            11634.953060818074
+          ],
+          "cached_sun_relative_link_state_si": [
+            208020757217.4175,
+            25205424579.660038,
+            5984123338.253101,
+            -6104.518930000186,
+            25438.46227958822,
+            11634.953060829923
+          ],
+          "residual_one_second_before_m": 4458.825016617775,
+          "residual_one_second_after_m": -4458.825450539589,
+          "tudat_vs_raw_position_m": 0.0,
+          "tudat_vs_raw_velocity_m_s": 0.0,
+          "cache_planet_position_difference_m": 0.0005515709611795688,
+          "event_minus_nearest_segment_join_s": 10664.431245923042
+        },
+        {
+          "et_tdb_s": 832263061.5208873,
+          "residual_m": -0.00018215179443359375,
+          "initial_bracket_et_tdb_s": [
+            832262768.1854712,
+            832263068.1854712
+          ],
+          "bisection_bracket_et_tdb_s": [
+            832263061.5208871,
+            832263061.5208875
+          ],
+          "bisection_width_s": 3.5762786865234375e-07,
+          "brent_iterations": 8,
+          "absolute_epoch_ulp_s": 1.1920928955078125e-07,
+          "direction": "exit",
+          "crossing_rate_m_s": 4452.389276531824,
+          "soi_radius_m": 530430504.9631089,
+          "planet_relative_state_si": [
+            -405519579.08032256,
+            334110179.64983356,
+            -72668971.59104022,
+            -3363.1260253053847,
+            2846.0585785452195,
+            -668.9681413224804
+          ],
+          "planet_sun_state_si": [
+            206975209674.99854,
+            30986330328.645123,
+            8630356669.847847,
+            -2756.196988753166,
+            23627.783871435833,
+            10911.863565345993
+          ],
+          "epoch": {
+            "et_tdb_s": 832263061.5208873,
+            "utc": "2026-05-17T04:09:52.335660Z",
+            "tdb_calendar": "2026-05-17 04:11:01.520887"
+          },
+          "coarse_fine_epoch_difference_s": 0.0,
+          "selected_spacecraft_segment": {
+            "file": "C:\\Users\\lukas\\OneDrive\\Desktop\\MIT\\Code\\data\\jpl_kernels\\psyche_rec_260501-260713_260804_v1.bsp",
+            "target": -255,
+            "centre": 4,
+            "frame_id": 1,
+            "spk_type": 1,
+            "identifier": "MONTE Difference Line Table"
+          },
+          "sun_relative_state_si": [
+            206569690095.9182,
+            31320440508.294956,
+            8557687698.256805,
+            -6119.32301405855,
+            26473.842449981054,
+            10242.895424023513
+          ],
+          "cached_sun_relative_link_state_si": [
+            206569690095.91742,
+            31320440508.294598,
+            8557687698.257024,
+            -6119.32301406397,
+            26473.842449805627,
+            10242.895423932872
+          ],
+          "residual_one_second_before_m": -4452.3895272016525,
+          "residual_one_second_after_m": 4452.389025986195,
+          "tudat_vs_raw_position_m": 0.0,
+          "tudat_vs_raw_velocity_m_s": 0.0,
+          "cache_planet_position_difference_m": 0.0008974597238733764,
+          "event_minus_nearest_segment_join_s": -10505.848612904549
+        }
+      ]
+    },
+    "origin_transitions": [
+      {
+        "epoch": {
+          "et_tdb_s": 832017140.9724041,
+          "utc": "2026-05-14T07:51:11.787124Z",
+          "tdb_calendar": "2026-05-14 07:52:20.972404"
+        },
+        "origin_before": 10,
+        "origin_after": 4,
+        "extrapolated_position_gap_m": 0.002096613013459674,
+        "extrapolated_velocity_gap_m_s": 2.4228060156118197e-10,
+        "check_step_s": 0.01
+      },
+      {
+        "epoch": {
+          "et_tdb_s": 832273567.3695002,
+          "utc": "2026-05-17T07:04:58.184275Z",
+          "tdb_calendar": "2026-05-17 07:06:07.369500"
+        },
+        "origin_before": 4,
+        "origin_after": 10,
+        "extrapolated_position_gap_m": 0.001295532737367427,
+        "extrapolated_velocity_gap_m_s": 1.4479798518453942e-10,
+        "check_step_s": 0.01
+      }
+    ],
+    "closest_approach_reference_only": {
+      "epoch": {
+        "et_tdb_s": 832145351.9713259,
+        "utc": "2026-05-15T19:28:02.786073Z",
+        "tdb_calendar": "2026-05-15 19:29:11.971325"
+      },
+      "centre_distance_m": 8000219.726807574,
+      "planet_relative_state_si": [
+        -2901508.828030971,
+        -4754749.232153672,
+        5742571.021536736,
+        -4696.584206386537,
+        2888.50056722592,
+        18.61802295947102
+      ],
+      "use": "validation only; no periapsis constraint added"
+    },
+    "coverage_checked": true,
+    "mu_m3_s2": {
+      "499": 42828373620699.086,
+      "10": 1.3271244004127939e+20
+    }
+  },
+  "earth_seed_spk_comparison": {
+    "at_seed_exit_position_difference_m": 409475.7381533396,
+    "at_seed_exit_velocity_difference_m_s": 5.66679219993649,
+    "sampled_max_position_difference_m": 409475.7381533396,
+    "sampled_max_velocity_difference_m_s": 5.66679219993649,
+    "seed_minus_reconstructed_exit_s": -68.12897872924805,
+    "definition": "Same-epoch Earth-centred J2000; SPK evaluated after propagation for validation only"
+  },
+  "selected_axes_au": {
+    "399": 1.0,
+    "499": 1.52371034
+  },
+  "earth_axis_note": "Nominal 1 au is an explicit modelling assumption. The JPL Table 1 coefficient 1.00000261 au belongs to the Earth-Moon barycentre and is a labelled sensitivity only. Neither value was fitted to segment timing.",
+  "mars_axis_source": "https://ssd.jpl.nasa.gov/planets/approx_pos.html",
+  "earth_seed_exit_utc": "2023-10-15T09:16:22.375476Z",
+  "mars_seed_exit_utc": "2026-05-17T07:04:34.485902Z",
+  "interpretation": "Fixed-radius crossings are substantially closer to SPK origin-transition epochs for both planets. This supports a similar radius convention in kernel construction but does not prove the producer's exact definition. Segment epochs are not imposed as physical events.",
+  "limitation": "Neither SOI convention makes single-body dynamics an exact mission reconstruction. Root microseconds are numerical precision, not physical accuracy.",
+  "provenance": {
+    "Earth_validation_kernels": [
+      {
+        "name": "naif0012.tls",
+        "url": "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/lsk/naif0012.tls",
+        "sha256": "678e32bdb5a744117a467cd9601cd6b373f0e9bc9bbde1371d5eee39600a039b"
+      },
+      {
+        "name": "gm_de440.tpc",
+        "url": "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/pck/gm_de440.tpc",
+        "sha256": "924ddf4fb9ead9fe8a1aa55780bcabde40b09d00065d58226e24b68d8092f140"
+      },
+      {
+        "name": "de440s.bsp",
+        "url": "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/de440s.bsp",
+        "sha256": "c1c7feeab882263fc493a9d5a5b2ddd71b54826cdf65d8d17a76126b260a49f2"
+      },
+      {
+        "name": "psyche_rec_231013-231018_v1.bsp",
+        "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_rec_231013-231018_v1.bsp",
+        "sha256": "74f8e2e478df739ce2e6c57f4287079fbefc987b02f7c9350e4567a3ec4c0e10"
+      }
+    ],
+    "Mars_validation_kernels": [
+      {
+        "name": "naif0012.tls",
+        "url": "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/lsk/naif0012.tls",
+        "sha256": "678e32bdb5a744117a467cd9601cd6b373f0e9bc9bbde1371d5eee39600a039b"
+      },
+      {
+        "name": "gm_de440.tpc",
+        "url": "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/pck/gm_de440.tpc",
+        "sha256": "924ddf4fb9ead9fe8a1aa55780bcabde40b09d00065d58226e24b68d8092f140"
+      },
+      {
+        "name": "mar097.bsp",
+        "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/mar097.bsp",
+        "sha256": "201fc87075a7aaefc8b4d7f7545881079f906414fae38c5e36b1786f738dca63"
+      },
+      {
+        "name": "de440s.bsp",
+        "url": "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/de440s.bsp",
+        "sha256": "c1c7feeab882263fc493a9d5a5b2ddd71b54826cdf65d8d17a76126b260a49f2"
+      },
+      {
+        "name": "psyche_rec_260501-260713_260804_v1.bsp",
+        "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_rec_260501-260713_260804_v1.bsp",
+        "sha256": "65a80b4e8d72ac6bdf8177df54525e39de5f812e05c73d7261a6b3e7673476b6"
+      }
+    ],
+    "planetary_cache_sha256": "b315830a03c8ba2ea365d7b95d85f1a3f45bd5bee6a21a1dca9bfd6ae4953459",
+    "active_boundary_sha256": "d46a7636033288769f86668d40f97643d4e4abf9a47e78c7ef72921a023ba44e"
+  }
+}

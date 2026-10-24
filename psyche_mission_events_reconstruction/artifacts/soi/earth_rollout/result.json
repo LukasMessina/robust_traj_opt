@@ -1,0 +1,80 @@
+{
+  "status": "Earth phase initial guess generated; not a reconstructed or optimised trajectory",
+  "start_et_tdb_s": 750483103.1823578,
+  "start_utc": "2023-10-13T15:30:34.000000Z",
+  "exit_et_tdb_s": 750633451.5578407,
+  "exit_utc": "2023-10-15T09:16:22.375476Z",
+  "duration_s": 150348.37548286977,
+  "duration_days": 1.740143234755437,
+  "earth_relative_exit_state_si": [
+    -315500740.506235,
+    754384897.4040396,
+    431664677.8317744,
+    -2095.3327326153617,
+    4773.113817731934,
+    2773.3416367635446
+  ],
+  "sun_relative_exit_state_si": [
+    138561831963.7476,
+    50782244839.544174,
+    22117144111.937187,
+    -13473.318264049221,
+    30120.071785784352,
+    13762.227678310846
+  ],
+  "exit_soi_radius_m": 924646789.2005551,
+  "seed_mass_kg": 2747.0,
+  "seed_thrust_n": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "seed_sigma_n": 0.0,
+  "frame": "J2000",
+  "units": "m, m/s, kg",
+  "time": "ET/TDB seconds since J2000",
+  "gravity": "Earth point mass only",
+  "initial_mass_assumption": "thesis 2747 kg applied at TIP",
+  "soi": "fixed-semimajor-axis Laplace model",
+  "semimajor_axis_m": 149597870700.0,
+  "integrator": {
+    "method": "DOP853 IVP initial guess only",
+    "rtol": 2e-12,
+    "atol_si": [
+      1e-05,
+      1e-05,
+      1e-05,
+      1e-09,
+      1e-09,
+      1e-09,
+      1e-10
+    ],
+    "maximum_step_s": 3600.0
+  },
+  "checks": {
+    "max_two_body_position_error_m": 0.00012702546317498725,
+    "max_two_body_velocity_error_m_s": 1.7866870666168376e-08,
+    "exit_epoch_refinement_difference_s": 8.236384019255638e-09,
+    "exit_position_refinement_difference_m": 6.785692348588526e-05,
+    "exit_velocity_refinement_difference_m_s": 5.407068388503798e-10,
+    "max_c3_drift_m2_s2": 0.000171758234500885,
+    "max_relative_angular_momentum_drift": 3.3826829747202994e-12,
+    "soi_surface_residual_m": -1.1920928955078125e-07,
+    "outward_crossing_rate_m_s": 5903.873451294209,
+    "max_mass_change_kg": 0.0,
+    "origin_translation_position_closure_m": 9.739661592563275e-06,
+    "origin_translation_velocity_closure_m_s": 1.3642420526593924e-12,
+    "spacecraft_ephemeris_queries": 0,
+    "spice_kernels_loaded_during_rollout": 0
+  },
+  "arrival_constraint": "Hard equality to spacecraft -255 SPK position/velocity at 2029-08-01 12:00:00 UTC; numeric extraction pending, constraint mandatory.",
+  "remaining": "Extract Mars entry and arrival targets, then generate the remaining rollout phases. Multiphase OCP not yet implemented.",
+  "provenance": {
+    "TIP_boundary_sha256": "7646aa9d0a970370628fc875998725bc69b7ff4e74b466012ea200bf91722f5d",
+    "planetary_cache_sha256": "b315830a03c8ba2ea365d7b95d85f1a3f45bd5bee6a21a1dca9bfd6ae4953459",
+    "implementation_sha256": {
+      "seed_earth_departure.py": "70956b630a753d8435d22a6723bab709444cf52167c19d1a757fb2cd1eb6b415",
+      "rollout.py": "ad1c249088fdd6cafa94cfbcb47fca6abaf1245b49b9010be152025defeb3636"
+    }
+  }
+}

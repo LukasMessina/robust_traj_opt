@@ -1,0 +1,62 @@
+ 
+ 
+********************************************************************************
+ 
+ 
+Eightstate File Type 5, optimized for SPK generation
+ 
+Eightstate File created by MYSTIC version 0.1.4
+Run Title: YC-017 Build Fixed
+File created Day=10 Month=04 Year=2025 Hour=17 Minute=41 Second=43.907
+ 
+Start Epoch (JED) =       2460787.563300759
+End   Epoch (JED) =       2462314.333291695
+Body Masses [km^3/s^2] =
+    22031.86855140000           1 Mercury
+    324858.5920000000           2 Venus
+    398600.4355070227           3 Earth
+    42828.37581575610           4 Mars
+    126712764.1000000           5 Jupiter
+    37940584.84180000           6 Saturn
+    5794556.400000000           7 Uranus
+    6836527.100580401           8 Neptune
+    975.5000000000001           9 Pluto
+    132712440041.2790          10 Sun
+    0.000000000000000     2000016 Psyche
+    4902.800118457550         301 Moon
+ 
+Ephemerides Files Used For Each Body:
+shorteph.440        1 Mercury (System Barycenter)
+shorteph.440        2 Venus (System Barycenter)
+shorteph.440        3 Earth (System Barycenter)
+shorteph.440        4 Mars (System Barycenter)
+shorteph.440        5 Jupiter (System Barycenter)
+shorteph.440        6 Saturn (System Barycenter)
+shorteph.440        7 Uranus (System Barycenter)
+shorteph.440        8 Neptune (System Barycenter)
+shorteph.440        9 Pluto (System Barycenter)
+shorteph.440      10 Sun (Body Center)
+ 
+sb-16-88.nio
+ 
+X,Y,Z (km); Vx,Vy,Vz (km/s); Mass (kg); Time past J2000 epoch (sec.)
+Coordinate system: Origin       10 Frame EME 2000
+ 
+ 
+********************************************************************************
+ 
+This SPK is a reference trajectory of the Psyche spacecraft for future planning purposes.
+At the time of this file's creation, its entire duration is in the future.
+Produced by the Psyche Mission Design and Navigation team at the Jet Propulsion Laboratory
+ 
+Email contact: psyche.mdnav@jpl.nasa.gov
+ 
+ 
+BRIEF -- Version 4.1.0, September 17, 2021 -- Toolkit Version N0067
+ 
+ 
+Summary for: psyche_ref_250422-290626_250411_v1.bsp
+ 
+Bodies     Start of Interval (ET)          End of Interval (ET)
+-------    -----------------------------   -----------------------------
+-255 PSYC  2025 APR 22 01:31:09.185        2029 JUN 26 19:59:56.402

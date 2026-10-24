@@ -1,0 +1,127 @@
+{
+  "source_evidence": [
+    {
+      "original": "C:\\Users\\lukas\\Downloads\\MSc_Thesis_Lukas_Messina_Final_Version (9).pdf",
+      "retained": "data/psyche_sources/MSc_Thesis_Lukas_Messina_Final_Version.pdf",
+      "sha256": "df86a7b4c0db4626a861ffd303856d4b85019b6be0f4b86d8b6a71a50f6e37e4",
+      "role": "User thesis, immutable source; PDF p33/printed15 boundary requirement"
+    },
+    {
+      "original": "C:\\Users\\lukas\\OneDrive\\Desktop\\MIT\\Code\\output\\psyche\\stage00_review\\review.json",
+      "retained": "psyche_mission_events_reconstruction/evidence/initial_thesis_review/review.json",
+      "sha256": "e8c7e16ec29bbcf82b4ef2e68c8586b01c2b915dbbfe1beaa89d330c0fc42910",
+      "role": "Historical preparatory review; later TIP and TDB asteroid boundary supersede its tentative events"
+    },
+    {
+      "original": "C:\\Users\\lukas\\OneDrive\\Desktop\\MIT\\Code\\output\\psyche\\stage00_review\\review.txt",
+      "retained": "psyche_mission_events_reconstruction/evidence/initial_thesis_review/review.txt",
+      "sha256": "660a2a65624a68c35e4e9d3d3c003480175c528ddbb91fae51b262fff94b7d2a",
+      "role": "Historical preparatory review; later TIP and TDB asteroid boundary supersede its tentative events"
+    },
+    {
+      "original": "C:\\Users\\lukas\\OneDrive\\Desktop\\MIT\\Code\\output\\psyche\\stage07_arrival\\kernel_coverage_audit.json",
+      "retained": "psyche_mission_events_reconstruction/evidence/arrival_source_audit/kernel_coverage_audit.json",
+      "sha256": "d8909d276146e232f0c1a725e9e531da04f7e1be98d53d9b9ad709ec33012c22",
+      "role": "Historical 2026-10-23 source and coverage audit; former spacecraft/UTC boundary is superseded"
+    },
+    {
+      "original": "C:\\Users\\lukas\\OneDrive\\Desktop\\MIT\\Code\\output\\psyche\\stage07_arrival\\reference_spk_metadata.json",
+      "retained": "psyche_mission_events_reconstruction/evidence/arrival_source_audit/reference_spk_metadata.json",
+      "sha256": "d928e03bc9a522daa2bb6e0542d4548018efb9d5a9cafc82ee11086c42eff6c0",
+      "role": "Historical 2026-10-23 source and coverage audit; former spacecraft/UTC boundary is superseded"
+    },
+    {
+      "original": "C:\\Users\\lukas\\OneDrive\\Desktop\\MIT\\Code\\output\\psyche\\stage07_arrival\\latest_spk_metadata.json",
+      "retained": "psyche_mission_events_reconstruction/evidence/arrival_source_audit/latest_spk_metadata.json",
+      "sha256": "04e1d1ff525b6c6f2b1a4f01fce0ff985e29996aa47ba209bd715f7a61268588",
+      "role": "Historical 2026-10-23 source and coverage audit; former spacecraft/UTC boundary is superseded"
+    },
+    {
+      "original": "C:\\Users\\lukas\\OneDrive\\Desktop\\MIT\\Code\\output\\psyche\\stage07_arrival\\reference_kernel_comments.txt",
+      "retained": "psyche_mission_events_reconstruction/evidence/arrival_source_audit/reference_kernel_comments.txt",
+      "sha256": "4d3b7d16c748590a6c27ff1f46fbf4dc8c4c4a9fd9ea16bd2bdf7f3197d545ce",
+      "role": "Historical 2026-10-23 source and coverage audit; former spacecraft/UTC boundary is superseded"
+    },
+    {
+      "original": "C:\\Users\\lukas\\OneDrive\\Desktop\\MIT\\Code\\output\\psyche\\stage07_arrival\\arrival_result.json",
+      "retained": "psyche_mission_events_reconstruction/evidence/arrival_source_audit/arrival_result.json",
+      "sha256": "a27747e755d135ca5a5fef43e33369dc27d38d333fd7cc2322483bb94d4e7f77",
+      "role": "Historical 2026-10-23 source and coverage audit; former spacecraft/UTC boundary is superseded"
+    },
+    {
+      "original": "C:\\Users\\lukas\\OneDrive\\Desktop\\MIT\\Code\\output\\psyche\\stage07_arrival\\report.txt",
+      "retained": "psyche_mission_events_reconstruction/evidence/arrival_source_audit/report.txt",
+      "sha256": "0a97a24ceb8d0d71037a67a76a21cd6aacfd92a2f813d6ca2c02383059f9d567",
+      "role": "Historical 2026-10-23 source and coverage audit; former spacecraft/UTC boundary is superseded"
+    },
+    {
+      "original": "C:\\Users\\lukas\\OneDrive\\Desktop\\MIT\\Code\\output\\psyche\\stage00_review\\sources\\psyche_rec_231013-231018_v1.bsp.lbl",
+      "retained": "psyche_mission_events_reconstruction/evidence/initial_thesis_review/sources/psyche_rec_231013-231018_v1.bsp.lbl",
+      "sha256": "84e94e2bfb68e990fe15ec189d3bbd8f440657717627a0e063e367e42b145102",
+      "role": "Source sidecar evidence"
+    },
+    {
+      "original": "C:\\Users\\lukas\\OneDrive\\Desktop\\MIT\\Code\\output\\psyche\\stage00_review\\sources\\psyche_rec_260501-260713_260804_v1.bsp.lbl",
+      "retained": "psyche_mission_events_reconstruction/evidence/initial_thesis_review/sources/psyche_rec_260501-260713_260804_v1.bsp.lbl",
+      "sha256": "01f696d5b3409d5a6074b5a4fa50ebbdbb8e59a2516239279bd4f3602b3ff119",
+      "role": "Source sidecar evidence"
+    },
+    {
+      "original": "C:\\Users\\lukas\\OneDrive\\Desktop\\MIT\\Code\\output\\psyche\\stage00_review\\sources\\psyche_ref_231013-311101_231016_v1_merged.bsp.lbl",
+      "retained": "psyche_mission_events_reconstruction/evidence/initial_thesis_review/sources/psyche_ref_231013-311101_231016_v1_merged.bsp.lbl",
+      "sha256": "56f125fad11628f8d6467f23b5536fba796a798dd034a3c9d106fb15726bc909",
+      "role": "Source sidecar evidence"
+    }
+  ],
+  "kernels": [
+    {
+      "name": "naif0012.tls",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/lsk/naif0012.tls",
+      "sha256": "678e32bdb5a744117a467cd9601cd6b373f0e9bc9bbde1371d5eee39600a039b",
+      "local_path": "data/jpl_kernels/naif0012.tls",
+      "hash_verified": true
+    },
+    {
+      "name": "gm_de440.tpc",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/pck/gm_de440.tpc",
+      "sha256": "924ddf4fb9ead9fe8a1aa55780bcabde40b09d00065d58226e24b68d8092f140",
+      "local_path": "data/jpl_kernels/gm_de440.tpc",
+      "hash_verified": true
+    },
+    {
+      "name": "de440s.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/de440s.bsp",
+      "sha256": "c1c7feeab882263fc493a9d5a5b2ddd71b54826cdf65d8d17a76126b260a49f2",
+      "local_path": "data/jpl_kernels/de440s.bsp",
+      "hash_verified": true
+    },
+    {
+      "name": "psyche_rec_231013-231018_v1.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_rec_231013-231018_v1.bsp",
+      "sha256": "74f8e2e478df739ce2e6c57f4287079fbefc987b02f7c9350e4567a3ec4c0e10",
+      "local_path": "data/jpl_kernels/psyche_rec_231013-231018_v1.bsp",
+      "hash_verified": true
+    },
+    {
+      "name": "mar097.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/mar097.bsp",
+      "sha256": "201fc87075a7aaefc8b4d7f7545881079f906414fae38c5e36b1786f738dca63",
+      "local_path": "data/jpl_kernels/mar097.bsp",
+      "hash_verified": true
+    },
+    {
+      "name": "psyche_rec_260501-260713_260804_v1.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_rec_260501-260713_260804_v1.bsp",
+      "sha256": "65a80b4e8d72ac6bdf8177df54525e39de5f812e05c73d7261a6b3e7673476b6",
+      "local_path": "data/jpl_kernels/psyche_rec_260501-260713_260804_v1.bsp",
+      "hash_verified": true
+    },
+    {
+      "name": "psyche_ref_231013-311101_231016_v1_merged.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_231013-311101_231016_v1_merged.bsp",
+      "sha256": "ac66af58c0e02230e5f652ae323df64c784dc1d4bd242f65fc5aa467779d3958",
+      "local_path": "data/jpl_kernels/psyche_ref_231013-311101_231016_v1_merged.bsp",
+      "hash_verified": true
+    }
+  ]
+}

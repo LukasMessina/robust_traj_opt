@@ -1,0 +1,349 @@
+{
+  "status": "Four-phase dynamics-only initial guess completed; infeasible coast seed, not an optimised trajectory",
+  "frame": "J2000",
+  "units": "m, m/s, kg, N",
+  "time_scale": "ET/TDB seconds since J2000",
+  "initial_guess_policy": {
+    "method": "forward dynamics rollout only; no spacecraft ephemeris trajectory samples",
+    "control_seed": "zero thrust; an initialisation assumption only, not a coast constraint on the OCP",
+    "earth_chain": "fixed Earth-relative TIP -> Earth-gravity rollout -> detected SOI exit -> origin translation -> solar-gravity rollout to fixed Mars entry epoch",
+    "mars_chain": "fixed Mars-relative SOI entry -> Mars-gravity rollout -> detected SOI exit -> origin translation -> solar-gravity rollout to fixed 2029-08-01 noon TDB asteroid rendezvous",
+    "planetary_ephemerides": "cached interpolants used for SOI geometry and origin translations only",
+    "spacecraft_ephemerides": "fixed TIP and Mars-entry boundaries, plus validation only; arrival target comes from asteroid ephemeris",
+    "mass": "single propagated seed mass, constant for the zero-thrust seed; no reset at Mars",
+    "boundary_residuals": "retain and report Earth-chain/Mars-entry and Mars-chain/arrival mismatches; do not overwrite endpoints or morph the rollout",
+    "optimiser": "must enforce all hard boundary and continuity constraints even if the rollout seed is infeasible"
+  },
+  "phases": [
+    {
+      "phase": 1,
+      "origin_id": 399,
+      "start_et_tdb_s": 750483103.1823578,
+      "end_et_tdb_s": 750633451.5578407,
+      "duration_days": 1.740143234755437,
+      "initial_state_si": [
+        6741926.644469239,
+        9123110.967067381,
+        732467.2188004185,
+        -1409.0090787061986,
+        9183.11361019323,
+        4221.009429301412,
+        2747.0
+      ],
+      "final_state_si": [
+        -315500740.506235,
+        754384897.4040396,
+        431664677.8317744,
+        -2095.3327326153617,
+        4773.113817731934,
+        2773.3416367635446,
+        2747.0
+      ],
+      "integration_function_evaluations": 1067,
+      "saved_sample_count": 1071,
+      "max_conics_position_error_m": 0.00012702546317498725,
+      "max_conics_velocity_error_m_s": 1.7866870666168376e-08,
+      "max_specific_energy_drift_m2_s2": 8.58791172504425e-05,
+      "max_relative_angular_momentum_drift": 3.3826829747202994e-12,
+      "max_mass_change_kg": 0.0,
+      "exit_soi_residual_m": -1.1920928955078125e-07,
+      "exit_radial_speed_m_s": 5903.873451294209,
+      "start_epoch": {
+        "et_tdb_s": 750483103.1823578,
+        "utc": "2023-10-13T15:30:34.000000Z",
+        "tdb_calendar": "2023-10-13 15:31:43.182357"
+      },
+      "end_epoch": {
+        "et_tdb_s": 750633451.5578407,
+        "utc": "2023-10-15T09:16:22.375476Z",
+        "tdb_calendar": "2023-10-15 09:17:31.557840"
+      }
+    },
+    {
+      "phase": 2,
+      "origin_id": 10,
+      "start_et_tdb_s": 750633451.5578407,
+      "end_et_tdb_s": 832017139.3590969,
+      "duration_days": 941.9408310330576,
+      "initial_state_si": [
+        138561831963.7476,
+        50782244839.544174,
+        22117144111.937187,
+        -13473.318264049221,
+        30120.071785784352,
+        13762.227678310846,
+        2747.0
+      ],
+      "final_state_si": [
+        -34630213859.26345,
+        175188353181.79468,
+        79751224413.0215,
+        -28723.870907417975,
+        5035.775106149282,
+        2479.137852747412,
+        2747.0
+      ],
+      "integration_function_evaluations": 14222,
+      "saved_sample_count": 1948,
+      "max_conics_position_error_m": 0.008262738185803349,
+      "max_conics_velocity_error_m_s": 1.4772433921675521e-09,
+      "max_specific_energy_drift_m2_s2": 1.430511474609375e-06,
+      "max_relative_angular_momentum_drift": 1.7490356754133583e-15,
+      "max_mass_change_kg": 0.0,
+      "endpoint_refinement_difference": {
+        "components_si": [
+          -0.0001068115234375,
+          0.001129150390625,
+          0.00042724609375,
+          1.418811734765768e-10,
+          7.185008144006133e-11,
+          -5.002220859751105e-12
+        ],
+        "position_norm_m": 0.0012119936183050896,
+        "velocity_norm_m_s": 1.5911544175083591e-10
+      },
+      "soi_path_diagnostics": {
+        "399": {
+          "minimum_sampled_centre_distance_m": 924646789.2005506,
+          "minimum_sampled_clearance_m": -4.5299530029296875e-06,
+          "minimum_sample_epoch_et_tdb_s": 750633451.5578407,
+          "samples_inside_by_more_than_1m": 0,
+          "sample_count": 9483,
+          "maximum_probe_spacing_s": 10800.0,
+          "qualification": "Sampled diagnostic; not a continuous path feasibility certificate."
+        },
+        "499": {
+          "minimum_sampled_centre_distance_m": 130494006255.12668,
+          "minimum_sampled_clearance_m": 129916767068.37291,
+          "minimum_sample_epoch_et_tdb_s": 817571851.5578407,
+          "samples_inside_by_more_than_1m": 0,
+          "sample_count": 9483,
+          "maximum_probe_spacing_s": 10800.0,
+          "qualification": "Sampled diagnostic; not a continuous path feasibility certificate."
+        }
+      },
+      "start_epoch": {
+        "et_tdb_s": 750633451.5578407,
+        "utc": "2023-10-15T09:16:22.375476Z",
+        "tdb_calendar": "2023-10-15 09:17:31.557840"
+      },
+      "end_epoch": {
+        "et_tdb_s": 832017139.3590969,
+        "utc": "2026-05-14T07:51:10.173817Z",
+        "tdb_calendar": "2026-05-14 07:52:19.359096"
+      }
+    },
+    {
+      "phase": 3,
+      "origin_id": 499,
+      "start_et_tdb_s": 832017139.3590969,
+      "end_et_tdb_s": 832273543.6711266,
+      "duration_days": 2.9676425003438562,
+      "initial_state_si": [
+        523275290.6052172,
+        -228950990.3131053,
+        -83483489.39119093,
+        -4052.725386430632,
+        1714.0028059569695,
+        697.8440470639757,
+        2747.0
+      ],
+      "final_state_si": [
+        -440790788.8198808,
+        364401635.4682289,
+        -78230475.41574287,
+        -3361.440647199793,
+        2849.1853176796835,
+        -657.4456567233098,
+        2747.0
+      ],
+      "integration_function_evaluations": 2117,
+      "saved_sample_count": 1125,
+      "max_conics_position_error_m": 0.000706332900322945,
+      "max_conics_velocity_error_m_s": 8.438730842312956e-08,
+      "max_specific_energy_drift_m2_s2": 3.0357390642166138e-05,
+      "max_relative_angular_momentum_drift": 8.773848893434144e-12,
+      "max_mass_change_kg": 0.0,
+      "exit_soi_residual_m": 1.1920928955078125e-07,
+      "exit_radial_speed_m_s": 4454.60427714745,
+      "start_epoch": {
+        "et_tdb_s": 832017139.3590969,
+        "utc": "2026-05-14T07:51:10.173817Z",
+        "tdb_calendar": "2026-05-14 07:52:19.359096"
+      },
+      "end_epoch": {
+        "et_tdb_s": 832273543.6711266,
+        "utc": "2026-05-17T07:04:34.485902Z",
+        "tdb_calendar": "2026-05-17 07:05:43.671126"
+      }
+    },
+    {
+      "phase": 4,
+      "origin_id": 10,
+      "start_et_tdb_s": 832273543.6711266,
+      "end_et_tdb_s": 933552000.0,
+      "duration_days": 1172.2043556582569,
+      "initial_state_si": [
+        206505363824.21082,
+        31598377292.616707,
+        8666499108.811155,
+        -6148.963667987573,
+        26472.259522076074,
+        10253.10256851594,
+        2747.0
+      ],
+      "final_state_si": [
+        113445017482.12137,
+        175087870586.11725,
+        65239858401.40048,
+        -21441.59126884216,
+        16808.127345530647,
+        6802.980890974077,
+        2747.0
+      ],
+      "integration_function_evaluations": 17687,
+      "saved_sample_count": 2179,
+      "max_conics_position_error_m": 0.009960907230144209,
+      "max_conics_velocity_error_m_s": 9.8778661573887e-10,
+      "max_specific_energy_drift_m2_s2": 1.0132789611816406e-06,
+      "max_relative_angular_momentum_drift": 2.531233786889718e-15,
+      "max_mass_change_kg": 0.0,
+      "endpoint_refinement_difference": {
+        "components_si": [
+          0.0095977783203125,
+          -0.00830078125,
+          -0.00339508056640625,
+          5.165929906070232e-10,
+          1.000444171950221e-09,
+          4.065441316924989e-10
+        ],
+        "position_norm_m": 0.01313571049081859,
+        "velocity_norm_m_s": 1.1970943948357119e-09
+      },
+      "soi_path_diagnostics": {
+        "399": {
+          "minimum_sampled_centre_distance_m": 180577121448.57758,
+          "minimum_sampled_clearance_m": 179652474659.377,
+          "minimum_sample_epoch_et_tdb_s": 854478343.6711266,
+          "samples_inside_by_more_than_1m": 0,
+          "sample_count": 11556,
+          "maximum_probe_spacing_s": 10800.0,
+          "qualification": "Sampled diagnostic; not a continuous path feasibility certificate."
+        },
+        "499": {
+          "minimum_sampled_centre_distance_m": 577239186.7537656,
+          "minimum_sampled_clearance_m": 2.5033950805664062e-06,
+          "minimum_sample_epoch_et_tdb_s": 832273543.6711266,
+          "samples_inside_by_more_than_1m": 0,
+          "sample_count": 11556,
+          "maximum_probe_spacing_s": 10800.0,
+          "qualification": "Sampled diagnostic; not a continuous path feasibility certificate."
+        }
+      },
+      "start_epoch": {
+        "et_tdb_s": 832273543.6711266,
+        "utc": "2026-05-17T07:04:34.485902Z",
+        "tdb_calendar": "2026-05-17 07:05:43.671126"
+      },
+      "end_epoch": {
+        "et_tdb_s": 933552000.0,
+        "utc": "2029-08-01T11:58:50.816739Z",
+        "tdb_calendar": "2029-08-01 12:00:00.000000"
+      }
+    }
+  ],
+  "fixed_arrival_epoch": {
+    "et_tdb_s": 933552000.0,
+    "utc": "2029-08-01T11:58:50.816739Z",
+    "tdb_calendar": "2029-08-01 12:00:00.000000"
+  },
+  "arrival_target_body_id": 2000016,
+  "mars_entry_mismatch": {
+    "components_si": [
+      -242715904261.04486,
+      150254273699.78015,
+      73891203694.06639,
+      -22652.668444180254,
+      -20405.94595560332,
+      -9156.510073386433
+    ],
+    "position_norm_m": 294868219599.30365,
+    "velocity_norm_m_s": 31833.750874017194
+  },
+  "arrival_mismatch": {
+    "components_si": [
+      -161278564865.3203,
+      453294454478.8616,
+      178613705099.04456,
+      -33590.4630678866,
+      3447.8748959686473,
+      2093.24271019103
+    ],
+    "position_norm_m": 513214861043.12537,
+    "velocity_norm_m_s": 33831.77079990157
+  },
+  "residual_sign": "propagated state minus fixed target, Sun/J2000",
+  "in_chain_link_residuals": {
+    "399": {
+      "components_si": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "position_norm_m": 0.0,
+      "velocity_norm_m_s": 0.0
+    },
+    "499": {
+      "components_si": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "position_norm_m": 0.0,
+      "velocity_norm_m_s": 0.0
+    }
+  },
+  "free_exit_reproduction": {
+    "earth_exit_epoch_change_s": 0.0,
+    "mars_exit_epoch_change_s": 0.0
+  },
+  "seed_thrust_n": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "seed_mass_kg": 2747.0,
+  "seed_fuel_used_kg": 0.0,
+  "numerical_validation_passed": true,
+  "spice_state_calls_disabled_during_seed": true,
+  "kernels_loaded_during_rollout": 0,
+  "spacecraft_history_used_as_seed": false,
+  "provenance": {
+    "tip_path": "psyche_mission_events_reconstruction/artifacts/tip/tip_result.json",
+    "tip_sha256": "7646aa9d0a970370628fc875998725bc69b7ff4e74b466012ea200bf91722f5d",
+    "mars_entry_path": "psyche_mission_events_reconstruction/artifacts/soi/mars_entry_result.json",
+    "mars_entry_sha256": "d24b9d6b90e0e52fa5f9a4937aa9c8866352e15626ad530fe8b4b9c0d9885c4c",
+    "arrival_path": "psyche_mission_events_reconstruction/artifacts/arrival/arrival_result.json",
+    "arrival_sha256": "3bd1410139be5ddfffde7d7af3e3972d4e850d5337f3202431dd750109d2b895",
+    "planetary_cache": {
+      "path": "psyche_mission_events_reconstruction/artifacts/ephemerides/earth_mars_ephemerides.npz",
+      "sha256": "b315830a03c8ba2ea365d7b95d85f1a3f45bd5bee6a21a1dca9bfd6ae4953459",
+      "validation_report": "psyche_mission_events_reconstruction/artifacts/ephemerides/validation.json"
+    }
+  },
+  "limitations": [
+    "The two chains are individually dynamically propagated but do not satisfy the fixed downstream state constraints.",
+    "Mars entry starts the second chain at its fixed state; the first-chain mismatch is preserved as an infeasible initial phase link, not an impulsive manoeuvre.",
+    "Arrival state and epoch are hard asteroid/TDB constraints in the intended NLP; the seed endpoint has not been replaced with the target.",
+    "Zero seed thrust and fuel use are initialisation assumptions, not optimal performance results.",
+    "Sampled SOI path diagnostics do not prove continuous path feasibility.",
+    "There is no collocation mesh or optimised thrust profile yet. Saved dense samples can initialise the chosen mesh later.",
+    "No full spacecraft-SPK comparison is attempted for these non-nominal coast seeds; this stage reports hard-target residuals and independent two-body numerical checks."
+  ]
+}

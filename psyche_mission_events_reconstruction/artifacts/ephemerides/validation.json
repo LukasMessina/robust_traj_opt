@@ -1,0 +1,297 @@
+{
+  "status": "planetary interpolation validated; no trajectory optimisation performed",
+  "attempts": [
+    {
+      "step_s": 21600.0,
+      "bodies": {
+        "Earth": {
+          "count": 27479,
+          "max_position_error_m": 0.3573682935940732,
+          "rms_position_error_m": 0.09107147814498252,
+          "max_velocity_error_m_s": 1.0483205497457853e-06,
+          "rms_velocity_error_m_s": 2.2983338171185265e-07,
+          "max_dposition_dt_minus_velocity_m_s": 5.4515267286354015e-05,
+          "passed": false
+        },
+        "Mars": {
+          "count": 27479,
+          "max_position_error_m": 0.33728345345866345,
+          "rms_position_error_m": 0.1763669676425837,
+          "max_velocity_error_m_s": 7.051937471834286e-05,
+          "rms_velocity_error_m_s": 4.018336600121125e-05,
+          "max_dposition_dt_minus_velocity_m_s": 4.97054601405955e-05,
+          "passed": false
+        }
+      },
+      "passed": false
+    },
+    {
+      "step_s": 10800.0,
+      "bodies": {
+        "Earth": {
+          "count": 52905,
+          "max_position_error_m": 0.02305382404652824,
+          "rms_position_error_m": 0.005585024628145983,
+          "max_velocity_error_m_s": 6.700511497083182e-08,
+          "rms_velocity_error_m_s": 1.4058249977652681e-08,
+          "max_dposition_dt_minus_velocity_m_s": 6.806529519173626e-06,
+          "passed": true
+        },
+        "Mars": {
+          "count": 52905,
+          "max_position_error_m": 0.05100376295930143,
+          "rms_position_error_m": 0.026332345409958744,
+          "max_velocity_error_m_s": 1.1888203192767098e-05,
+          "rms_velocity_error_m_s": 6.017458494313555e-06,
+          "max_dposition_dt_minus_velocity_m_s": 1.4779607168276147e-05,
+          "passed": false
+        }
+      },
+      "passed": false
+    },
+    {
+      "step_s": 5400.0,
+      "bodies": {
+        "Earth": {
+          "count": 103757,
+          "max_position_error_m": 0.0014636511716455032,
+          "rms_position_error_m": 0.000355280588759904,
+          "max_velocity_error_m_s": 4.012702168109294e-09,
+          "rms_velocity_error_m_s": 8.696945629467961e-10,
+          "max_dposition_dt_minus_velocity_m_s": 8.548311425918787e-07,
+          "passed": true
+        },
+        "Mars": {
+          "count": 103757,
+          "max_position_error_m": 0.0020394329158451687,
+          "rms_position_error_m": 0.0007308797083667412,
+          "max_velocity_error_m_s": 4.885958071585874e-07,
+          "rms_velocity_error_m_s": 1.6349772491971502e-07,
+          "max_dposition_dt_minus_velocity_m_s": 1.0898954476521352e-06,
+          "passed": true
+        }
+      },
+      "passed": true
+    }
+  ],
+  "accepted_grid": {
+    "schema_version": 1,
+    "body_ids": [
+      399,
+      499
+    ],
+    "body_names": [
+      "Earth",
+      "Mars"
+    ],
+    "frame": "J2000",
+    "origin": "Sun",
+    "aberration_corrections": "NONE",
+    "time_scale": "ET/TDB seconds since J2000",
+    "units": "m, m/s",
+    "interpolation": "natural cubic spline, six state components",
+    "sample_step_s": 5400.0,
+    "padding_intervals_each_side": 24,
+    "valid_interval_et_tdb_s": [
+      750483103.1823578,
+      933552069.1832606
+    ],
+    "valid_interval_calendar": [
+      {
+        "et_tdb_s": 750483103.1823578,
+        "utc": "2023-10-13T15:30:34.000000Z",
+        "tdb_calendar": "2023-10-13 15:31:43.182357"
+      },
+      {
+        "et_tdb_s": 933552069.1832606,
+        "utc": "2029-08-01T12:00:00.000000Z",
+        "tdb_calendar": "2029-08-01 12:01:09.183260"
+      }
+    ],
+    "kernel_load_order": [
+      {
+        "name": "naif0012.tls",
+        "url": "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/lsk/naif0012.tls",
+        "sha256": "678e32bdb5a744117a467cd9601cd6b373f0e9bc9bbde1371d5eee39600a039b"
+      },
+      {
+        "name": "gm_de440.tpc",
+        "url": "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/pck/gm_de440.tpc",
+        "sha256": "924ddf4fb9ead9fe8a1aa55780bcabde40b09d00065d58226e24b68d8092f140"
+      },
+      {
+        "name": "mar097.bsp",
+        "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/mar097.bsp",
+        "sha256": "201fc87075a7aaefc8b4d7f7545881079f906414fae38c5e36b1786f738dca63"
+      },
+      {
+        "name": "de440s.bsp",
+        "url": "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/de440s.bsp",
+        "sha256": "c1c7feeab882263fc493a9d5a5b2ddd71b54826cdf65d8d17a76126b260a49f2"
+      }
+    ],
+    "coverage": [
+      {
+        "file": "de440s.bsp",
+        "target": 3,
+        "coverage_et_tdb_s": [
+          [
+            -4734072000.0,
+            4735368000.0
+          ]
+        ],
+        "selected_at_middle": {
+          "file": "C:\\Users\\lukas\\OneDrive\\Desktop\\MIT\\Code\\data\\jpl_kernels\\de440s.bsp",
+          "target": 3,
+          "centre": 0,
+          "frame_id": 1,
+          "spk_type": 2,
+          "identifier": "DE-0440LE-0440"
+        }
+      },
+      {
+        "file": "de440s.bsp",
+        "target": 399,
+        "coverage_et_tdb_s": [
+          [
+            -4734072000.0,
+            4735368000.0
+          ]
+        ],
+        "selected_at_middle": {
+          "file": "C:\\Users\\lukas\\OneDrive\\Desktop\\MIT\\Code\\data\\jpl_kernels\\de440s.bsp",
+          "target": 399,
+          "centre": 3,
+          "frame_id": 1,
+          "spk_type": 2,
+          "identifier": "DE-0440LE-0440"
+        }
+      },
+      {
+        "file": "de440s.bsp",
+        "target": 4,
+        "coverage_et_tdb_s": [
+          [
+            -4734072000.0,
+            4735368000.0
+          ]
+        ],
+        "selected_at_middle": {
+          "file": "C:\\Users\\lukas\\OneDrive\\Desktop\\MIT\\Code\\data\\jpl_kernels\\de440s.bsp",
+          "target": 4,
+          "centre": 0,
+          "frame_id": 1,
+          "spk_type": 2,
+          "identifier": "DE-0440LE-0440"
+        }
+      },
+      {
+        "file": "de440s.bsp",
+        "target": 10,
+        "coverage_et_tdb_s": [
+          [
+            -4734072000.0,
+            4735368000.0
+          ]
+        ],
+        "selected_at_middle": {
+          "file": "C:\\Users\\lukas\\OneDrive\\Desktop\\MIT\\Code\\data\\jpl_kernels\\de440s.bsp",
+          "target": 10,
+          "centre": 0,
+          "frame_id": 1,
+          "spk_type": 2,
+          "identifier": "DE-0440LE-0440"
+        }
+      },
+      {
+        "file": "mar097.bsp",
+        "target": 499,
+        "coverage_et_tdb_s": [
+          [
+            -3155457600.0,
+            3155889600.0
+          ]
+        ],
+        "selected_at_middle": {
+          "file": "C:\\Users\\lukas\\OneDrive\\Desktop\\MIT\\Code\\data\\jpl_kernels\\mar097.bsp",
+          "target": 499,
+          "centre": 4,
+          "frame_id": 1,
+          "spk_type": 3,
+          "identifier": "MAR097"
+        }
+      }
+    ],
+    "position_tolerance_m": 0.1,
+    "velocity_tolerance_m_s": 1e-05,
+    "kinematic_consistency_tolerance_m_s": 0.0001,
+    "tolerance_provenance": "engineering acceptance criteria for this cache, not SPK physical accuracy",
+    "validation": {
+      "Earth": {
+        "count": 103757,
+        "max_position_error_m": 0.0014636511716455032,
+        "rms_position_error_m": 0.000355280588759904,
+        "max_velocity_error_m_s": 4.012702168109294e-09,
+        "rms_velocity_error_m_s": 8.696945629467961e-10,
+        "max_dposition_dt_minus_velocity_m_s": 8.548311425918787e-07,
+        "passed": true
+      },
+      "Mars": {
+        "count": 103757,
+        "max_position_error_m": 0.0020394329158451687,
+        "rms_position_error_m": 0.0007308797083667412,
+        "max_velocity_error_m_s": 4.885958071585874e-07,
+        "rms_velocity_error_m_s": 1.6349772491971502e-07,
+        "max_dposition_dt_minus_velocity_m_s": 1.0898954476521352e-06,
+        "passed": true
+      }
+    },
+    "software": {
+      "tudatpy": "1.0.0.dev75",
+      "casadi": "3.7.2",
+      "numpy": "2.5.3",
+      "scipy": "1.18.1"
+    },
+    "tip_result_sha256": "7646aa9d0a970370628fc875998725bc69b7ff4e74b466012ea200bf91722f5d",
+    "mu_m3_s2": {
+      "10": 1.3271244004127939e+20,
+      "399": 398600435507022.6,
+      "499": 42828373620699.086
+    }
+  },
+  "backend_checks": {
+    "Earth": {
+      "comparison_epochs": 1003,
+      "max_native_tudat_position_difference_m": 0.0005864220840629771,
+      "max_casadi_position_difference_m": 6.198149417599457e-05,
+      "max_native_tudat_velocity_difference_m_s": 1.1242840806674626e-10,
+      "max_casadi_velocity_difference_m_s": 8.911191772433732e-12,
+      "max_casadi_first_derivative_component_difference": 4.516550689004362e-09,
+      "max_casadi_second_derivative_component_difference": 1.2939952928614495e-12,
+      "max_central_difference_first_derivative_component_difference": 8.504128345521167e-06
+    },
+    "Mars": {
+      "comparison_epochs": 1003,
+      "max_native_tudat_position_difference_m": 0.0004902442573979902,
+      "max_casadi_position_difference_m": 9.159246218523384e-05,
+      "max_native_tudat_velocity_difference_m_s": 4.9889743065805225e-11,
+      "max_casadi_velocity_difference_m_s": 7.554830392944564e-12,
+      "max_casadi_first_derivative_component_difference": 7.616108632646501e-09,
+      "max_casadi_second_derivative_component_difference": 2.152509290601068e-12,
+      "max_central_difference_first_derivative_component_difference": 6.519989256048575e-06
+    }
+  },
+  "kernel_free_evaluation_verified": true,
+  "cache_sha256": "b315830a03c8ba2ea365d7b95d85f1a3f45bd5bee6a21a1dca9bfd6ae4953459",
+  "cache_bytes": 3178044,
+  "build_and_validation_wall_seconds": 5.383391999988817,
+  "implementation_sha256": {
+    "build_ephemeris_cache.py": "04c746af96535fe4e1f0e9a465d2d7521588ae226faccbeca3c68144ecd4aebf",
+    "ephemeris_cache.py": "9da96129c5fd3ad7bad3148d04dd98ab8bf47f4b4129607491bdef9897f2d1e8"
+  },
+  "sources": [
+    "https://py.api.tudat.space/en/latest/dynamics/environment_setup/ephemeris.html#tudatpy.dynamics.environment_setup.ephemeris.interpolated_spice",
+    "https://py.api.tudat.space/en/latest/math/interpolators.html",
+    "https://web.casadi.org/docs/#using-lookup-tables"
+  ]
+}

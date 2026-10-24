@@ -1,0 +1,260 @@
+{
+  "status": "Dynamics-only Mars coast initial guess generated and validated; not an optimisation result",
+  "start_epoch": {
+    "et_tdb_s": 832017139.3590969,
+    "utc": "2026-05-14T07:51:10.173817Z",
+    "tdb_calendar": "2026-05-14 07:52:19.359096"
+  },
+  "exit_epoch": {
+    "et_tdb_s": 832273543.6711266,
+    "utc": "2026-05-17T07:04:34.485902Z",
+    "tdb_calendar": "2026-05-17 07:05:43.671126"
+  },
+  "duration_s": 256404.31202970917,
+  "duration_days": 2.9676425003438562,
+  "mars_relative_initial_state_si": [
+    523275290.6052172,
+    -228950990.3131053,
+    -83483489.39119093,
+    -4052.725386430632,
+    1714.0028059569695,
+    697.8440470639757
+  ],
+  "mars_relative_exit_state_si": [
+    -440790788.8198808,
+    364401635.4682289,
+    -78230475.41574287,
+    -3361.440647199793,
+    2849.1853176796835,
+    -657.4456567233098
+  ],
+  "sun_relative_exit_state_si": [
+    206505363824.21082,
+    31598377292.616707,
+    8666499108.811155,
+    -6148.963667987573,
+    26472.259522076074,
+    10253.10256851594
+  ],
+  "exit_soi_radius_m": 577239186.7537631,
+  "periapsis": {
+    "epoch": {
+      "et_tdb_s": 832145341.5151118,
+      "utc": "2026-05-15T19:27:52.329859Z",
+      "tdb_calendar": "2026-05-15 19:29:01.515111"
+    },
+    "centre_distance_m": 8029155.32924356,
+    "mars_relative_state_si": [
+      -2923985.1701061474,
+      -4801576.891918544,
+      5732582.784148298,
+      -4693.113480964347,
+      2888.4650818553923,
+      25.571888929033324
+    ],
+    "use": "diagnostic only; no new constraint"
+  },
+  "seed_mass_kg": 2747.0,
+  "seed_thrust_n": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "seed_sigma_n": 0.0,
+  "mass_provenance": "Carried from Earth coast seed. The ungenerated zero-thrust solar coast preserves mass. This is not a measured Mars mass or a fixed OCP boundary mass.",
+  "gravity": "Mars point mass only",
+  "mu_mars_m3_s2": 42828373620699.086,
+  "frame": "J2000",
+  "origin_id": 499,
+  "units": "m, m/s, kg",
+  "time_scale": "ET/TDB seconds since J2000",
+  "soi": "fixed-semimajor-axis Laplace model",
+  "semimajor_axis_m": 227943822427.57306,
+  "integrator": {
+    "method": "DOP853 IVP",
+    "rtol": 2e-12,
+    "atol_si": [
+      1e-05,
+      1e-05,
+      1e-05,
+      1e-09,
+      1e-09,
+      1e-09,
+      1e-10
+    ],
+    "max_step_s": 3600.0,
+    "search_horizon_s": 864000.0,
+    "refined_rtol": 2e-13,
+    "refined_max_step_s": 900.0
+  },
+  "checks": {
+    "max_kepler_position_difference_m": 0.0007131395775372042,
+    "max_kepler_velocity_difference_m_s": 8.509987698733586e-08,
+    "exit_epoch_refinement_difference_s": 2.403976395726204e-08,
+    "exit_position_refinement_difference_m": 8.092065399301982e-05,
+    "exit_velocity_refinement_difference_m_s": 1.041719907296888e-09,
+    "max_c3_drift_m2_s2": 9.558349847793579e-05,
+    "max_relative_angular_momentum_drift": 9.04171150280692e-12,
+    "entry_soi_residual_m": 9.47713851928711e-05,
+    "exit_soi_residual_m": 1.1920928955078125e-07,
+    "exit_surface_crossing_rate_m_s": 4454.60427714745,
+    "max_mass_change_kg": 0.0,
+    "sun_translation_position_closure_m": 4.7121609153872425e-06,
+    "sun_translation_velocity_closure_m_s": 7.279509460923746e-13,
+    "spacecraft_ephemeris_queries_during_rollout": 0,
+    "spice_kernels_loaded_during_rollout": 0,
+    "tudat_kernels_loaded_during_rollout": 0,
+    "sample_count": 5083
+  },
+  "spk_comparison": {
+    "definition": "Rollout minus reconstructed SPK, at identical epochs in Mars-centred J2000. Sample maxima, not rigorous continuous bounds.",
+    "sample_count": 5083,
+    "uniform_rms_sample_count": 4001,
+    "max_position_difference_m": 1522251.4770700007,
+    "max_velocity_difference_m_s": 12.484242985203291,
+    "uniform_time_rms_position_difference_m": 619651.4438057513,
+    "uniform_time_rms_velocity_difference_m_s": 8.533718040435353,
+    "at_seed_exit_position_difference_m": 1522251.4770700007,
+    "at_seed_exit_velocity_difference_m_s": 12.063259144693355,
+    "at_seed_exit_difference_si": [
+      -23929.59640467167,
+      464014.7878744602,
+      1449609.3302995563,
+      0.6665289472421136,
+      4.127030158407251,
+      11.315722797334388
+    ],
+    "reconstructed_exit_epoch": {
+      "et_tdb_s": 832273568.9829991,
+      "utc": "2026-05-17T07:04:59.797774Z",
+      "tdb_calendar": "2026-05-17 07:06:08.982999"
+    },
+    "seed_minus_reconstructed_exit_epoch_s": -25.311872482299805,
+    "seed_minus_reconstructed_periapsis_epoch_s": -10.45621407032013,
+    "seed_minus_reconstructed_periapsis_radius_m": 28935.60243598651,
+    "reference_at_seed_exit_mars_state_si": [
+      -440766859.2234761,
+      363937620.6803544,
+      -79680084.74604243,
+      -3362.1071761470353,
+      2845.0582875212763,
+      -668.7613795206441
+    ],
+    "stored_entry_position_reproduction_m": 0.0,
+    "stored_entry_velocity_reproduction_m_s": 0.0,
+    "tudat_vs_raw_at_exit_position_m": 0.0,
+    "tudat_vs_raw_at_exit_velocity_m_s": 0.0,
+    "cached_vs_direct_translation_position_m": 0.000920143015946786,
+    "cached_vs_direct_translation_velocity_m_s": 2.513939273117165e-07,
+    "coverage_verified_for_full_rollout": true,
+    "use": "Validation only. No SPK history used for initialisation; no fitting or endpoint snapping."
+  },
+  "literature_review": {
+    "search_date": "2026-10-23",
+    "finding": "No explicit exact Mars SOI-entry timestamp found in the primary mission sources and literature inspected. No independent published SOI epoch is available from this search for an event-error comparison.",
+    "sources": [
+      {
+        "title": "NASA's Psyche Mission to Fly by Mars for Gravity Assist",
+        "date": "2026-05-08",
+        "url": "https://science.nasa.gov/blogs/psyche/2026/05/08/nasas-psyche-mission-to-fly-by-mars-for-gravity-assist/",
+        "finding": "Reports May 15 flyby; does not specify an SOI-entry timestamp or radius convention."
+      },
+      {
+        "title": "NASA's Psyche Mission Aces Mars Flyby, Targets Metal-Rich Asteroid",
+        "date": "2026-05-19",
+        "url": "https://www.nasa.gov/missions/psyche-mission/nasas-psyche-mission-aces-mars-flyby-targets-metal-rich-asteroid/",
+        "finding": "Reports May 15 closest approach and 4609 km surface altitude; no exact SOI entry. Image acquisition times are not SOI-entry events."
+      },
+      {
+        "title": "Psyche Mission Description and Design Rationale",
+        "year": 2025,
+        "doi": "10.1007/s11214-025-01218-x",
+        "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC12521304/",
+        "finding": "Mission synopsis and Mars gravity-assist navigation section give May 2026 and operations/maneuver windows relative to closest approach; no exact SOI entry found. Operational phase limits are not SOI crossings."
+      },
+      {
+        "title": "JPL MDNav reconstructed spacecraft SPK",
+        "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_rec_260501-260713_260804_v1.bsp",
+        "finding": "Binary comments identify reconstruction, centre-chain models, creation time and coverage endpoints; do not label SOI-entry/exit timestamps. Exact segment endpoints are data-structure metadata."
+      }
+    ],
+    "queries": [
+      "Psyche Mars flyby May 2026 sphere of influence entry",
+      "Psyche Mars SOI 2026 May 14",
+      "\"Psyche\" \"2026\" \"SOI entry\"",
+      "\"Psyche\" \"2026\" \"sphere-of-influence\" Mars",
+      "\"Psyche\" \"Mars\" \"sphere of influence\" site:jpl.nasa.gov",
+      "\"Psyche\" \"Mars\" \"SOI\" site:nasa.gov",
+      "\"Psyche\" \"May 14\" \"2026\" \"07:51\""
+    ],
+    "scope_limit": "Web search and listed primary sources, not an exhaustive search of internal mission documents. Unverified secondary/forum statements are not timing evidence. The NAIF web index yielded no matching timestamp/label; local pinned binary metadata supplies the segment comparison.",
+    "computed_entry_instantaneous": {
+      "et_tdb_s": 832027805.40365,
+      "utc": "2026-05-14T10:48:56.218372Z",
+      "tdb_calendar": "2026-05-14 10:50:05.403650"
+    },
+    "computed_entry_fixed_a": {
+      "et_tdb_s": 832017139.3590969,
+      "utc": "2026-05-14T07:51:10.173817Z",
+      "tdb_calendar": "2026-05-14 07:52:19.359096"
+    },
+    "fixed_a_entry_minus_instantaneous_s": -10666.044553160667,
+    "spk_mars_barycentric_segment_start": {
+      "et_tdb_s": 832017140.9724041,
+      "utc": "2026-05-14T07:51:11.787124Z",
+      "tdb_calendar": "2026-05-14 07:52:20.972404"
+    },
+    "spk_mars_barycentric_segment_end": {
+      "et_tdb_s": 832273567.3695002,
+      "utc": "2026-05-17T07:04:58.184275Z",
+      "tdb_calendar": "2026-05-17 07:06:07.369500"
+    },
+    "segment_start_minus_fixed_a_entry_s": 1.613307237625122,
+    "segment_start_minus_instantaneous_entry_s": -10664.431245923042,
+    "segment_end_minus_fixed_a_exit_s": -1.6134989261627197,
+    "interpretation": "The segment-start proximity to the fixed-a crossing is suggestive of a similar boundary choice during SPK construction, but its purpose is undocumented here. It is not independent confirmation of a published SOI event."
+  },
+  "limitations": [
+    "Mars point mass only; solar tides, Mars harmonics, moons and other perturbations omitted by the requested phase model.",
+    "A Mars-centred frame is accelerating, so the omitted solar effect is differential solar acceleration (tides), not the full heliocentric solar acceleration.",
+    "The seed has zero thrust, but the OCP Mars phase remains allowed to thrust and move its exit epoch/state.",
+    "Published entry covariance unavailable; microseconds describe numerical precision conditional on the SPK/model, not physical accuracy.",
+    "Solar phases, spacecraft arrival boundary extraction and multiphase optimisation remain pending."
+  ],
+  "provenance": {
+    "fixed_mars_boundary_sha256": "d46a7636033288769f86668d40f97643d4e4abf9a47e78c7ef72921a023ba44e",
+    "earth_seed_sha256": "1408f3c3b2024871bd4b1426ccb67563ac90a2a24b5707f5172db6967e039458",
+    "planetary_cache_sha256": "b315830a03c8ba2ea365d7b95d85f1a3f45bd5bee6a21a1dca9bfd6ae4953459",
+    "validation_kernel_load_order": [
+      {
+        "name": "naif0012.tls",
+        "url": "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/lsk/naif0012.tls",
+        "sha256": "678e32bdb5a744117a467cd9601cd6b373f0e9bc9bbde1371d5eee39600a039b"
+      },
+      {
+        "name": "gm_de440.tpc",
+        "url": "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/pck/gm_de440.tpc",
+        "sha256": "924ddf4fb9ead9fe8a1aa55780bcabde40b09d00065d58226e24b68d8092f140"
+      },
+      {
+        "name": "mar097.bsp",
+        "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/mar097.bsp",
+        "sha256": "201fc87075a7aaefc8b4d7f7545881079f906414fae38c5e36b1786f738dca63"
+      },
+      {
+        "name": "de440s.bsp",
+        "url": "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/de440s.bsp",
+        "sha256": "c1c7feeab882263fc493a9d5a5b2ddd71b54826cdf65d8d17a76126b260a49f2"
+      },
+      {
+        "name": "psyche_rec_260501-260713_260804_v1.bsp",
+        "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_rec_260501-260713_260804_v1.bsp",
+        "sha256": "65a80b4e8d72ac6bdf8177df54525e39de5f812e05c73d7261a6b3e7673476b6"
+      }
+    ],
+    "implementation_sha256": {
+      "seed_mars_flyby.py": "fcbc4de67798cbacd13529c785de53c685b02b2edd54c81762dfa54da9a74f59",
+      "rollout.py": "ad1c249088fdd6cafa94cfbcb47fca6abaf1245b49b9010be152025defeb3636"
+    }
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "search_date": "2026-10-23",
+  "finding": "No explicit exact Mars SOI-entry timestamp found in the primary mission sources and literature inspected. No independent published SOI epoch is available from this search for an event-error comparison.",
+  "sources": [
+    {
+      "title": "NASA's Psyche Mission to Fly by Mars for Gravity Assist",
+      "date": "2026-05-08",
+      "url": "https://science.nasa.gov/blogs/psyche/2026/05/08/nasas-psyche-mission-to-fly-by-mars-for-gravity-assist/",
+      "finding": "Reports May 15 flyby; does not specify an SOI-entry timestamp or radius convention."
+    },
+    {
+      "title": "NASA's Psyche Mission Aces Mars Flyby, Targets Metal-Rich Asteroid",
+      "date": "2026-05-19",
+      "url": "https://www.nasa.gov/missions/psyche-mission/nasas-psyche-mission-aces-mars-flyby-targets-metal-rich-asteroid/",
+      "finding": "Reports May 15 closest approach and 4609 km surface altitude; no exact SOI entry. Image acquisition times are not SOI-entry events."
+    },
+    {
+      "title": "Psyche Mission Description and Design Rationale",
+      "year": 2025,
+      "doi": "10.1007/s11214-025-01218-x",
+      "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC12521304/",
+      "finding": "Mission synopsis and Mars gravity-assist navigation section give May 2026 and operations/maneuver windows relative to closest approach; no exact SOI entry found. Operational phase limits are not SOI crossings."
+    },
+    {
+      "title": "JPL MDNav reconstructed spacecraft SPK",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_rec_260501-260713_260804_v1.bsp",
+      "finding": "Binary comments identify reconstruction, centre-chain models, creation time and coverage endpoints; do not label SOI-entry/exit timestamps. Exact segment endpoints are data-structure metadata."
+    }
+  ],
+  "queries": [
+    "Psyche Mars flyby May 2026 sphere of influence entry",
+    "Psyche Mars SOI 2026 May 14",
+    "\"Psyche\" \"2026\" \"SOI entry\"",
+    "\"Psyche\" \"2026\" \"sphere-of-influence\" Mars",
+    "\"Psyche\" \"Mars\" \"sphere of influence\" site:jpl.nasa.gov",
+    "\"Psyche\" \"Mars\" \"SOI\" site:nasa.gov",
+    "\"Psyche\" \"May 14\" \"2026\" \"07:51\""
+  ],
+  "scope_limit": "Web search and listed primary sources, not an exhaustive search of internal mission documents. Unverified secondary/forum statements are not timing evidence. The NAIF web index yielded no matching timestamp/label; local pinned binary metadata supplies the segment comparison.",
+  "computed_entry_instantaneous": {
+    "et_tdb_s": 832027805.40365,
+    "utc": "2026-05-14T10:48:56.218372Z",
+    "tdb_calendar": "2026-05-14 10:50:05.403650"
+  },
+  "computed_entry_fixed_a": {
+    "et_tdb_s": 832017139.3590969,
+    "utc": "2026-05-14T07:51:10.173817Z",
+    "tdb_calendar": "2026-05-14 07:52:19.359096"
+  },
+  "fixed_a_entry_minus_instantaneous_s": -10666.044553160667,
+  "spk_mars_barycentric_segment_start": {
+    "et_tdb_s": 832017140.9724041,
+    "utc": "2026-05-14T07:51:11.787124Z",
+    "tdb_calendar": "2026-05-14 07:52:20.972404"
+  },
+  "spk_mars_barycentric_segment_end": {
+    "et_tdb_s": 832273567.3695002,
+    "utc": "2026-05-17T07:04:58.184275Z",
+    "tdb_calendar": "2026-05-17 07:06:07.369500"
+  },
+  "segment_start_minus_fixed_a_entry_s": 1.613307237625122,
+  "segment_start_minus_instantaneous_entry_s": -10664.431245923042,
+  "segment_end_minus_fixed_a_exit_s": -1.6134989261627197,
+  "interpretation": "The segment-start proximity to the fixed-a crossing is suggestive of a similar boundary choice during SPK construction, but its purpose is undocumented here. It is not independent confirmation of a published SOI event."
+}

@@ -10,6 +10,8 @@ dependencies:
   - numpy>=1.26
   - scipy>=1.11
   - matplotlib>=3.8
+  - pillow>=10
+  - spiceypy=8.2.0
   - pip
   - pip:
       - casadi==3.7.2

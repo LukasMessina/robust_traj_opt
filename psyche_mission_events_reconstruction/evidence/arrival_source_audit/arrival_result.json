@@ -1,0 +1,252 @@
+{
+  "schema_version": 1,
+  "status": "verified fixed boundary extracted",
+  "spacecraft_id": -255,
+  "origin_id": 10,
+  "frame": "J2000",
+  "aberration_corrections": "NONE",
+  "units": "m, m/s",
+  "time_scale": "ET/TDB seconds since J2000",
+  "source_kind": "predicted/reference; not reconstructed",
+  "epoch": {
+    "et_tdb_s": 933552069.1832606,
+    "utc": "2029-08-01T12:00:00.000000Z",
+    "tdb_calendar": "2029-08-01 12:01:09.183260"
+  },
+  "sun_relative_state_si": [
+    274725019857.04028,
+    -278199235060.4656,
+    -113367912753.97002,
+    12155.200587002737,
+    13349.754987911092,
+    4696.671351495263
+  ],
+  "asteroid_relative_context": {
+    "origin_id": 2000016,
+    "state_si": [
+      597012.3286247253,
+      6424525.142431259,
+      5608108.096495271,
+      6.3661726011776665,
+      -10.535330710142787,
+      -13.082261456845323
+    ],
+    "centre_distance_km": 8548.790759413703,
+    "relative_speed_m_s": 17.96293159774661,
+    "asteroid_sun_relative_state_si": [
+      274724422844.71167,
+      -278205659585.60803,
+      -113373520862.06651,
+      12148.83441440156,
+      13360.290318621235,
+      4709.753612952108
+    ],
+    "purpose": "Context and frame-translation validation only. The hard target is the spacecraft state, not the asteroid state."
+  },
+  "spacecraft_binary_coverage": [
+    {
+      "start": {
+        "et_tdb_s": 750483837.872274,
+        "utc": "2023-10-13T15:42:48.689916Z",
+        "tdb_calendar": "2023-10-13 15:43:57.872274"
+      },
+      "end": {
+        "et_tdb_s": 1004529988.18554,
+        "utc": "2031-11-01T00:05:19.003032Z",
+        "tdb_calendar": "2031-11-01 00:06:28.185539"
+      }
+    }
+  ],
+  "asteroid_binary_coverage": [
+    {
+      "start": {
+        "et_tdb_s": 750470469.1823572,
+        "utc": "2023-10-13T12:00:00.000000Z",
+        "tdb_calendar": "2023-10-13 12:01:09.182357"
+      },
+      "end": {
+        "et_tdb_s": 1004530089.1825076,
+        "utc": "2031-11-01T00:07:00.000000Z",
+        "tdb_calendar": "2031-11-01 00:08:09.182507"
+      }
+    }
+  ],
+  "selected_spacecraft_segment": {
+    "file": "C:\\Users\\lukas\\OneDrive\\Desktop\\MIT\\Code\\data\\jpl_kernels\\psyche_ref_231013-311101_231016_v1_merged.bsp",
+    "target": -255,
+    "centre": 10,
+    "frame_id": 1,
+    "spk_type": 13,
+    "identifier": "mystic",
+    "start": {
+      "et_tdb_s": 933536653.234281,
+      "utc": "2029-08-01T07:43:04.051016Z",
+      "tdb_calendar": "2029-08-01 07:44:13.234280"
+    },
+    "end": {
+      "et_tdb_s": 933572982.971779,
+      "utc": "2029-08-01T17:48:33.788525Z",
+      "tdb_calendar": "2029-08-01 17:49:42.971778"
+    }
+  },
+  "selected_asteroid_segment": {
+    "file": "C:\\Users\\lukas\\OneDrive\\Desktop\\MIT\\Code\\data\\jpl_kernels\\psyche_ref_231013-311101_231016_v1_merged.bsp",
+    "target": 2000016,
+    "centre": 10,
+    "frame_id": 1,
+    "spk_type": 2,
+    "identifier": "MONTE Chebyshev Polynomial Table",
+    "start": {
+      "et_tdb_s": 750470469.1823572,
+      "utc": "2023-10-13T12:00:00.000000Z",
+      "tdb_calendar": "2023-10-13 12:01:09.182357"
+    },
+    "end": {
+      "et_tdb_s": 1004530089.1825076,
+      "utc": "2031-11-01T00:07:00.000000Z",
+      "tdb_calendar": "2031-11-01 00:08:09.182507"
+    }
+  },
+  "kernel": {
+    "name": "psyche_ref_231013-311101_231016_v1_merged.bsp",
+    "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_231013-311101_231016_v1_merged.bsp",
+    "sha256": "ac66af58c0e02230e5f652ae323df64c784dc1d4bd242f65fc5aa467779d3958"
+  },
+  "load_order": [
+    {
+      "name": "naif0012.tls",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/lsk/naif0012.tls",
+      "sha256": "678e32bdb5a744117a467cd9601cd6b373f0e9bc9bbde1371d5eee39600a039b"
+    },
+    {
+      "name": "psyche_ref_231013-311101_231016_v1_merged.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_231013-311101_231016_v1_merged.bsp",
+      "sha256": "ac66af58c0e02230e5f652ae323df64c784dc1d4bd242f65fc5aa467779d3958"
+    }
+  ],
+  "provenance": {
+    "merged_creation_stamp": "2023-10-16/09:40:28.90 (time zone not stated)",
+    "arrival_source_piece": "psyche_ref_231005-290817_230322_v1_SUNcenter.bsp",
+    "asteroid_source_piece": "sb_psyche_ssd_180411.bsp",
+    "first_asteroid_centred_segment": {
+      "start": {
+        "et_tdb_s": 934895005.182941,
+        "utc": "2029-08-17T01:02:16.000041Z",
+        "tdb_calendar": "2029-08-17 01:03:25.182940"
+      },
+      "end": {
+        "et_tdb_s": 939733405.182941,
+        "utc": "2029-10-12T01:02:16.000587Z",
+        "tdb_calendar": "2029-10-12 01:03:25.182940"
+      },
+      "target": -255,
+      "centre": 2000016,
+      "frame_id": 1,
+      "frame": "J2000",
+      "spk_type": 13,
+      "identifier": "mystic"
+    },
+    "first_science_orbit_reference_piece": "psyc_290817_291012_A_R811_i90_res70-9_gravity7_221201.bsp",
+    "first_science_orbit_reference_start": {
+      "et_tdb_s": 934895005.182941,
+      "utc": "2029-08-17T01:02:16.000041Z",
+      "tdb_calendar": "2029-08-17 01:03:25.182940"
+    },
+    "note": "Source-piece attribution comes from the merged kernel comments; source force-model comments were excluded from the merge."
+  },
+  "latest_reference_audit": {
+    "kernel": {
+      "name": "psyche_ref_261102-290224_261007_v1.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_261102-290224_261007_v1.bsp",
+      "sha256": "ccf73f1a525c7c0d9789da78ac46d1168648d620f1a1cd5757c6eb65cef1f28e"
+    },
+    "coverage": [
+      {
+        "start": {
+          "et_tdb_s": 846907869.182533,
+          "utc": "2026-11-02T16:10:00.000000Z",
+          "tdb_calendar": "2026-11-02 16:11:09.182533"
+        },
+        "end": {
+          "et_tdb_s": 919940661.9417,
+          "utc": "2029-02-24T23:03:12.756387Z",
+          "tdb_calendar": "2029-02-24 23:04:21.941699"
+        }
+      }
+    ],
+    "covers_arrival": false
+  },
+  "literature_time_comparison": {
+    "published_clock_time_scale": "TDB",
+    "published_epoch": {
+      "et_tdb_s": 933552000.0,
+      "utc": "2029-08-01T11:58:50.816739Z",
+      "tdb_calendar": "2029-08-01 12:00:00.000000"
+    },
+    "requested_utc_epoch_minus_published_epoch_s": 69.1832605600357,
+    "heliocentric_position_difference_m": 1290640.5249973277,
+    "velocity_difference_m_s": 0.05447659694683941,
+    "interpretation": "Literature epoch is an approximate science reference date, not an exact mission event. User UTC boundary retained."
+  },
+  "validation": {
+    "spacecraft_and_asteroid_binary_coverage_verified": true,
+    "selected_segment_contains_epoch": true,
+    "tudat_vs_spiceypy_position_error_m": 0.0,
+    "tudat_vs_spiceypy_velocity_error_m_s": 0.0,
+    "translation_closure_position_error_m": 2.7340540756801803e-05,
+    "translation_closure_velocity_error_m_s": 4.627264660020084e-13,
+    "finite_difference_step_s": 10.0,
+    "dposition_dt_minus_velocity_m_s": 2.2582356184505314e-06,
+    "de440_addition_max_state_component_change": 0.0,
+    "utc_roundtrip_error_s": 0.0,
+    "latest_out_of_coverage_rejected": true,
+    "kernel_pools_cleared": true,
+    "meaning": "Numerical extraction checks only; not independent physical accuracy estimates. Both APIs use CSPICE.",
+    "passed": true
+  },
+  "source_review_date": "2026-10-23",
+  "sources": [
+    {
+      "title": "MSc thesis, MIS-REQ-01, printed p.15 / PDF p.33",
+      "location": "C:/Users/lukas/Downloads/MSc_Thesis_Lukas_Messina_Final_Version (9).pdf",
+      "finding": "Defines the fixed arrival boundary as 1 August 2029, 12:00:00 UTC."
+    },
+    {
+      "title": "NASA/JPL Psyche mission press kit",
+      "url": "https://www.jpl.nasa.gov/press-kits/psyche/mission/",
+      "finding": "Plans capture around late July 2029 and science operations beginning in August; no exact 1 August noon UTC capture epoch."
+    },
+    {
+      "title": "NASA mission update, 22 October 2026",
+      "url": "https://science.nasa.gov/blogs/psyche/2026/10/22/pedal-to-the-metal-nasas-psyche-heads-toward-asteroid-belt/",
+      "finding": "Still describes rendezvous by summer 2029, without an exact arrival day or time."
+    },
+    {
+      "title": "Ermakov (2026), Interrogating 16 Psyche's Interior with Rotational Dynamics and Gravity Field, PSJ 7, 170",
+      "url": "https://doi.org/10.3847/PSJ/ae7f03",
+      "published": "2026-07-14",
+      "finding": "Uses 1 August 2029, 12:00:00 TDB as the pole-deviation analysis reference epoch, approximating the science-phase start. This is not an exact capture event and its time scale differs from the thesis."
+    },
+    {
+      "title": "Polanskey et al. (2025), Psyche Mission Description and Design Rationale",
+      "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC12521304/",
+      "doi": "10.1007/s11214-025-01218-x",
+      "finding": "Table 9 gives 17 August 2029 as the changeable Orbit A planning start, consistent with the old reference's Orbit A piece. Capture occurs during normal electric-thrust approach rather than as a separate targeted capture maneuver."
+    },
+    {
+      "title": "NAIF Psyche SPK archive",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/",
+      "finding": "Archive snapshot and all reference-SPK labels audited; selected merged and newest reference binaries inspected directly."
+    }
+  ],
+  "limitations": [
+    "A future 2029 state is predicted, not reconstructed flight data.",
+    "Only the old 2023 merged reference label covers this epoch among the 38 reference kernels in the inspected directory. Selected and newest binaries were verified; the other kernels were audited via labels only.",
+    "The target combines an older arrival design with the reconstructed 2026 Mars boundary. Joint feasibility under the chosen four-phase model is not established.",
+    "No primary source reviewed establishes 1 August 2029 at noon UTC as the exact physical capture or orbit-insertion event. It is retained as the user/thesis boundary.",
+    "UTC-to-ET conversion uses naif0012.tls; leap seconds announced before 2029 could change the ET associated with the fixed future UTC clock time. Recompute then.",
+    "Asteroid gravity can matter near this endpoint. The requested final Sun-only phase is a modelling approximation; matching a state does not validate its force model.",
+    "Numerical precision shown is not a claim of physical orbit accuracy. No covariance is available here.",
+    "Validation track samples are separate from all dynamics-only initial guesses. No solar rollout or optimisation is performed in this stage."
+  ]
+}

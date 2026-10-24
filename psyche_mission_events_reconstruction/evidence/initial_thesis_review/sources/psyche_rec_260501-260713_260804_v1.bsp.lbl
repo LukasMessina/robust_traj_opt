@@ -1,0 +1,22 @@
+ 
+Created by Monte 176.1 on 2026/08/04 17:12 UTC.
+This SPK is a reconstruction of the Psyche spacecraft trajectory
+Produced by the Psyche Mission Design and Navigation team at the
+Jet Propulsion Laboratory.
+Email contact: psyche.mdnav@jpl.nasa.gov
+Spacecraft name: PSYC
+Spacecraft ID: -255
+Planetary ephemeris: de440, mar097
+Filename     : psyche_rec_260501-260713_260804_v1.bsp
+Start Epoch  : 01-MAY-2026 23:59:59.0000 UTC
+End Epoch    : 13-JUL-2026 22:40:00.0000 UTC
+ 
+ 
+BRIEF -- Version 4.1.0, September 17, 2021 -- Toolkit Version N0067
+ 
+ 
+Summary for: psyche_rec_260501-260713_260804_v1.bsp
+ 
+Bodies     Start of Interval (ET)          End of Interval (ET)
+-------    -----------------------------   -----------------------------
+-255 PSYC  2026 MAY 02 00:01:08.185        2026 JUL 13 22:41:09.183

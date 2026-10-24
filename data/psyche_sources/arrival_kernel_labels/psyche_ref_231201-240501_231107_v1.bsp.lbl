@@ -1,0 +1,27 @@
+ 
+; traj_psyche.bsp LOG FILE
+ 
+; Created 2023-11-07/13:42:12.29.
+;
+; BEGIN SPKMERGE COMMANDS
+ 
+LEAPSECONDS_KERNEL   = /nav/psyche/import/leapsec/leapseconds.tls
+ 
+SPK_KERNEL           = traj_psyche.bsp
+  SOURCE_SPK_KERNEL  = LDST_Dec13_180000UTC.bsp
+    INCLUDE_COMMENTS = NO
+    BODIES           = -255
+    BEGIN_TIME       = 2023 DEC 01 12:00:00.000
+    END_TIME         = 2024 APR 30 23:59:00.000
+ 
+; END SPKMERGE COMMANDS
+ 
+ 
+BRIEF -- Version 3.0.0, January 14, 2008 -- Toolkit Version N0064
+ 
+ 
+Summary for: psyche_ref_231201-240501_231107_v1.bsp
+ 
+BodiesStart of Interval (ET)          End of Interval (ET)
+-----------------------------------   -----------------------------
+-255  2023 DEC 01 12:01:09.183        2024 MAY 01 00:00:09.185

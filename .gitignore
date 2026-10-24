@@ -11,6 +11,20 @@ solvers/
 # Downloaded JPL kernels (sources and hashes are saved with each solution).
 data/jpl_kernels/
 
+# Downloaded cartographic maps and orientation kernels (manifest is versioned).
+data/planet_textures/*
+!data/planet_textures/manifest.json
+
 # Generated optimization summaries
 output/**/summary.txt
 output/**/*.log
+
+# Generated local font/formatter caches and immutable solver output snapshots.
+/.cache/
+/output/
+
+# Version the pinned scientific inputs and reconstruction evidence despite the
+# broad generated-file rules above. Large downloaded kernels remain excluded.
+!psyche_mission_events_reconstruction/**/*.json
+!psyche_mission_events_reconstruction/artifacts/**/*.npz
+!psyche_mission_events_reconstruction/artifacts/**/*.csv

@@ -1,0 +1,807 @@
+{
+  "review_date": "2026-10-23",
+  "directory_snapshot": "C:\\Users\\lukas\\OneDrive\\Desktop\\MIT\\Code\\data\\psyche_sources\\spk_directory_20261023.html",
+  "directory_sha256": "d0a65526396a2901e5e85e20982c5e9a58550ea2c59eb7af4475fb5830985009",
+  "reference_kernel_count": 38,
+  "qualification": "Coverage is label-reported except for the two explicitly inspected binaries; ET label endpoints are rounded to milliseconds.",
+  "records": [
+    {
+      "file": "psyche_ref_231013-311101_231016_v1_merged.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_231013-311101_231016_v1_merged.bsp.lbl",
+      "label_sha256": "56f125fad11628f8d6467f23b5536fba796a798dd034a3c9d106fb15726bc909",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 750483837.872,
+            "utc": "2023-10-13T15:42:48.689642Z",
+            "tdb_calendar": "2023-10-13 15:43:57.871999"
+          },
+          "end": {
+            "et_tdb_s": 1004529988.185,
+            "utc": "2031-11-01T00:05:19.002492Z",
+            "tdb_calendar": "2031-11-01 00:06:28.184999"
+          }
+        }
+      ],
+      "label_covers_arrival": true,
+      "binary_inspected": true
+    },
+    {
+      "file": "psyche_ref_231201-240430_231129_v1.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_231201-240430_231129_v1.bsp.lbl",
+      "label_sha256": "dc0623f71e7c4a774d4a776bc5970032b35bd81bf74818575d0c1d965f392624",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 754704069.183,
+            "utc": "2023-12-01T11:59:59.999921Z",
+            "tdb_calendar": "2023-12-01 12:01:09.182999"
+          },
+          "end": {
+            "et_tdb_s": 767750400.0,
+            "utc": "2024-04-30T11:58:50.814516Z",
+            "tdb_calendar": "2024-04-30 12:00:00.000000"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": false
+    },
+    {
+      "file": "psyche_ref_231201-240501_231107_v1.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_231201-240501_231107_v1.bsp.lbl",
+      "label_sha256": "90311c459d8ad56326fe94a15daebbd6bf4e3f7010fcf6d82d0a794667456262",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 754704069.183,
+            "utc": "2023-12-01T11:59:59.999921Z",
+            "tdb_calendar": "2023-12-01 12:01:09.182999"
+          },
+          "end": {
+            "et_tdb_s": 767793609.185,
+            "utc": "2024-04-30T23:58:59.999523Z",
+            "tdb_calendar": "2024-05-01 00:00:09.184999"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": false
+    },
+    {
+      "file": "psyche_ref_240101-240630_231208_v1_thrustStart240412.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_240101-240630_231208_v1_thrustStart240412.bsp.lbl",
+      "label_sha256": "f15c739e40c1862341e923c05fdca9f37739fd781141db4a6d377b87b33dc472",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 757382469.183,
+            "utc": "2024-01-01T11:59:59.999079Z",
+            "tdb_calendar": "2024-01-01 12:01:09.182999"
+          },
+          "end": {
+            "et_tdb_s": 773064009.184,
+            "utc": "2024-06-30T23:58:59.999892Z",
+            "tdb_calendar": "2024-07-01 00:00:09.184000"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": false
+    },
+    {
+      "file": "psyche_ref_240121-240430_231218_v1.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_240121-240430_231218_v1.bsp.lbl",
+      "label_sha256": "2d137a38eb792c5a7cb9dc5e3f3d2ebb35a378c52ed5a213b0da1a16c5f781f8",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 759110400.0,
+            "utc": "2024-01-21T11:58:50.815508Z",
+            "tdb_calendar": "2024-01-21 12:00:00.000000"
+          },
+          "end": {
+            "et_tdb_s": 767750400.0,
+            "utc": "2024-04-30T11:58:50.814516Z",
+            "tdb_calendar": "2024-04-30 12:00:00.000000"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": false
+    },
+    {
+      "file": "psyche_ref_240127-260401_240308_v1_SHORT.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_240127-260401_240308_v1_SHORT.bsp.lbl",
+      "label_sha256": "9efd43644c8648cc73f53ac068f46c54a11893215e7a04acc17aa43669503014",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 759628869.184,
+            "utc": "2024-01-27T11:59:59.999345Z",
+            "tdb_calendar": "2024-01-27 12:01:09.184000"
+          },
+          "end": {
+            "et_tdb_s": 764848870.184,
+            "utc": "2024-03-27T22:00:00.998354Z",
+            "tdb_calendar": "2024-03-27 22:01:10.184000"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": false
+    },
+    {
+      "file": "psyche_ref_240215-240405_240111_v1.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_240215-240405_240111_v1.bsp.lbl",
+      "label_sha256": "af7188d905701290d165a41255f9178db22a8c64d302a343a45ae8bc8e110f48",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 761270469.185,
+            "utc": "2024-02-15T11:59:59.999885Z",
+            "tdb_calendar": "2024-02-15 12:01:09.184999"
+          },
+          "end": {
+            "et_tdb_s": 765590469.185,
+            "utc": "2024-04-05T11:59:59.999344Z",
+            "tdb_calendar": "2024-04-05 12:01:09.184999"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": false
+    },
+    {
+      "file": "psyche_ref_240327-290716_240226_v1.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_240327-290716_240226_v1.bsp.lbl",
+      "label_sha256": "75477860f2f6e946b1c5e2ed93e4f51115f422d6e13844afd8b920d06542a0e2",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 764848869.195,
+            "utc": "2024-03-27T22:00:00.009354Z",
+            "tdb_calendar": "2024-03-27 22:01:09.195000"
+          },
+          "end": {
+            "et_tdb_s": 932178529.947,
+            "utc": "2029-07-16T14:27:40.763319Z",
+            "tdb_calendar": "2029-07-16 14:28:49.947000"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": false
+    },
+    {
+      "file": "psyche_ref_240327-290716_240307_v1.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_240327-290716_240307_v1.bsp.lbl",
+      "label_sha256": "7eff8bc6ccbdb00da45b1a03d0f4bf78467319acf4e8bf1903008a341f3af882",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 764848870.185,
+            "utc": "2024-03-27T22:00:00.999354Z",
+            "tdb_calendar": "2024-03-27 22:01:10.184999"
+          },
+          "end": {
+            "et_tdb_s": 932178529.947,
+            "utc": "2029-07-16T14:27:40.763319Z",
+            "tdb_calendar": "2029-07-16 14:28:49.947000"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": false
+    },
+    {
+      "file": "psyche_ref_240513-290716_240418_v1.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_240513-290716_240418_v1.bsp.lbl",
+      "label_sha256": "820fb50e7456cd01c1e91bab1e5674e118d587f68f966d0debdd02c484a67fe3",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 768898869.185,
+            "utc": "2024-05-13T18:59:59.999720Z",
+            "tdb_calendar": "2024-05-13 19:01:09.184999"
+          },
+          "end": {
+            "et_tdb_s": 932178529.947,
+            "utc": "2029-07-16T14:27:40.763319Z",
+            "tdb_calendar": "2029-07-16 14:28:49.947000"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": false
+    },
+    {
+      "file": "psyche_ref_240617-290716_240515_v1.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_240617-290716_240515_v1.bsp.lbl",
+      "label_sha256": "728c28e92d3d9c1ff93ac4a875e47b8ab2305b4cafb458cd702f37ab18045790",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 771933669.184,
+            "utc": "2024-06-17T21:59:59.999531Z",
+            "tdb_calendar": "2024-06-17 22:01:09.184000"
+          },
+          "end": {
+            "et_tdb_s": 932178529.947,
+            "utc": "2029-07-16T14:27:40.763319Z",
+            "tdb_calendar": "2029-07-16 14:28:49.947000"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": false
+    },
+    {
+      "file": "psyche_ref_240708-290716_240613_v1.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_240708-290716_240613_v1.bsp.lbl",
+      "label_sha256": "1fb3dc15d988edfbde372f4ea88cb9abf3e64198d3b04577fafc3b2991073a80",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 773727669.183,
+            "utc": "2024-07-08T16:19:59.999107Z",
+            "tdb_calendar": "2024-07-08 16:21:09.182999"
+          },
+          "end": {
+            "et_tdb_s": 932178529.947,
+            "utc": "2029-07-16T14:27:40.763319Z",
+            "tdb_calendar": "2029-07-16 14:28:49.947000"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": false
+    },
+    {
+      "file": "psyche_ref_240805-290716_240711_v1.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_240805-290716_240711_v1.bsp.lbl",
+      "label_sha256": "51f41be1a3837d8c6d24ffc78c9117327e1f4c8af25940168c2c1966c4dc86e8",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 776164569.183,
+            "utc": "2024-08-05T21:14:59.999855Z",
+            "tdb_calendar": "2024-08-05 21:16:09.182999"
+          },
+          "end": {
+            "et_tdb_s": 932178529.947,
+            "utc": "2029-07-16T14:27:40.763319Z",
+            "tdb_calendar": "2029-07-16 14:28:49.947000"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": false
+    },
+    {
+      "file": "psyche_ref_240903-290716_240808_v1.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_240903-290716_240808_v1.bsp.lbl",
+      "label_sha256": "4c8396b360c260ce341afc167c8214258f3feb83bc073d20cf1f8e80821ac099",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 778658469.182,
+            "utc": "2024-09-03T17:59:59.999423Z",
+            "tdb_calendar": "2024-09-03 18:01:09.182000"
+          },
+          "end": {
+            "et_tdb_s": 932178529.947,
+            "utc": "2029-07-16T14:27:40.763319Z",
+            "tdb_calendar": "2029-07-16 14:28:49.947000"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": false
+    },
+    {
+      "file": "psyche_ref_240903-290716_240809_v2.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_240903-290716_240809_v2.bsp.lbl",
+      "label_sha256": "eaa16b8a86cd874c5a3a8332161aa586cfc307fa15a6b70d55508a7a3a84c7e3",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 778658469.182,
+            "utc": "2024-09-03T17:59:59.999423Z",
+            "tdb_calendar": "2024-09-03 18:01:09.182000"
+          },
+          "end": {
+            "et_tdb_s": 932178529.947,
+            "utc": "2029-07-16T14:27:40.763319Z",
+            "tdb_calendar": "2029-07-16 14:28:49.947000"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": false
+    },
+    {
+      "file": "psyche_ref_240923-290716_240827_v1.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_240923-290716_240827_v1.bsp.lbl",
+      "label_sha256": "d558284dcae1ad2e7094ab9ff1e912b405bb9ab3646abca86b33e087c154de02",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 780382869.182,
+            "utc": "2024-09-23T16:59:59.999625Z",
+            "tdb_calendar": "2024-09-23 17:01:09.182000"
+          },
+          "end": {
+            "et_tdb_s": 932178529.947,
+            "utc": "2029-07-16T14:27:40.763319Z",
+            "tdb_calendar": "2029-07-16 14:28:49.947000"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": false
+    },
+    {
+      "file": "psyche_ref_241029-290716_241002_v1.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_241029-290716_241002_v1.bsp.lbl",
+      "label_sha256": "ef24e70d0f5841427b678bd6304d8e8b5e09232550601753ba4d72841db0430b",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 783435669.182,
+            "utc": "2024-10-29T00:59:59.999518Z",
+            "tdb_calendar": "2024-10-29 01:01:09.182000"
+          },
+          "end": {
+            "et_tdb_s": 932178529.947,
+            "utc": "2029-07-16T14:27:40.763319Z",
+            "tdb_calendar": "2029-07-16 14:28:49.947000"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": false
+    },
+    {
+      "file": "psyche_ref_241125-290716_241030_v1.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_241125-290716_241030_v1.bsp.lbl",
+      "label_sha256": "4d0a80e577fba9ef342219dfc8edf68524614bd0544fe056b36003feb5a38d42",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 785835069.182,
+            "utc": "2024-11-25T19:29:59.999037Z",
+            "tdb_calendar": "2024-11-25 19:31:09.182000"
+          },
+          "end": {
+            "et_tdb_s": 932178529.947,
+            "utc": "2029-07-16T14:27:40.763319Z",
+            "tdb_calendar": "2029-07-16 14:28:49.947000"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": false
+    },
+    {
+      "file": "psyche_ref_241230-290716_241205_v1.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_241230-290716_241205_v1.bsp.lbl",
+      "label_sha256": "e51cc5e08388572764d58cfc176d6cb53c1931f7aeff624e71ab0a756aa8996c",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 788866569.183,
+            "utc": "2024-12-30T21:34:59.999104Z",
+            "tdb_calendar": "2024-12-30 21:36:09.182999"
+          },
+          "end": {
+            "et_tdb_s": 932178529.947,
+            "utc": "2029-07-16T14:27:40.763319Z",
+            "tdb_calendar": "2029-07-16 14:28:49.947000"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": false
+    },
+    {
+      "file": "psyche_ref_250204-290716_250113_v1.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_250204-290716_250113_v1.bsp.lbl",
+      "label_sha256": "3c6157debc21396cce2e337de5c816d932173c0b3ee16721ff185ca5f3499456",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 791911569.184,
+            "utc": "2025-02-04T03:24:59.999130Z",
+            "tdb_calendar": "2025-02-04 03:26:09.184000"
+          },
+          "end": {
+            "et_tdb_s": 932178529.947,
+            "utc": "2029-07-16T14:27:40.763319Z",
+            "tdb_calendar": "2029-07-16 14:28:49.947000"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": false
+    },
+    {
+      "file": "psyche_ref_250225-290716_250130_v1.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_250225-290716_250130_v1.bsp.lbl",
+      "label_sha256": "717e279ec108a5bb24b46a5ecaf7649da43b2a1fd6816b3414727721303f3113",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 793733469.185,
+            "utc": "2025-02-25T05:29:59.999681Z",
+            "tdb_calendar": "2025-02-25 05:31:09.184999"
+          },
+          "end": {
+            "et_tdb_s": 932178529.947,
+            "utc": "2029-07-16T14:27:40.763319Z",
+            "tdb_calendar": "2029-07-16 14:28:49.947000"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": false
+    },
+    {
+      "file": "psyche_ref_250227-260601_250506_v1.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_250227-260601_250506_v1.bsp.lbl",
+      "label_sha256": "831e9f4f6bc6aeb4d0d2bf4e7d523533f7211a973352c94345731529701bb5aa",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 793944069.185,
+            "utc": "2025-02-27T15:59:59.999640Z",
+            "tdb_calendar": "2025-02-27 16:01:09.184999"
+          },
+          "end": {
+            "et_tdb_s": 833587269.184,
+            "utc": "2026-06-01T11:59:59.999101Z",
+            "tdb_calendar": "2026-06-01 12:01:09.184000"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": false
+    },
+    {
+      "file": "psyche_ref_250325-290626_250228_v1.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_250325-290626_250228_v1.bsp.lbl",
+      "label_sha256": "0b34d1cee096eb810eeae1dc857bd22bfc61ddfedcf675bab7b986455db5a11c",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 796137969.185,
+            "utc": "2025-03-25T01:24:59.999366Z",
+            "tdb_calendar": "2025-03-25 01:26:09.184999"
+          },
+          "end": {
+            "et_tdb_s": 930450589.496,
+            "utc": "2029-06-26T14:28:40.311761Z",
+            "tdb_calendar": "2029-06-26 14:29:49.496000"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": false
+    },
+    {
+      "file": "psyche_ref_250422-290626_250326_v1.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_250422-290626_250326_v1.bsp.lbl",
+      "label_sha256": "c63db837c660948fe1730ec4616b43db566cc0841a120bcfe31a03891e12f245",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 798557469.185,
+            "utc": "2025-04-22T01:29:59.999423Z",
+            "tdb_calendar": "2025-04-22 01:31:09.184999"
+          },
+          "end": {
+            "et_tdb_s": 930450589.496,
+            "utc": "2029-06-26T14:28:40.311761Z",
+            "tdb_calendar": "2029-06-26 14:29:49.496000"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": false
+    },
+    {
+      "file": "psyche_ref_250422-290626_250411_v1.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_250422-290626_250411_v1.bsp.lbl",
+      "label_sha256": "d61c64f0c7f1901bbdd4246b7593ac646e0be089441424fb1bcb16d8b9750929",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 798557469.185,
+            "utc": "2025-04-22T01:29:59.999423Z",
+            "tdb_calendar": "2025-04-22 01:31:09.184999"
+          },
+          "end": {
+            "et_tdb_s": 930470396.402,
+            "utc": "2029-06-26T19:58:47.217767Z",
+            "tdb_calendar": "2029-06-26 19:59:56.401999"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": false
+    },
+    {
+      "file": "psyche_ref_250520-290626_250424_v1.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_250520-290626_250424_v1.bsp.lbl",
+      "label_sha256": "9c736199d471dd245a10687966241fec7d873fabdf85d584fdb57d89eaaf7e36",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 800972169.185,
+            "utc": "2025-05-20T00:14:59.999833Z",
+            "tdb_calendar": "2025-05-20 00:16:09.184999"
+          },
+          "end": {
+            "et_tdb_s": 930450589.496,
+            "utc": "2029-06-26T14:28:40.311761Z",
+            "tdb_calendar": "2029-06-26 14:29:49.496000"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": false
+    },
+    {
+      "file": "psyche_ref_250520-290626_250501_v1.5.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_250520-290626_250501_v1.5.bsp.lbl",
+      "label_sha256": "fe42466cbe70aa20c80142c6025d5d2d4eb132f89d417251170d12929e00bb7c",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 800972169.185,
+            "utc": "2025-05-20T00:14:59.999833Z",
+            "tdb_calendar": "2025-05-20 00:16:09.184999"
+          },
+          "end": {
+            "et_tdb_s": 930450589.496,
+            "utc": "2029-06-26T14:28:40.311761Z",
+            "tdb_calendar": "2029-06-26 14:29:49.496000"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": false
+    },
+    {
+      "file": "psyche_ref_250617-290626_250522_v1.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_250617-290626_250522_v1.bsp.lbl",
+      "label_sha256": "9b18041ae018d919deca4a6a943bdbdff49efef8d51ae6bd0b8284c19236ce13",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 803391969.184,
+            "utc": "2025-06-17T00:24:59.999500Z",
+            "tdb_calendar": "2025-06-17 00:26:09.184000"
+          },
+          "end": {
+            "et_tdb_s": 930450589.496,
+            "utc": "2029-06-26T14:28:40.311761Z",
+            "tdb_calendar": "2029-06-26 14:29:49.496000"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": false
+    },
+    {
+      "file": "psyche_ref_250714-290626_250618_v1.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_250714-290626_250618_v1.bsp.lbl",
+      "label_sha256": "25861dab1ad23322a30bc23b5c499ce6b59d134e1854f76ffdc20379437c026c",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 805808169.183,
+            "utc": "2025-07-14T23:34:59.999275Z",
+            "tdb_calendar": "2025-07-14 23:36:09.182999"
+          },
+          "end": {
+            "et_tdb_s": 930450589.496,
+            "utc": "2029-06-26T14:28:40.311761Z",
+            "tdb_calendar": "2029-06-26 14:29:49.496000"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": false
+    },
+    {
+      "file": "psyche_ref_250811-290626_250717_v1.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_250811-290626_250717_v1.bsp.lbl",
+      "label_sha256": "b99a9e48835cefafe6faf2bb704f704fff3ebcc1636b9eb9966b18c7df5f3ba3",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 808207269.183,
+            "utc": "2025-08-11T17:59:59.999986Z",
+            "tdb_calendar": "2025-08-11 18:01:09.182999"
+          },
+          "end": {
+            "et_tdb_s": 930450589.496,
+            "utc": "2029-06-26T14:28:40.311761Z",
+            "tdb_calendar": "2029-06-26 14:29:49.496000"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": false
+    },
+    {
+      "file": "psyche_ref_250908-290626_250814_v1.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_250908-290626_250814_v1.bsp.lbl",
+      "label_sha256": "f17ee0cfe4fa67d22bb8718d5c5f778096358dab5658d04ce79723e1f529f684",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 810617469.182,
+            "utc": "2025-09-08T15:29:59.999486Z",
+            "tdb_calendar": "2025-09-08 15:31:09.182000"
+          },
+          "end": {
+            "et_tdb_s": 930450589.496,
+            "utc": "2029-06-26T14:28:40.311761Z",
+            "tdb_calendar": "2029-06-26 14:29:49.496000"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": false
+    },
+    {
+      "file": "psyche_ref_251027-290626_251016_v1.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_251027-290626_251016_v1.bsp.lbl",
+      "label_sha256": "936559900e383a9449efbba1d39d8db30e1bd50ded088a4d0de234707732dd8a",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 814877289.182,
+            "utc": "2025-10-27T22:46:59.999533Z",
+            "tdb_calendar": "2025-10-27 22:48:09.182000"
+          },
+          "end": {
+            "et_tdb_s": 930450589.496,
+            "utc": "2029-06-26T14:28:40.311761Z",
+            "tdb_calendar": "2029-06-26 14:29:49.496000"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": false
+    },
+    {
+      "file": "psyche_ref_260223-290626_260217_v1.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_260223-290626_260217_v1.bsp.lbl",
+      "label_sha256": "44600112e5c7c93b5aa612ed3a57bfc5c3cbd2fca3cbf4c1f2fe677dabe3d503",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 825160479.185,
+            "utc": "2026-02-23T23:13:29.999708Z",
+            "tdb_calendar": "2026-02-23 23:14:39.184999"
+          },
+          "end": {
+            "et_tdb_s": 930450589.496,
+            "utc": "2029-06-26T14:28:40.311761Z",
+            "tdb_calendar": "2029-06-26 14:29:49.496000"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": false
+    },
+    {
+      "file": "psyche_ref_260601-290310_260717_v1.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_260601-290310_260717_v1.bsp.lbl",
+      "label_sha256": "48c131901f760c0a8289e05b3731981e5a97812af1d24a2e65f047a08250b1cc",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 833627295.184,
+            "utc": "2026-06-01T23:07:05.999112Z",
+            "tdb_calendar": "2026-06-01 23:08:15.184000"
+          },
+          "end": {
+            "et_tdb_s": 921103009.1,
+            "utc": "2029-03-10T09:55:39.914489Z",
+            "tdb_calendar": "2029-03-10 09:56:49.100000"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": false
+    },
+    {
+      "file": "psyche_ref_260601-290611_260528_v1.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_260601-290611_260528_v1.bsp.lbl",
+      "label_sha256": "e54738cb5f4841b9abb19c1de44bcd267de600bceff19ed6dc6360146dae48f3",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 833627295.184,
+            "utc": "2026-06-01T23:07:05.999112Z",
+            "tdb_calendar": "2026-06-01 23:08:15.184000"
+          },
+          "end": {
+            "et_tdb_s": 929110310.238,
+            "utc": "2029-06-11T02:10:41.053343Z",
+            "tdb_calendar": "2029-06-11 02:11:50.238000"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": false
+    },
+    {
+      "file": "psyche_ref_260904-290211_260805_v1.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_260904-290211_260805_v1.bsp.lbl",
+      "label_sha256": "db6df1e7a3a12f5ca7d01de3d08d2bd0b9c51e968c7bb1c7bb53fb11e9790f3d",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 841765269.182,
+            "utc": "2026-09-04T03:39:59.999421Z",
+            "tdb_calendar": "2026-09-04 03:41:09.182000"
+          },
+          "end": {
+            "et_tdb_s": 918784152.405,
+            "utc": "2029-02-11T13:48:03.219956Z",
+            "tdb_calendar": "2029-02-11 13:49:12.404999"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": false
+    },
+    {
+      "file": "psyche_ref_261005-290225_260909_v1.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_261005-290225_260909_v1.bsp.lbl",
+      "label_sha256": "07b637a007f496f928b581740a9182464bb92686e829d8a7f22082f663106a11",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 844494069.182,
+            "utc": "2026-10-05T17:39:59.999657Z",
+            "tdb_calendar": "2026-10-05 17:41:09.182000"
+          },
+          "end": {
+            "et_tdb_s": 920014594.268,
+            "utc": "2029-02-25T19:35:25.082672Z",
+            "tdb_calendar": "2029-02-25 19:36:34.268000"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": false
+    },
+    {
+      "file": "psyche_ref_261102-290224_261007_v1.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_261102-290224_261007_v1.bsp.lbl",
+      "label_sha256": "7e5e04e030bfe52192ea5ce96475fbd1da55e7397927f05fdb4d843fc7d52f6b",
+      "label_spacecraft_coverage": [
+        {
+          "start": {
+            "et_tdb_s": 846907869.182,
+            "utc": "2026-11-02T16:09:59.999467Z",
+            "tdb_calendar": "2026-11-02 16:11:09.182000"
+          },
+          "end": {
+            "et_tdb_s": 919940661.941,
+            "utc": "2029-02-24T23:03:12.755687Z",
+            "tdb_calendar": "2029-02-24 23:04:21.940999"
+          }
+        }
+      ],
+      "label_covers_arrival": false,
+      "binary_inspected": true
+    }
+  ]
+}

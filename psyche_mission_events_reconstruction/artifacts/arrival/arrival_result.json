@@ -1,0 +1,140 @@
+{
+  "schema_version": 2,
+  "status": "verified fixed boundary extracted",
+  "constrained_spacecraft_id": -255,
+  "target_body_id": 2000016,
+  "target_name": "16 Psyche asteroid centre",
+  "origin_id": 10,
+  "frame": "J2000",
+  "aberration_corrections": "NONE",
+  "units": "m, m/s",
+  "time_scale": "ET/TDB seconds since J2000",
+  "fixed_epoch_scale": "TDB",
+  "source_kind": "asteroid ephemeris prediction",
+  "epoch": {
+    "et_tdb_s": 933552000.0,
+    "utc": "2029-08-01T11:58:50.816739Z",
+    "tdb_calendar": "2029-08-01 12:00:00.000000"
+  },
+  "sun_relative_state_si": [
+    274723582347.44168,
+    -278206583892.7443,
+    -113373846697.64406,
+    12148.871799044442,
+    13360.252449562,
+    4709.738180783047
+  ],
+  "target_binary_coverage": [
+    {
+      "start": {
+        "et_tdb_s": 750470469.1823572,
+        "utc": "2023-10-13T12:00:00.000000Z",
+        "tdb_calendar": "2023-10-13 12:01:09.182357"
+      },
+      "end": {
+        "et_tdb_s": 1004530089.1825076,
+        "utc": "2031-11-01T00:07:00.000000Z",
+        "tdb_calendar": "2031-11-01 00:08:09.182507"
+      }
+    }
+  ],
+  "selected_target_segment": {
+    "file": "C:\\Users\\lukas\\OneDrive\\Desktop\\MIT\\Code\\data\\jpl_kernels\\psyche_ref_231013-311101_231016_v1_merged.bsp",
+    "target": 2000016,
+    "centre": 10,
+    "frame_id": 1,
+    "spk_type": 2,
+    "identifier": "MONTE Chebyshev Polynomial Table",
+    "start": {
+      "et_tdb_s": 750470469.1823572,
+      "utc": "2023-10-13T12:00:00.000000Z",
+      "tdb_calendar": "2023-10-13 12:01:09.182357"
+    },
+    "end": {
+      "et_tdb_s": 1004530089.1825076,
+      "utc": "2031-11-01T00:07:00.000000Z",
+      "tdb_calendar": "2031-11-01 00:08:09.182507"
+    }
+  },
+  "kernel": {
+    "name": "psyche_ref_231013-311101_231016_v1_merged.bsp",
+    "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_231013-311101_231016_v1_merged.bsp",
+    "sha256": "ac66af58c0e02230e5f652ae323df64c784dc1d4bd242f65fc5aa467779d3958"
+  },
+  "load_order": [
+    {
+      "name": "naif0012.tls",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/lsk/naif0012.tls",
+      "sha256": "678e32bdb5a744117a467cd9601cd6b373f0e9bc9bbde1371d5eee39600a039b"
+    },
+    {
+      "name": "psyche_ref_231013-311101_231016_v1_merged.bsp",
+      "url": "https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_231013-311101_231016_v1_merged.bsp",
+      "sha256": "ac66af58c0e02230e5f652ae323df64c784dc1d4bd242f65fc5aa467779d3958"
+    }
+  ],
+  "source_piece": "sb_psyche_ssd_180411.bsp (from the merged kernel comments)",
+  "planetary_cache": {
+    "path": "psyche_mission_events_reconstruction/artifacts/ephemerides/earth_mars_ephemerides.npz",
+    "sha256": "b315830a03c8ba2ea365d7b95d85f1a3f45bd5bee6a21a1dca9bfd6ae4953459",
+    "validation_report": "psyche_mission_events_reconstruction/artifacts/ephemerides/validation.json"
+  },
+  "constraint": "r_SC/Sun(tf)=r_2000016/Sun(tf); v_SC/Sun(tf)=v_2000016/Sun(tf); tf=933552000 TDB seconds since J2000",
+  "asteroid_relative_terminal_state_si": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "change_from_stage07": {
+    "previous_artifact": "C:\\Users\\lukas\\OneDrive\\Desktop\\MIT\\Code\\output\\psyche\\stage07_arrival\\arrival_result.json",
+    "previous_sha256": "a27747e755d135ca5a5fef43e33369dc27d38d333fd7cc2322483bb94d4e7f77",
+    "new_epoch_minus_old_epoch_s": -69.1832605600357,
+    "previous_boundary_state_minus_new_target_si": [
+      1437509.598602295,
+      7348832.278747559,
+      5933943.674041748,
+      6.3287879582949245,
+      -10.497461650908008,
+      -13.066829287784458
+    ],
+    "reference_spacecraft_minus_asteroid_at_new_epoch_si": [
+      596571.8927979469,
+      6425253.973484039,
+      5609013.137146831,
+      6.366265228159307,
+      -10.534250039938797,
+      -13.081312667596379
+    ],
+    "reference_spacecraft_asteroid_separation_at_new_epoch_km": 8549.901462574566,
+    "reference_spacecraft_asteroid_relative_speed_at_new_epoch_m_s": 17.961639623559932,
+    "context_translation_closure_m": 2.7425650935227167e-05,
+    "purpose": "Quantifies the boundary change only; spacecraft reference samples never seed dynamics."
+  },
+  "validation": {
+    "target_binary_coverage_verified": true,
+    "selected_segment_identity_verified": true,
+    "tudat_vs_spiceypy_position_error_m": 0.0,
+    "tudat_vs_spiceypy_velocity_error_m_s": 0.0,
+    "reverse_state_position_closure_m": 0.0,
+    "reverse_state_velocity_closure_m_s": 0.0,
+    "finite_difference_step_s": 10.0,
+    "dposition_dt_minus_velocity_m_s": 3.4105941727907595e-06,
+    "adding_de440_changes_state": false,
+    "existing_cache_covers_new_endpoint": true,
+    "kernel_pools_cleared": true,
+    "interpretation": "Numerical consistency checks, not a physical ephemeris uncertainty estimate.",
+    "passed": true
+  },
+  "limitations": [
+    "User-selected mathematical rendezvous at the asteroid centre with zero relative velocity; not a physical orbit or surface arrival.",
+    "The final phase retains Sun-only gravity as requested. This model omits local asteroid gravity and surface geometry.",
+    "Asteroid ephemeris is the 2018 solution embedded in the 2023 mission reference; no claim is made that it is the latest asteroid orbit solution.",
+    "The fixed TDB instant is independent of leap seconds. UTC shown uses naif0012.tls and is informational only.",
+    "The revised state and epoch supersede the thesis/previous spacecraft-UTC boundary by explicit user instruction.",
+    "This boundary does not reproduce the nominal spacecraft arrival state. It changes the optimisation objective's terminal constraints.",
+    "No ephemeris mass is prescribed at arrival; final mass remains free."
+  ]
+}

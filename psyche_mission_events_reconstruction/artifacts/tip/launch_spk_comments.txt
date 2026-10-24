@@ -1,0 +1,6 @@
+Created by Monte 166.1 on 2023/12/13 23:53 UTC.
+
+This SPK is a reconstruction of the Psyche spacecraft trajectory
+Produced by the Psyche Mission Design and Navigation team at the Jet Propulsion Laboratory
+
+Email contact: psyche.mdnav@jpl.nasa.gov

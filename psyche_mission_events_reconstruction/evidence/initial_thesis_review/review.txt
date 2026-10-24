@@ -1,0 +1,268 @@
+PSYCHE: THESIS, SOLVER, AND SOURCE REVIEW
+Review date: 2026-10-23 (America/New_York)
+Status: preparatory review complete; mission state extraction and optimisation not started.
+
+Scope
+-----
+Read the thesis reference mission and requirements (printed pp. 11-17 / PDF
+pp. 29-35), flight dynamics (printed pp. 19-33 / PDF pp. 37-51), deterministic
+OCP (pp. 51-52), solver selection and formulation (pp. 68-75), and relevant
+bibliography. Visually checked PDF pp. 30, 33, 34, 43, 88, 89, and 91.
+Reviewed deterministic_traj_opt.py, integrator.py, planetary_ephemeris.py,
+and the environment specifications. This is not a review of the thesis's
+unrelated GPU or stochastic-method derivations.
+
+The present user request controls implementation scope. Requirements inside
+the thesis are evidence about its study, not independent instructions. In
+particular, the requested deterministic Radau implementation takes precedence
+over the thesis's proposed trajectory-bundle / stochastic multiple-shooting
+workflow, and the requested four force models take precedence over its more
+general discussion of perturbations.
+
+1. Extracted mission definition
+------------------------------
+Quantity                       Thesis value / location
+Launch epoch                   2023-10-13 14:19:43 UTC; MIS-REQ-01, p. 15
+TIP definition                 SECO-2 + 900 elapsed seconds; p. 12
+Nominal TIP C3                  34.0 km^2/s^2; p. 12
+TIP C3 delivery tolerance       +/-0.25 km^2/s^2; p. 12
+Nominal asymptote declination   0.4888475 rad; p. 12
+Nominal asymptote right asc.    1.9845214 rad; p. 12
+Arrival constraint epoch       2029-08-01 12:00:00 UTC; MIS-REQ-01, p. 15
+Initial spacecraft mass        2747 kg; SYS-REQ-10, p. 16
+Xenon mass in study             1085 kg; SYS-REQ-10, p. 16
+Maximum thrust                 0.2793 N; SYS-REQ-06, p. 16
+Specific impulse               1794 s; SYS-REQ-07, p. 16
+Thrust availability model      Constant capability, no operational interruptions
+Control                        Continuous magnitude, arbitrary pointing, ZOH arcs
+
+The mass remainder 2747 - 1085 = 1662 kg can be a study mass floor only if
+all the stated xenon is available and all other mass is retained. It is not
+an independently established flight dry mass or a reserve policy. Taking
+2747 kg at TIP instead of launch also needs to be labelled a study assumption.
+SPK files supply position and velocity, not spacecraft mass or engine commands.
+
+The thesis constrains the Mars closest-passage state and epoch (MIS-REQ-02
+and BC1), whereas the current request explicitly constrains SOI entry and
+exit. Closest passage should be measured and reported during reconstruction;
+adding it as an extra hard interior constraint is a separate modelling choice.
+The thesis's schematic Fig. 2.2 is not an exact encounter-epoch source.
+
+The fixed 2029 endpoint is a study boundary epoch. It is not, on the evidence
+reviewed here, a verified NASA capture or orbit-insertion epoch. The terminal
+state must be spacecraft ID -255 at that time, not the asteroid centre state.
+
+2. Source audit: what is and is not verified
+------------------------------------------
+NASA's launch-day, PRE-LAUNCH timeline [S1] lists SECO-2 at T+00:56:12.
+With the launch epoch above (also listed by NASA [S2]), this yields:
+  candidate nominal SECO-2: 2023-10-13 15:15:55 UTC
+  candidate nominal TIP:    2023-10-13 15:30:55 UTC
+These are derived schedule times, NOT verified as-flown cutoff/TIP times.
+The publication time of a NASA live-blog post is not an event timestamp.
+An exact as-flown SECO-2 time remains unresolved in this stage.
+
+The thesis cites Bradley et al. (2026), DOI 10.1007/s40295-025-00548-w.
+The public publisher page [S3] verifies the bibliographic record, but exposes
+only a subscription preview. Its full launch-injection analysis was not read.
+No access restriction was bypassed.
+
+Downloaded and read the three NAIF sidecar labels [S4-S6]:
+
+psyche_rec_231013-231018_v1.bsp
+  Described as a JPL MDNav reconstruction, spacecraft -255 (PSYC).
+  Label BRIEF interval, ET calendar:
+    2023 OCT 13 15:22:57.139 through 2023 OCT 18 16:01:09.182.
+  Created using Monte 166.1 on 2023-12-13 23:53 UTC.
+  The candidate TIP is inside the label's reported span. Earth SOI exit
+  must be located by evaluating states, not inferred from the filename.
+
+psyche_rec_260501-260713_260804_v1.bsp
+  Described as a JPL MDNav reconstruction, spacecraft -255.
+  Explicit UTC interval: 2026-05-01 23:59:59 through 2026-07-13 22:40:00.
+  Created using Monte 176.1 on 2026-08-04 17:12 UTC.
+  Label identifies planetary ephemerides DE440 and MAR097.
+  This supersedes the thesis's statement that no separate reconstructed
+  Mars-encounter SPK was available when that passage was written.
+
+psyche_ref_231013-311101_231016_v1_merged.bsp
+  A merged reference trajectory; NOT a reconstruction.
+  Label reports spacecraft -255 from 2023 OCT 13 15:43:57.872 ET through
+  2031 NOV 01 00:06:28.185 ET, plus asteroid 2000016.
+  Merge history places the thesis endpoint in the source trajectory
+  psyche_ref_231005-290817_230322_v1_SUNcenter.bsp.
+  Suitable candidate for endpoint coverage, but it is an older reference
+  assembled from several designs. Its compatibility with the reconstructed
+  2026 Mars state has not been demonstrated.
+
+These are metadata coverage checks, not binary segment/object/centre checks.
+The spacecraft SPKs have not yet been downloaded or evaluated. Later work
+must inspect every relevant binary segment and ensure all centre-chain links
+exist, including the Mars centre (499), not merely the Mars barycentre (4).
+Use explicit kernel load order and record hashes. A broad reference SPK must
+not silently override reconstructed segments in overlapping intervals.
+
+As of this review date, 2029 is in the future: an arrival state can only be
+predicted/reference data. Combining reconstructed departure and Mars states
+with a predicted arrival creates a mixed-source boundary problem, not a
+single fully reconstructed NASA flight trajectory. Later reference versions
+must be checked for actual endpoint coverage rather than selected by recency.
+
+3. Existing optimisation method
+-------------------------------
+deterministic_traj_opt.py currently includes Earth-Moon CR3BP cases and a
+348.79-day Earth-Mars benchmark, not Psyche. Its Earth-Mars boundary states
+come from a literature table with no specified epoch. Its planetary tracks
+are two-body plotting tracks; planetary_ephemeris.py is a separate utility
+and is not used by the current EarthMars constructor.
+
+Reusable method:
+  * Seven states: Cartesian position, velocity, and mass, nondimensionalised.
+  * Piecewise constant thrust vector u and magnitude slack sigma per interval.
+  * Norm constraint u.u <= sigma^2, 0 <= sigma <= Tmax.
+  * Mass rate -sigma / exhaust_velocity.
+  * Fuel objective from initial mass minus terminal mass.
+  * Hermite-Simpson warm start, then degree-3 right-Radau collocation.
+  * CasADi derivatives and IPOPT, with adaptive/monotone barrier retries.
+  * Fixed-step RK7 interval reintegration and outer h-refinement.
+
+Code anchors: scaling at line 39; EarthMars at 301; eom at 472;
+Hermite-Simpson at 582; diagnostics at 741; Radau coefficients at 760;
+Radau NLP at 891; defects at 1038; mesh refinement at 1098; driver at 1338.
+
+Required changes in the later implementation stage:
+  * A multiphase NLP with one continuous mass history. Four independent calls
+    that each fix initial mass to the wet mass would reset propellant.
+  * Per-phase origins, GM and numerical scales; transform dimensional states
+    when linking different scales. Generalise EarthMars-specific branches.
+  * Physical thrust scaling and a check that sigma equals ||u|| to tolerance.
+    Epigraph tightness must be measured; the comments are not a general proof
+    that the nonlinear relaxation is exact for the new constrained problem.
+  * Explicit elapsed-time weights. For unequal phase/interval lengths, the
+    unweighted sum of thrust norms in thesis Eq. 5.58/5.76 is not proportional
+    to fuel. Use sum(dt_k*sigma_k)/(Isp*g0), or the equivalent mass loss.
+  * Per-phase integration checks with position, velocity and mass tolerances
+    in physical units, and a separately reported global reintegration error.
+  * Do not call a mesh-converged result successful merely because the interval
+    or iteration limit was reached. Existing diagnostics expose that status.
+
+4. Proposed conventions for the next stages
+------------------------------------------
+Orientation: SPICE J2000 throughout; no apparent/light-time corrections.
+Time: ET/TDB seconds from J2000 internally; explicit UTC text for reporting.
+Units: SI at data interfaces; explicit nondimensionalisation inside the NLP.
+Store canonical Sun-relative states plus the Earth/Mars-relative event states.
+Numerical body IDs: spacecraft -255; Earth 399; Mars 499; Sun 10;
+asteroid Psyche 2000016. Avoid ambiguity between spacecraft and asteroid names.
+
+For equal orientation, translate both position and velocity:
+  x_SC/Sun(t) = x_SC/planet(t) + x_planet/Sun(t), for the six Cartesian terms.
+  m_before(t) = m_after(t).
+No velocity rotation or impulsive jump is introduced by an origin translation.
+Earth/Mars-centred axes are nonrotating; their origins accelerate. The
+requested single-body equations are a patched-conic approximation, not an
+exact coordinate transformation of full solar-system dynamics.
+
+The thesis Eq. 3.27 uses heliocentric distance in the Laplace radius:
+  R_SOI,p(t) = ||r_p/Sun(t)|| * (mu_p/mu_Sun)^(2/5).
+The familiar fixed-radius convention instead uses a specified semimajor axis.
+These choices produce different epochs, especially at Mars. Proposed default:
+use the thesis's distance-dependent convention and explicitly report sensitivity
+to a documented fixed-semimajor-axis convention. Do not call the two identical.
+Locate zeros of ||r_SC/p(t)|| - R_SOI,p(t) with a bracketed root solver,
+test crossing direction, and separate numerical root precision from model
+convention and ephemeris uncertainty. Check for additional crossings.
+
+For the requested four phases the physical equations are
+  r_dot = v,
+  v_dot = -mu_p*r/||r||^3 + T/m,
+  m_dot = -||T||/(Isp*g0),
+with p = Earth, Sun, Mars, Sun respectively. Event epochs and six-state
+targets are fixed after reconstruction. Endpoint feasibility under these
+approximations must be demonstrated; it does not follow from SPK coverage.
+
+5. Fixed-grid caching and validation implications
+------------------------------------------------
+The current grid is fixed inside each NLP, but h-refinement changes it between
+NLPs. Precompute each mesh's full union of endpoint, Hermite-Simpson midpoint,
+Radau stage, RK7 substep-stage, and diagnostic sample epochs before that solve.
+Cache keys must include epochs, body IDs, origins, orientation, correction,
+units, kernel hashes/load order, and interpolation settings if any.
+Rebuild or extend the cache outside optimisation after refinement; alternatively
+freeze a validated mesh for the final run. No SPICE calls belong in NLP callbacks.
+
+Single-central-body relative dynamics need no planetary ephemeris in their
+right-hand side. Ephemerides are required for the event data, transformations,
+SOI tests and common-origin comparisons. Cache the data actually needed there.
+Adaptive validation integrators have unknown internal times: either use a
+validated prebuilt interpolator or isolate their queries from optimisation.
+
+Keep three error classes separate:
+  1. Data/query checks: selected SPK coverage, source transitions, consistent
+     Tudat/raw-SPICE queries and frame-translation closure.
+  2. Numerical error: collocation defects, continuous reintegration, mesh
+     convergence, thrust/mass bounds and slack tightness.
+  3. Model/design discrepancy: optimised states minus reconstructed/reference
+     SPK states on a common time grid and in one origin/orientation.
+Report norms in metres and m/s, max/RMS/endpoints per phase, and recomputed
+SOI event residuals and epoch shifts. Equality-constrained event residuals
+alone are not independent trajectory validation.
+
+The thesis's 10 m integration and 100 m physical-model requirements are not
+automatically satisfied by this four-body-switch approximation. Neglected
+third-body forces, nonspherical gravity, SRP, power/duty-cycle limits, and
+asteroid gravity near arrival can dominate model discrepancy. A Sun-only
+terminal phase does not model capture/orbital operations at the asteroid.
+An SPK position/velocity history cannot by itself identify the true thrust
+profile without a force/mass model. An optimised thrust history is a model
+result, not recovered flight-command telemetry.
+
+6. Runtime readiness and current results
+---------------------------------------
+Working interpreter:
+C:/Users/lukas/anaconda3/envs/det_traj_opt_env/python.exe
+Python 3.12.14; TudatPy 1.0.0.dev75; SpiceyPy 8.2.0; CasADi 3.7.2;
+NumPy 2.5.3; SciPy 1.18.1. Imports succeeded.
+The default system Python lacks TudatPy; use the interpreter above.
+
+Offline interface check using existing DE442s and GM_DE440 data, for an
+Earth/Sun state at J2000 (not a Psyche event): Tudat SI state minus raw SPICE
+state multiplied by 1000 was exactly zero in the returned double precision.
+Tudat GM / raw SPICE GM = 1.0000000000000001e9, confirming m^3 vs km^3.
+Both SPICE interfaces were explicitly loaded and cleared for this check.
+Do not assume that Tudat and SpiceyPy share a kernel pool in every build.
+
+Existing local planetary kernels are DE442s/MAR099s; the Mars reconstruction
+label instead specifies DE440/MAR097. Match the mission source ephemerides
+for extraction rather than silently reusing the benchmark's newer files.
+
+Plotting limitation: the direct conda-interpreter plotting process exited
+with Windows code -1066598273 after writing the metadata. Plot generation
+succeeded with system Python using the recorded metadata and --plot-only;
+the resulting PNG was visually inspected. Tudat/SPICE imports and queries
+passed in the conda environment; IPOPT execution has not yet been tested.
+To regenerate just the plot from the workspace root:
+  python output/psyche/stage00_review/build_review_artifacts.py --plot-only
+
+kernel_coverage.png plots label-reported intervals and the candidate nominal
+TIP. It is a source-availability plot, not a reconstructed trajectory plot.
+No event states, C3 measurement, SOI roots, position/velocity errors, or optimal
+thrust solution have been computed in this stage. Production solver files
+are unchanged. Binary SPK coverage checks remain pending.
+
+Next proposed task, requiring user permission under the requested workflow:
+verify SECO-2 as far as public evidence permits; inspect the launch SPK binary;
+extract the TIP state with TudatPy; compute C3 and asymptote diagnostics;
+plot launch-arc C3 and disclose timing uncertainty. Then stop and report before
+proceeding to Earth SOI exit, Mars events, arrival, and optimisation stages.
+
+Sources
+-------
+[T] C:/Users/lukas/Downloads/MSc_Thesis_Lukas_Messina_Final_Version (9).pdf
+[S1] https://science.nasa.gov/blogs/psyche/2023/10/13/key-milestones-for-todays-psyche-launch/
+[S2] https://science.nasa.gov/mission/psyche/launch-windows/
+[S3] https://link.springer.com/article/10.1007/s40295-025-00548-w
+[S4] https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_rec_231013-231018_v1.bsp.lbl
+[S5] https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_rec_260501-260713_260804_v1.bsp.lbl
+[S6] https://naif.jpl.nasa.gov/pub/naif/PSYCHE/kernels/spk/psyche_ref_231013-311101_231016_v1_merged.bsp.lbl
+[S7] https://py.api.tudat.space/en/latest/interface/spice.html
