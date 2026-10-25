@@ -124,8 +124,8 @@ def plot_passage(plotter, solution, mission, index):
     epoch = phase["start_et"] + closest * phase["duration_s"]
     rotation, utc, cartography = body_orientation(body, epoch)
     # Widen the physical window and resample its longer trajectory segment below.
-    # This is 40% wider than the preceding 1.38-factor passage view.
-    limit = 1.932 * max(2.4 * radius, 1.45 * np.linalg.norm(anchor[:3]) / 1000)
+    # This is 1.75 times the preceding 1.932-factor passage view.
+    limit = 3.381 * max(2.4 * radius, 1.45 * np.linalg.norm(anchor[:3]) / 1000)
     coarse = np.unique(np.r_[np.linspace(0, 1, 1601), phase["mesh"], closest])
     positions = np.array(
         [evaluate_phase(solution, index, tau, mission)[:3] / 1000 for tau in coarse]
@@ -177,13 +177,13 @@ def plot_passage(plotter, solution, mission, index):
     selection = np.unique(np.linspace(0, len(tau) - 1, 12).astype(int))
     selection = selection[(~hidden[selection]) & visible_window[selection]]
     if max_thrust > 0 and len(selection):
-        arrows = 0.60 * radius * thrust[selection] / max_thrust
+        arrows = 1.20 * radius * thrust[selection] / max_thrust
         ax.quiver(
             *positions[selection].T,
             *arrows.T,
             color=plotter.THRUST_ARROW_3D_COLOR,
             arrow_length_ratio=0.22,
-            linewidths=0.8,
+            linewidths=1.6,
             label="Thrust",
             zorder=5,
         )
@@ -229,7 +229,8 @@ def plot_passage(plotter, solution, mission, index):
         ellipsoid_axes_km=axes,
         displayed_half_width_km=float(limit),
         maximum_displayed_thrust_n=float(max_thrust),
-        maximum_arrow_length_km=float(0.60 * radius),
+        maximum_arrow_length_km=float(1.20 * radius),
+        arrow_linewidth_points=1.6,
         camera_azimuth_degrees=-60,
         camera_elevation_degrees=30,
         closest_approach_altitude_above_constraint_sphere_km=float(
@@ -246,7 +247,7 @@ def plot_psyche_export(prefix, data, meta):
     solution = load_solution(Path(prefix).with_suffix(".npz"))
     plotter = Plotter(prefix)
     t, x, u = data["t_dense_days"], data["x_dense"], data["u_dense"] * meta["force_unit_n"]
-    # Display arrows are 20% longer than the preceding 0.40 AU scale.
+    # Main trajectory arrows retain the 0.48 AU display scale.
     # Normalise by Psyche's own thrust limit so a smaller engine does not shrink arrows.
     au = 149597870700.0
     position = x[:3] * meta["length_unit_km"] * 1000 / au
@@ -254,6 +255,8 @@ def plot_psyche_export(prefix, data, meta):
     index = index[np.linalg.norm(u[:, index], axis=0) > 1e-6 * meta["max_thrust_n"]]
     arrows = 0.48 * u[:, index] / meta["max_thrust_n"]
     meta["heliocentric_arrow_length_at_full_throttle_au"] = 0.48
+    meta["heliocentric_arrow_linewidth_3d_points"] = 0.75
+    meta["projection_arrow_width_axes_fraction"] = 0.0046
     for dimension in (2, 3):
         fig = plt.figure(
             figsize=plotter.SINGLE_FIGSIZE if dimension == 2 else plotter.THREE_D_FIGSIZE
