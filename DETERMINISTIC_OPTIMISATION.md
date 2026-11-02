@@ -2,6 +2,10 @@
 
 `deterministic_traj_opt.py` is the entry point for all five transfers and both objectives. The implementation is split between physical models, transcriptions, integration, refinement, diagnostics and plotting in `deterministic_optimization/`. Psyche mission-data reconstruction is separate in [psyche_mission_events_reconstruction/README.md](psyche_mission_events_reconstruction/README.md).
 
+The Psyche model has three phases (Sun, Mars, Sun), starts at the fixed Earth SOI
+exit and uses a ballistic Mars passage (no thrust, no mass flow). Its current
+results are in [Psyche results](#psyche-results-ballistic-mars).
+
 ## Run
 
 From the repository root:
@@ -13,12 +17,18 @@ python deterministic_traj_opt.py --case all --objective both --jobs 3
 
 For individual runs, `--case` accepts `nrho_l2_to_dro`, `halo_l2_to_halo_l1`, `lyapunov_l1_to_l2`, `earth_mars`, `psyche`, `cr3bp`, or `all`; `--objective` accepts `fuel`, `energy`, or `both`. The default is all ten cases, sequentially (`--jobs 1`). Results go into the three case-family folders below, each with `fuel_optimal` and `energy_optimal` subfolders. A successful run replaces the selected case's published files. Failed runs never overwrite accepted results. Jobs are independent processes with one BLAS thread per solver. There is no solver runtime cap.
 
-To rerun Psyche only, at its current local-defect target of **5e-14**:
+To rerun Psyche only, at its local-defect target of **5e-14**:
 
 ```powershell
-python deterministic_traj_opt.py --case psyche --objective both --jobs 2
+python deterministic_traj_opt.py --case psyche --objective fuel
+python deterministic_traj_opt.py --case psyche --objective energy --psyche-initial-arcs 30 30 30
 python -m unittest discover -s tests
 ```
+
+The default initial mesh is 40/80/40. The published energy result was obtained
+from 30/30/30 because the energy run from 40/80/40 stopped with
+`Infeasible_Problem_Detected` in its first multiple-shooting stage (a failed local
+solve, not an infeasibility certificate).
 
 To regenerate figures without solving:
 
@@ -32,7 +42,7 @@ Install the environment from `environment-deterministic.yml` if needed. The chec
 
 | Setting | Three CR3BP transfers | Earth–Mars | Psyche |
 |---|---|---|---|
-| Initial arcs, each objective | 50 | 50 | 60 / 50 / 90 / 50 |
+| Initial arcs, each objective | 50 | 50 | 40 / 80 / 40 |
 | Shooting RK7 uniform substeps/arc | 2 | 20 | 20 |
 | Defect RK7 uniform substeps/arc | 64 | 64 | 64 |
 | Relative defect target | 5e-13 | 1e-13 | 5e-14 |
@@ -71,7 +81,7 @@ The workflow is **rollout → same-objective HS once → multiple shooting with 
 
 There is no epigraph slack or smoothed thrust norm in this formulation. Stored legacy `sigma`/magnitude fields represent the derived `Tmax*alpha`. Unit-direction residuals can cause tiny differences from the actual thrust-vector norm; these are reported, not used as extra acceptance gates. Directions are unconstrained in their physical effect at zero throttle, which can worsen conditioning.
 
-The decision variables are seven state components at each mesh boundary, one throttle and a three-component unit vector per arc, plus Psyche's two free planet-centred durations. Other case durations and boundary states remain fixed. For N arcs, a single-phase problem has `7*(N+1) + 4*N` primal variables. Psyche has the sum over its four phases plus two duration variables. HS midpoints are algebraic expressions, not additional decision states.
+The decision variables are seven state components at each mesh boundary, one throttle and a three-component unit vector per powered arc, plus Psyche's free Mars-centred duration. Other case durations and boundary states remain fixed. For N arcs, a single-phase problem has `7*(N+1) + 4*N` primal variables. Psyche has three phases, starts at the fixed Earth SOI exit, and has no thrust variables or mass consumption during its ballistic Mars phase. Its cruise rollout still uses the small thrust above; Mars rollout uses zero thrust. HS midpoints are algebraic expressions, not additional decision states.
 
 Fuel is initial minus final mass [kg], scaled by wet mass in the NLP. Energy is **0.5 ∫ dot(T,T) dt** [N²s], scaled by `Tmax² * total transfer duration` in the NLP. The energy uses the physical vector even away from the unit-direction constraint. Do not compare these energy values with an unhalved squared-thrust integral.
 
@@ -81,7 +91,7 @@ The local criterion is the maximum of position-vector, velocity-vector and mass 
 
 Acceptance requires **NLP convergence and all local defects meeting their target**. Refinement ends successfully when those pass; otherwise it stops with an explicit incomplete status on NLP failure or either mesh limit. Global reintegration and thrust/mass-flow discrepancies are diagnostics only.
 
-CR3BP retains Moon-surface exclusion at **mesh boundaries only**, with Moon radius 1737.5 km, in both HS and shooting. No additional interior Moon checks enter the NLP. Earth–Mars retains its existing constraints; no new surface inequalities have been added. Psyche retains central-body surface checks and its two exit-boundary equalities/outward inequalities, with no inside/outside-SOI path inequalities. See its README for all physical assumptions and event data.
+CR3BP retains Moon-surface exclusion at **mesh boundaries only**, with Moon radius 1737.5 km, in both HS and shooting. No additional interior Moon checks enter the NLP. Earth–Mars retains its existing constraints; no new surface inequalities have been added. Psyche retains central-body surface checks and its Mars exit-boundary equality/outward inequality, with no inside/outside-SOI path inequalities. See its README for all physical assumptions and event data.
 
 ## Outputs and propagation diagnostics
 
@@ -89,7 +99,7 @@ Published folders contain only case-prefixed PNG plots and one CSV, JSON and NPZ
 
 Solver logs, checkpoints, source snapshots and intermediate stages are kept outside the published folders in a timestamped `.cache/deterministic_runs/` work directory. `--work-dir PATH` selects a new work directory. `--output ROOT` changes the parent of the three case-family folders; it no longer denotes a flat diagnostic batch. `--export-from BATCH` publishes existing detailed results without reoptimising. A `converged` result always means both NLP and local-defect acceptance.
 
-Public figures match the original 3D, projections (XY for the planar Lyapunov case), thrust, interval defect and three-panel verification plots. CR3BP also retains Moon clearance. Psyche adds textured Earth-departure and Mars-flyby close-ups with thrust arrows. Verification plots include position, velocity and mass errors: single-phase cases use the tightest DOP853 settings below; Psyche uses the standard DOP853 history. Tighter/tightest comparisons remain in the JSON. Solver/refinement histories remain available in the JSON without extra public plots.
+Public figures match the original 3D, projections (XY for the planar Lyapunov case), thrust, interval defect and three-panel verification plots. CR3BP also retains Moon clearance. Psyche adds a textured Earth-departure view starting at the Earth SOI exit (`psyche_earth_passage.png`). No Mars passage figures are generated. Verification plots include position, velocity and mass errors: single-phase cases use the tightest DOP853 settings below; Psyche uses the standard DOP853 history. Tighter/tightest comparisons remain in the JSON. Solver/refinement histories remain available in the JSON without extra public plots.
 
 Continuous propagation begins at the fixed initial state, carries state through the whole transfer, and never resets it at shooting nodes. Psyche includes origin translations without resetting to the fixed Mars anchor. Actual thrust norm supplies physical mass flow in the principal diagnostic. Psyche also reports the throttle-law comparison.
 
@@ -110,7 +120,7 @@ The consolidation batch in `output/deterministic/validated/` reproduced the refe
 | Halo L2 → Halo L1 | 26.073498220631 | 93873.706094125 | 77 / 146 |
 | Lyapunov L1 → L2 | 2.524385694941 | 4071.350873322 | 64 / 65 |
 | Earth–Mars | 396.388173450835 | 1423266.864908242 | 50 / 50 |
-| Psyche | 731.116528664271 | 609809.304671808 | 61/50/94/50 / 62/50/92/50 |
+| Psyche (former four-phase, powered Mars) | 731.116528664271 | 609809.304671808 | 61/50/94/50 / 62/50/92/50 |
 
 The fuel consumed by an energy-optimal solution is a different reported quantity; see the batch report for both quantities for every run.
 
@@ -124,7 +134,7 @@ deterministic_optimization/
   cli.py, settings.py                      orchestration and defaults
   models.py                               CR3BP / Earth–Mars physics
   single_phase.py, psyche.py               HS / shooting formulations
-  psyche_driver.py                        four-phase solve/refinement loop
+  psyche_driver.py                        three-phase solve/refinement loop
   flows.py, rk.py                          uniform RK7
   psyche_validation.py, diagnostics.py     local defects, acceptance and diagnostics
   derivatives.py, global_reference.py      independent numerical checks
@@ -142,34 +152,36 @@ data/planet_textures/                      maps, orientation kernels and source 
 
 Active deterministic code has no Radau solve or Radau h-refinement path. Reusable RK components in `integrator.py` remain for other project consumers. Required mission inputs and reconstruction evidence remain in `psyche_mission_events_reconstruction/`.
 
-## Planetary passage figures
+## Psyche departure figure
 
 Download plotting assets once with `python -m deterministic_optimization.plot_assets`. The source URLs, sizes and SHA256 hashes are saved in `data/planet_textures/manifest.json`; plotting performs no network requests. Earth uses NASA's [Blue Marble October map](https://science.nasa.gov/earth/earth-observatory/blue-marble-next-generation/base-map/) at 5400×2700, mapped by WGS84 geodetic latitude onto its ellipsoid. Mars uses the [NASA Viking/USGS mosaic hosted by ASU](https://mars.asu.edu/data/mdim_color/), assembled from eight 5760-pixel tiles into an 8192×4096 map, with planetocentric latitude on a 3396.19/3376.20 km ellipsoid. Both maps run from -180° to +180° east, north to south; no longitude mirroring is used.
 
-SPICE rotates Earth from ITRF93 to J2000 at TIP, using the pinned `earth_000101_270119_261023.bpc` (coverage 2000-01-01 to 2027-01-19). Mars uses IAU_MARS from `pck00011.tpc` at the optimized closest approach. Each JSON records the rotation matrix and epoch. These are static surface snapshots overlaid with a time-varying inertial trajectory, not ground tracks or mission-date satellite photographs. The map products are visual context, not precision terrain or spacecraft attitude data. SPICE queries occur only after solving for these figures. Thrust arrows preserve inertial direction and relative magnitude. The heliocentric display uses 0.48 AU at full throttle; passage figures use 1.20 constraint-sphere radii at the largest displayed thrust. Only the passage arrows retain doubled lengths and shaft widths; their arrowheads scale with them. The main 3D and projection arrows use their previous length and thickness. These display scales and the surface epoch remain in the JSON. Passage plots use the main 3D camera (azimuth -60 degrees, elevation 30 degrees), dashed projections onto the box planes, and a window 1.75 times as wide as the preceding passage views (3.381 times the original close-up half-width), resampling a longer trajectory segment; titles and bottom captions are omitted. Visual ellipsoids do not change the optimisation's spherical surface constraints.
+SPICE rotates Earth from ITRF93 to J2000 at the fixed Earth SOI-exit epoch, using the pinned `earth_000101_270119_261023.bpc` (coverage 2000-01-01 to 2027-01-19); the JSON records the rotation matrix and epoch. This is a static surface snapshot overlaid with a time-varying inertial trajectory, not a ground track or a mission-date satellite photograph, and SPICE is queried only after solving. The Earth-departure figure shows the optimised first solar phase from Earth SOI exit, translated by the cached Earth ephemeris at each plotted epoch. Its thrust arrows preserve inertial direction and relative magnitude, use 10% of the displayed half-width at the largest displayed thrust, and share the main 3D plot's coast cutoff (1e-6 Tmax); the heliocentric figures use 0.48 AU at full throttle. Earth keeps its texture and orientation but is enlarged for display to twice the former centre-marker diameter (8 points); physical axes, displayed axes and the enlargement factor are recorded separately. The view uses the main 3D camera (azimuth -60 degrees, elevation 30 degrees), dashed projections onto the box planes and a half-width of 3.381 times the original close-up window. The Mars cartography (IAU_MARS from `pck00011.tpc`) remains available to `surface_geometry`/`body_orientation`. Visual ellipsoids do not change the optimisation's spherical surface constraints.
 
-## Psyche rerun at 5e-14
+## Psyche results (ballistic Mars)
 
-Both objectives converged from independent fresh rollouts, starting at **60 / 50 / 90 / 50 arcs**, through same-objective HS and adaptive multiple shooting. The new initial-guess arrays are identical to the consolidation reference; the only optimisation-setting difference is the requested defect target. The preceding 1e-14 batch was stopped at the user's request. Detailed work is in `.cache/deterministic_runs/psyche_tol5em14/`; the accepted results are in the public case-family folders.
+Both objectives converged (IPOPT success and every local RK7 defect below 5e-14)
+from independent fresh rollouts through same-objective HS and adaptive multiple
+shooting. The public folders hold these results; their JSON records the source
+work directories in `.cache/deterministic_runs/`.
 
 | Quantity | Fuel objective | Energy objective |
 |---|---:|---:|
-| Converged objective | 731.115382349 kg | 609809.272913296 N² s |
-| Propellant consumed [kg] | 731.115382349 | 814.520099493 |
-| Final arcs | 62 / 50 / 104 / 50 | 80 / 50 / 116 / 50 |
-| Refinements after initial shooting mesh | 2 | 5 |
-| Maximum relative local defect | 3.713601392e-14 | 4.308869913e-14 |
-| Sum of NLP solve wall times [s] | 424.464 | 579.088 |
-| Objective change from 1e-13 consolidation reference | -0.001146315 kg | -0.031758512 N² s |
+| Initial / final arcs | 40/80/40 → 40/86/40 | 30/30/30 → 37/36/30 |
+| Objective | 742.6631230128 kg | 616851.4191702 N² s |
+| Propellant consumed [kg] | 742.6631230128 | 818.3815047157 |
+| Mars passage [days] | 2.9676425 | 2.9676425 |
+| Maximum relative local defect | 2.06e-14 | 9.11e-15 |
+| Maximum scaled constraint violation | 5.4e-14 | 7.1e-15 |
+| Refinement passes after the first shooting mesh | 1 | 3 |
 
-Continuous propagation remains a diagnostic. The endpoint discrepancies below use physical thrust norm for mass flow and carry the state through all phases without resetting it. The published verification figures use the standard history. These estimates remain sensitive to the reference integrator; the tightest result is not a certified truth trajectory.
+The Mars duration is identical because the fixed entry state and Mars-only
+gravity determine the ballistic encounter. Continuous propagation remains a
+diagnostic: the standard DOP853 terminal discrepancies are 50.2 m (fuel) and
+13.7 m (energy); the tightest/tighter reference integrations differ from each
+other by about 0.7 km and 1.1 km, so these are sensitivity estimates rather
+than error bounds.
 
-| Final propagation diagnostic | Fuel | Energy |
-|---|---:|---:|
-| Standard DOP853 position discrepancy [m] | 17237.329 | 233.647 |
-| Standard DOP853 velocity discrepancy [m/s] | 7.034955e-4 | 9.628512e-6 |
-| Tightest DOP853 position discrepancy [m] | 652.867 | 737.182 |
-| Tightest DOP853 velocity discrepancy [m/s] | 2.664840e-5 | 3.037188e-5 |
-| Tighter versus tightest position difference [m] | 780.787 | 629.338 |
-
-Both public NPZ files preserve every native phase mesh/state/control array and exit duration exactly. CSV columns and common NPZ fields retain compatibility. Each Psyche objective directory contains exactly seven PNGs plus CSV, JSON and NPZ. The eight other cases were re-exported without new optimisation; their mesh/state/control arrays still match the validated reference, and the unchanged stochastic readers load the four energy references. All 58 tests pass. Revised 3D, projection, passage and diagnostic figures were visually inspected.
+The stochastic workflows read the energy NPZ as their reference. Regenerate
+the native mission export (`madnlp_stochastic_traj_opt/tools/export_psyche_inputs.py`)
+whenever it changes.

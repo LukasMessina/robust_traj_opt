@@ -23,7 +23,7 @@ def main(archive, output, candidate=None):
         else json.loads((archive / "result.json").read_text(encoding="utf-8"))["last_candidate"]
     )
     solution = load_solution(source)
-    mission = Mission(Settings(**config["settings"]))
+    mission = Mission(Settings.from_dict(config["settings"]))
     variants = {
         "standard": dict(rtol=2e-12, atol=[1e-5] * 3 + [1e-9] * 4, step_factor=1.0),
         "tighter": dict(rtol=1e-13, atol=[1e-7] * 3 + [1e-11] * 4, step_factor=0.5),
@@ -48,7 +48,7 @@ def main(archive, output, candidate=None):
                         rtol=settings["rtol"],
                         atol=settings["atol"],
                         max_step=settings["step_factor"]
-                        * min(dt / 8.0, 86400.0 if i in (1, 3) else 900.0),
+                        * min(dt / 8.0, 86400.0 if mission.origins[i] == 10 else 900.0),
                     )
                     if not propagated.success:
                         raise RuntimeError(propagated.message)
@@ -57,11 +57,8 @@ def main(archive, output, candidate=None):
                 rows.append(
                     dict(phase=i + 1, end_mismatch=error_record(state - phase["states_si"][-1]))
                 )
-                if i < 3:
-                    planet = mission.cache.state(
-                        399 if i == 0 else 499, phase["start_et"] + phase["duration_s"]
-                    )
-                    state[:6] += planet if i in (0, 2) else -planet
+                if i < len(mission.origins) - 1:
+                    state = mission.transform_to_next(i, state, phase["start_et"] + phase["duration_s"])
             records[mass_model][name], endpoints[mass_model][name] = rows, states
         for name in ("standard", "tighter"):
             for i, row in enumerate(records[mass_model][name]):
@@ -70,7 +67,7 @@ def main(archive, output, candidate=None):
                 )
     report = dict(
         source_candidate=source,
-        method="Continuous DOP853 from TIP, no state resets",
+        method=f"Continuous DOP853 from {mission.initial_event_name}, no state resets",
         purpose="Report sensitivity to diagnostic integration settings; no new acceptance gate",
         qualification="Differences are convergence checks, not rigorous bounds on the exact continuous trajectory",
         integrator_settings=variants,

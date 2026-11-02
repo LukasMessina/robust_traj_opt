@@ -1,6 +1,6 @@
 """Validate Julia runs with the unchanged JAX reference code and draw their figures.
 
-    python madnlp_stochastic_traj_opt/tools/validate.py cpu|gpu|hybrid [--case CASE] [--samples N]
+    python madnlp_stochastic_traj_opt/tools/validate.py cpu|gpu [--case CASE] [--samples N]
 
 For every case solved in the given execution mode (output/<mode>/<case>/<case>.npz,
 written by run.jl):
@@ -9,14 +9,18 @@ written by run.jl):
    functions from the Julia energy-optimal reference, and the UT-propagated seed
    covariances recomputed by the JAX arc map from the Julia seed gains.
 2. Solution check: `recover_solution` of the reference evaluated at the Julia
-   optimum (its NLP residuals, objective and acceptance: solver success and
-   residuals <= 1e-8). The chance constraint is evaluated with the reference's own
+   optimum (its NLP residuals and objective as diagnostics). Acceptance retains
+   MadNLP solver success and the restoration requirement, without a residual gate.
+   The chance constraint is evaluated with the reference's own
    eigenvalue formula (s^2 = 1e-30), whatever smoothing the Julia run used.
 3. The reference's `monte_carlo_rollouts`, `compute_diagnostics` and
-   `save_outputs`: the same Monte Carlo validation (NumPy streams, seed 42), NPZ/CSV
+   `save_outputs`: the same Monte Carlo validation (jax.random, seed 42), NPZ/CSV
    export and figures (CR3BP: dispersion evolution, thrust budget, projections,
    terminal distribution; Earth--Mars also the no-feedback ensemble and its
    projections, as in the reference's `run_test_case`).
+
+The JAX device follows the mode: cpu runs on every CPU core, gpu on CUDA
+(tools/jax_backend.py). run.jl calls this script after each solve.
 
 Everything is written to output/<mode>/<case>/validation/. Runs from any directory.
 """
@@ -31,11 +35,17 @@ import types
 from dataclasses import replace
 from pathlib import Path
 
-os.environ["JAX_PLATFORMS"] = "cpu"
 os.environ.setdefault("MPLBACKEND", "Agg")
 ROOT = Path(__file__).resolve().parents[2]
-OUTPUT = Path(__file__).resolve().parents[1] / "output"
+OUTPUT = Path(os.environ.get("MADNLP_STOCHASTIC_OUTPUT_ROOT", Path(__file__).resolve().parents[1] / "output"))
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import jax_backend  # noqa: E402
+
+# The device must be chosen before JAX is imported.
+_mode = argparse.ArgumentParser(add_help=False)
+_mode.add_argument("mode", nargs="?", choices=jax_backend.MODES, default="cpu")
+jax_backend.select(_mode.parse_known_args()[0].mode)
 
 # pyoptsparse/SNOPT are only needed to *solve*; nothing evaluated here uses them.
 for _name in ("pyoptsparse", "pyoptsparse.pySNOPT", "pyoptsparse.pySNOPT.pySNOPT"):
@@ -123,6 +133,18 @@ def validate(path: Path, samples: int | None):
     # The run's control-covariance weight (runs saved before the option existed were unweighted).
     options = replace(options, control_covariance_weight=float(data["control_covariance_weight"])
                       if "control_covariance_weight" in data else 1.0)
+    # The run's state-covariance weight (runs saved before the option existed had 1).
+    options = replace(options, state_covariance_weight=float(data["state_covariance_weight"])
+                      if "state_covariance_weight" in data else 1.0)
+    # The run's objective (runs saved before the option existed used the standard cost).
+    options = replace(options, objective="quantile" if int(data.get("quantile_objective", 0)) else "standard")
+    # Polar and throttle controls: the model's exact norm (JAX needs a positive eps; 1e-12 is exact to rounding),
+    # plain mass flow and Gates factors without jitter.
+    if "model_norm_smoothing" in data:
+        options = replace(options, control_norm_eps=max(float(data["model_norm_smoothing"]), 1e-12),
+                          mass_flow_smoothing=float(data["model_mass_flow_smoothing"]),
+                          mass_flow_smoothing_feedback_only=bool(data.get("model_mass_flow_smoothing_feedback_only", 0)),
+                          cholesky_jitter=float(data["model_gates_jitter"]))
     if samples is not None:
         options = replace(options, monte_carlo_samples=samples)
     normalization = J.build_normalization(case, options)
@@ -137,7 +159,7 @@ def validate(path: Path, samples: int | None):
     success = bool(data["solver_success"]) and bool(data["restoration_requirement_met"])
     solver_result = types.SimpleNamespace(xStar=decision_vector(data),
                                           optInform={"value": 1 if success else 0, "text": "MadNLP"})
-    solution = J.recover_solution(nlp, solver_result)
+    solution = J.recover_solution(nlp, solver_result, require_original_feasibility=False)
 
     print(f"[{case.test_case_id}] Monte Carlo ({options.monte_carlo_samples} samples) and figures ...", flush=True)
     monte_carlo = J.monte_carlo_rollouts(case, options, normalization, solution, ref.steps)
@@ -151,7 +173,9 @@ def validate(path: Path, samples: int | None):
     output_prefix = path.parent / "validation" / case.test_case_id
     J.save_outputs(case, options, ref, solution, normalization, monte_carlo, diagnostics, psi,
                    output_prefix, dynamics)
-    report = {"seed_check": seed_report, **{k: float(v) for k, v in diagnostics.items()}}
+    report = {"seed_check": seed_report, **{
+        k: float(v) if isinstance(v, (int, float, np.number)) else v
+        for k, v in diagnostics.items()}}
     (path.parent / "validation" / f"{case.test_case_id}_validation.json").write_text(json.dumps(report, indent=2))
     print_summary(case, report, options)
 
@@ -164,7 +188,7 @@ def print_summary(case, r, options):
     print(f"  objective {r['objective_nd']:.10f} (Julia {r['julia_objective_nd']:.10f})")
     print(f"  max equality residual {r['max_equality_residual']:.3e}, chance violation "
           f"{r['max_control_chance_violation']:.3e}, bound violation {r['max_bound_violation']:.3e}")
-    print(f"  reference acceptance (solver success and residuals <= {options.major_feasibility_tol:.0e}): "
+    print("  accepted (MadNLP solver success and restoration requirement; residuals diagnostic only): "
           f"{'yes' if r['converged'] else 'no'}")
     print(f"  terminal covariance / target, largest eigenvalue: predicted {r['terminal_covariance_max_eigenvalue']:.6f}, "
           f"Monte Carlo {r['monte_carlo_terminal_max_eigenvalue']:.6f}")
@@ -174,14 +198,18 @@ def print_summary(case, r, options):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("mode", choices=("cpu", "gpu", "hybrid"), help="execution mode of the runs")
+    parser.add_argument("mode", choices=jax_backend.MODES, help="execution mode of the runs (and JAX device)")
     parser.add_argument("--case", choices=sorted(J.STOCHASTIC_CASE_REGISTRY), default=None,
                         help="validate only this case; default: every solved case of the mode")
     parser.add_argument("--samples", type=int, default=None, help="Monte Carlo samples (reference default 50000)")
+    parser.add_argument("--directory", type=Path, default=None,
+                        help="run directory holding <case>.npz (runs with options that name their own directory)")
     args = parser.parse_args()
+    print(f"Monte Carlo and checks on JAX {jax_backend.check(args.mode)}", flush=True)
     os.chdir(ROOT)  # the reference resolves its data directories relative to the repository
     cases = [args.case] if args.case else sorted(J.STOCHASTIC_CASE_REGISTRY)
-    results = [OUTPUT / args.mode / case / f"{case}.npz" for case in cases]
+    results = ([args.directory.resolve() / f"{case}.npz" for case in cases] if args.directory is not None else
+               [OUTPUT / args.mode / case / f"{case}.npz" for case in cases])
     results = [path for path in results if path.is_file()]
     if not results:
         sys.exit(f"no result in {OUTPUT / args.mode} for {args.case or 'any case'}; run run.jl --mode={args.mode} first")

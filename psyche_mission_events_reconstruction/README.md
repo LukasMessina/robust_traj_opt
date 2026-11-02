@@ -2,7 +2,9 @@
 
 This package reconstructs and verifies the inputs used by the final deterministic optimisation. It does **not** run an optimiser. The validated ten-case batch is retained in [output/deterministic/validated/](../output/deterministic/validated/), with its [saved reference comparison](../output/deterministic/validated/reference_comparison.json). The superseded reference output folders and maintenance archive were removed after validation. The retained inputs in `artifacts/` reproduce that batch; newly reconstructed inputs go into a separate directory.
 
-The four-phase trajectory is an optimisation model informed by mission data. It is not a reproduction of every force, manoeuvre or operational constraint in NASA's flight solution. In particular, the terminal condition is a user-selected rendezvous with the **asteroid centre**, not the spacecraft state from a predicted arrival SPK.
+The active three-phase trajectory starts at the fixed reconstructed Earth SOI exit, then uses Sun, Mars and Sun gravity. It is an optimisation model informed by mission data, not a reproduction of every force, manoeuvre or operational constraint in NASA's flight solution. The terminal condition is a user-selected rendezvous with the **asteroid centre**, not the spacecraft state from a predicted arrival SPK. TIP and the omitted Earth departure remain archived reconstruction evidence. The active Earth passage figure starts at the fixed Earth SOI exit and shows the optimised first solar phase in Earth-centred J2000 coordinates. The former four-phase model is retained only for reading archived results.
+
+The default deterministic initial mesh is **40 / 80 / 40**. Current results are summarised in [DETERMINISTIC_OPTIMISATION.md](../DETERMINISTIC_OPTIMISATION.md#psyche-results-ballistic-mars); the stochastic workflows use the accepted energy mesh plus a closest-approach node (see [stochastic_optimization/README.md](../stochastic_optimization/README.md)).
 
 ## Reproduce
 
@@ -127,26 +129,25 @@ Fixed-a events are within about 0.375 s of Earth's SPK origin transition and 1.6
 
 Only Mars **entry** is fixed to this reconstructed crossing. Earth and Mars **exit** states and epochs are optimisation variables. SPK exits are comparison data. At each optimised exit, the existing equality `norm(r) = r_SOI` and inequality `dot(r,v)/norm(r) >= 0 m/s` apply. This closed nonnegative inequality is the implemented approximation to an outward crossing; a strict mathematical `> 0` cannot be encoded directly as a closed NLP bound. No artificial 1 m/s margin is retained.
 
-## Four-phase model and retained assumptions
+## Three-phase model and retained assumptions
 
 | Phase | Origin and gravity | Fixed/free boundaries | Surface constraint |
 |---|---|---|---|
-| TIP → Earth exit | Earth-centred, Earth point mass only | Fixed TIP; free exit | Earth radius 6378136.6 m |
-| Earth exit → Mars entry | Sun-centred, Sun point mass only | Free departure; fixed Mars entry | Sun radius 695700000 m |
+| Earth exit → Mars entry | Sun-centred, Sun point mass only | Fixed reconstructed departure; fixed Mars entry | Sun radius 695700000 m |
 | Mars entry → Mars exit | Mars-centred, Mars point mass only | Fixed entry; free exit | Mars radius 3396190 m |
 | Mars exit → arrival | Sun-centred, Sun point mass only | Free departure; fixed asteroid rendezvous | Sun radius 695700000 m |
 
 Initial mass is 2747 kg; mass floor is 1662 kg (2747 − thesis xenon mass 1085 kg); maximum thrust is 0.2793 N; constant Isp is 1794 s. Constant thrust capability/Isp, the mass floor and point-mass dynamics are retained modelling assumptions, not a complete operational power/thruster model. No solar radiation pressure, nonspherical gravity, third-body forces, asteroid gravity, eclipses or thrust duty schedule are added.
 
-Earth-centred and Mars-centred durations each have bounds **0.05–10 days**. These are inherited search-domain bounds, not observed mission durations. Solar phase durations follow from those exits and the fixed events and must be positive. All phases retain the same inertial orientation. Origin changes add/subtract the cached planet's position **and velocity** at the variable epoch. Mass is continuous; its initial value alone is fixed. Planetary ephemeris derivatives and phase-duration derivatives enter the exact CasADi derivatives.
+The Mars-centred duration has bounds **0.05–10 days**, an inherited search domain rather than an observed duration. The Earth duration variable and bounds have been removed. Solar durations follow from the fixed events and free Mars exit. All phases retain the same inertial orientation. Origin changes add/subtract the cached planet's position **and velocity** at the boundary epoch. Mass is continuous; its initial value alone is fixed at 2747 kg at Earth SOI exit. No propellant is charged for the omitted departure. Planetary ephemeris derivatives and duration derivatives enter the exact CasADi derivatives.
 
 There are **no inside/outside-SOI path inequalities**. Surface/mass constraints are evaluated at the existing HS points and at shooting nodes and internal endpoints of the 20 uniform RK7 substeps. Checking these existing endpoints introduces no integration splits. Surface sampling does not certify continuous clearance between samples. There is no separately fixed Mars periapsis or minimum outward speed margin.
 
 ## Initialisation, optimisation and scaling
 
-The optimiser is implemented in `deterministic_optimization/` and invoked through the root entry point. Fuel and energy each begin independently with **1e-4 N on each Cartesian thrust component and two uniform RK7 substeps per initial arc**. No spacecraft-SPK history and no previously optimised trajectory seeds these states. The initial mesh is **60/50/90/50**, not the final refined mesh.
+The optimiser is implemented in `deterministic_optimization/` and invoked through the root entry point. Fuel and energy each begin independently with **1e-4 N on each Cartesian thrust component and two uniform RK7 substeps per initial arc**. No spacecraft-SPK history and no previously optimised trajectory seeds these states. The default initial mesh is **40/80/40**, not the final refined mesh; `--psyche-initial-arcs` overrides it (the published energy result used 30/30/30).
 
-The histories in `artifacts/rollout_timing/` are zero-thrust, two-body diagnostic rollouts. Only their Earth/Mars exit durations initialise the two free times. The optimiser regenerates all nodal states with the required small thrust. It propagates TIP → Earth exit → fixed Mars-entry epoch, then resets the second chain's Cartesian initial state to the fixed Mars entry while carrying mass continuously, and propagates Mars exit → arrival. The first chain's Mars-entry mismatch and the final arrival mismatch remain infeasible-seed residuals; no impulse or endpoint snap is inserted.
+The histories in `artifacts/rollout_timing/` are zero-thrust, two-body diagnostics. Only the archived Mars exit duration initializes the remaining free duration. The optimiser regenerates all nodal states with the required small thrust. It propagates from the fixed SPICE Earth exit to the fixed Mars-entry epoch, then anchors the second rollout at the fixed Mars-entry Cartesian state, carrying mass continuously, and propagates through Mars exit to arrival. The first rollout's Mars-entry mismatch and the final arrival mismatch remain infeasible-seed residuals. These initialization anchors do not reset an optimized or continuously reintegrated trajectory.
 
 The optimisation workflow is fresh rollout → same-objective HS once → multiple shooting with local-defect bisection. Controls are constant on each arc:
 
@@ -191,3 +192,18 @@ The reconstructed SPK comparisons in `artifacts/soi/` concern event extraction a
 * `orbit.py`, `rollout.py`, `seed_earth_departure.py`, `seed_mars_flyby.py`, `seed_solar_phases.py`: independently checked two-body timing rollouts.
 * `paths.py`, `verify.py`, `__main__.py`, `download_kernels.py`: input selection, provenance checks and reproduction commands.
 * `artifacts/`: pinned TIP, SOI, asteroid, ephemeris and timing products. `evidence/` contains clearly labelled historical source audits, not active alternative mission boundaries.
+
+## Ballistic Mars revision (27 October 2026)
+The active deterministic and stochastic Mars phase now has exactly zero thrust,
+zero feedback gains, and zero propellant consumption. This is a modelling decision,
+not reconstructed spacecraft telemetry. Existing fixed Earth-exit and Mars-entry
+SPICE states and the fixed asteroid arrival target are unchanged. The outward SOI
+exit remains an event constraint. Under the deterministic Mars-only gravity model,
+the fixed entry state uniquely determines the ballistic encounter and exit.
+
+The stochastic closest-approach node remains free with continuous state/covariance
+shooting equations, but no shared commanded/executed thrust is carried across it.
+Acceleration diffusion remains active; navigation and execution uncertainty do not
+produce thrust during the coast. See `../stochastic_optimization/README.md` for the
+stochastic workflow. Earlier powered-flight results in this document are historical
+comparisons only.

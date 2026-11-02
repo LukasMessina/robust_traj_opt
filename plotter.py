@@ -688,12 +688,15 @@ class Plotter:
         plt.close(fig)
         return path
 
-    def plot_inertial_control(self, time_days: np.ndarray, thrust_n: np.ndarray, max_thrust_n: float) -> Path:
-        """Paper Fig. 1(b): J2000 thrust longitude, latitude and magnitude."""
+    def plot_inertial_control(
+        self, time_days: np.ndarray, thrust_n: np.ndarray, max_thrust_n: float,
+        *, angle_mask_thrust_n: float = 1e-5,
+    ) -> Path:
+        """J2000 thrust angles and magnitude; mask angles using an absolute N cutoff."""
         norm = np.linalg.norm(thrust_n, axis=0)
         alpha = np.degrees(np.arctan2(thrust_n[1], thrust_n[0]))
         beta = np.degrees(np.arctan2(thrust_n[2], np.hypot(thrust_n[0], thrust_n[1])))
-        coast = norm <= 1e-6 * max_thrust_n
+        coast = norm <= angle_mask_thrust_n  # Magnitude is unchanged.
         alpha[coast] = np.nan
         beta[coast] = np.nan
         fig, axes = plt.subplots(3, 1, sharex=True, figsize=(5.8, 6.0), dpi=self.FIGURE_DPI)

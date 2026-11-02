@@ -23,19 +23,18 @@ def algebraic_checks(mission, solution):
     phases, cfg = (solution["phases"], mission.settings)
     epochs = mission.epochs(solution["exit_days"])
     checks = {
-        "tip": error_record(phases[0]["states_si"][0] - mission.x0),
-        "fixed_mars_entry": error_record(phases[2]["states_si"][0, :6] - mission.xm),
-        "fixed_arrival": error_record(phases[3]["states_si"][-1, :6] - mission.xf),
+        mission.initial_event_name: error_record(phases[0]["states_si"][0] - mission.x0),
+        "fixed_mars_entry": error_record(phases[mission.mars_phase]["states_si"][0, :6] - mission.xm),
+        "fixed_arrival": error_record(phases[-1]["states_si"][-1, :6] - mission.xf),
         "arrival_epoch_error_s": float(epochs[-1] - mission.tf),
         "frame_links": [],
         "exits": [],
     }
-    for i, body in ((0, 399), (1, 499), (2, 499)):
+    for i, _, body, _ in mission.links:
         a, b = (phases[i]["states_si"][-1].copy(), phases[i + 1]["states_si"][0].copy())
-        planet = mission.cache.state(body, epochs[i + 1])
-        a[:6] += planet if i != 1 else -planet
+        a = mission.transform_to_next(i, a, epochs[i + 1])
         checks["frame_links"].append(error_record(a - b))
-    for phase, body in ((0, 399), (2, 499)):
+    for phase, body in mission.exit_phases:
         state = phases[phase]["states_si"][-1]
         r = np.linalg.norm(state[:3])
         radial_speed = float(np.dot(state[:3], state[3:6]) / r)
@@ -151,7 +150,7 @@ def propagate_interval(mission, phase, state, thrust, sigma, duration):
         method="DOP853",
         rtol=2e-12,
         atol=np.r_[np.full(3, 1e-05), np.full(3, 1e-09), 1e-09],
-        max_step=min(duration / 8.0, 86400.0 if phase in (1, 3) else 900.0),
+        max_step=min(duration / 8.0, 86400.0 if mission.origins[phase] == 10 else 900.0),
         dense_output=True,
     )
     if not result.success:
@@ -160,7 +159,7 @@ def propagate_interval(mission, phase, state, thrust, sigma, duration):
 
 
 def reintegrate(mission, solution):
-    """One continuous trajectory from TIP; never reset the state at Mars."""
+    """One continuous trajectory from Earth SOI exit; never reset the state at Mars."""
     cfg, phases = (mission.settings, solution["phases"])
     state = mission.x0.copy()
     records, arrays = ([], {})
@@ -251,10 +250,10 @@ def reintegrate(mission, solution):
                 )
                 for b in (399, 499)
             }
-        if i == 1:
+        if i == mission.mars_phase - 1:
             target_sun = mission.xm + mission.cache.state(499, mission.tm)
             record["fixed_mars_entry_error"] = error_record(state[:6] - target_sun)
-        if i == 3:
+        if i == len(phases) - 1:
             record["fixed_arrival_error"] = error_record(state[:6] - mission.xf)
         records.append(record)
         arrays.update(
@@ -265,10 +264,8 @@ def reintegrate(mission, solution):
                 f"p{i}_velocity_error_m_s": np.array([e["velocity_m_s"] for e in errors]),
             }
         )
-        if i < 3:
-            body = 399 if i == 0 else 499
-            planet = mission.cache.state(body, phase["start_et"] + phase["duration_s"])
-            state[:6] += planet if i in (0, 2) else -planet
+        if i < len(phases) - 1:
+            state = mission.transform_to_next(i, state, phase["start_et"] + phase["duration_s"])
     passed = all(
         (
             r["max_position_difference_m"] < cfg.global_position_tolerance_m
@@ -288,7 +285,7 @@ def reintegrate(mission, solution):
             "phases": records,
             "role": "post-solve diagnostic only; never changes refinement or convergence status",
             "soi_membership": "geometry report only; being inside/outside an SOI is not a path-constraint violation",
-            "method": "DOP853; ZOH controls; physical mass flow uses actual thrust norm, not sigma; continuous TIP-to-arrival propagation with origin translations and no state reset at Mars",
+            "method": "DOP853; ZOH controls; physical mass flow uses actual thrust norm, not sigma; continuous Earth-SOI-exit-to-arrival propagation with origin translations and no state reset at Mars",
             "path_check_qualification": "Numerical sampling at adaptive integration nodes and eight subintervals per control interval, plus refined planet exit roots; not an analytic all-times certificate.",
         },
         arrays,

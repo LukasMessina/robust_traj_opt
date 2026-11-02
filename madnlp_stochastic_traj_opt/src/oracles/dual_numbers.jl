@@ -4,7 +4,6 @@
 
 struct TagPoint end    # 10 sigma-point inputs (state, control)
 struct TagArc end      # 56 arc inputs (mean, feedforward, gain, factor)
-struct TagFactor end   # 28 factor entries (Cholesky sensitivities)
 struct TagOuter end    # pair-seeded second derivatives
 struct TagInner end
 

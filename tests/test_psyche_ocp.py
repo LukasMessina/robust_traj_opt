@@ -52,26 +52,30 @@ class MissionTranscriptionChecks(unittest.TestCase):
 
     def test_small_thrust_seed_has_two_rk7_steps_and_preserves_anchor_and_mass_links(self):
         m = self.mission
-        self.assertEqual([len(t) - 1 for t in m.initial_meshes()], [60, 50, 90, 50])
+        self.assertEqual([len(t) - 1 for t in m.initial_meshes()], [40, 80, 40])
+        self.assertEqual(m.origins, (10, 499, 10))
+        self.assertEqual(m.t0, m.earth_exit["et_tdb_s"])
+        np.testing.assert_array_equal(m.x0[:6], m.earth_exit["sun_relative_state_si"])
         thrust = np.full(3, 1e-4)
         sigma = np.linalg.norm(thrust)
         h = m.seed["phase1_elapsed_s"][1] / 2.0
         rhs = lambda y: m.rhs_si(0, y, thrust, sigma)
         first_endpoint = rk7(rhs, rk7(rhs, m.x0.copy(), h), h)
         np.testing.assert_allclose(m.seed["phase1_states_si"][1], first_endpoint, rtol=1e-14)
-        np.testing.assert_array_equal(m.seed["phase3_states_si"][0, :6], m.xm)
-        for phase in range(1, 5):
-            intervals = (60, 50, 90, 50)[phase - 1]
+        np.testing.assert_array_equal(m.seed["phase2_states_si"][0, :6], m.xm)
+        for phase in range(1, 4):
+            intervals = (40, 80, 40)[phase - 1]
             self.assertEqual(m.seed[f"phase{phase}_states_si"].shape, (intervals + 1, 7))
             self.assertEqual(m.seed[f"phase{phase}_thrust_n"].shape, (intervals, 3))
             initial, final = m.seed[f"phase{phase}_states_si"][[0, -1]]
             duration = m.seed[f"phase{phase}_elapsed_s"][-1]
+            flow = 0.0 if m.is_ballistic(phase - 1) else sigma
             self.assertAlmostEqual(
-                initial[6] - final[6], sigma * duration / (9.80665 * m.settings.isp_s), places=9
+                initial[6] - final[6], flow * duration / (9.80665 * m.settings.isp_s), places=9
             )
-            if phase < 4:
+            if phase < 3:
                 self.assertEqual(final[6], m.seed[f"phase{phase+1}_states_si"][0, 6])
-        for phase, body in ((1, 399), (3, 499)):
+        for phase, body in ((2, 499),):
             end = m.seed[f"phase{phase}_states_si"][-1, :6]
             epoch = m.seed[f"phase{phase}_epochs_et_tdb_s"][-1]
             np.testing.assert_allclose(
@@ -93,7 +97,7 @@ class MissionTranscriptionChecks(unittest.TestCase):
         }
         with patch.object(ocp_validation, "rk7", wraps=rk7) as integrate:
             defects = interval_defects(m, seed)
-        self.assertEqual(integrate.call_count, 60 * 64)
+        self.assertEqual(integrate.call_count, 40 * 64)
         self.assertEqual(defects[0]["rk7_substeps_per_interval"], 64)
         self.assertNotIn("rk7_estimator_resolved", defects[0])
 
@@ -110,11 +114,9 @@ class MissionTranscriptionChecks(unittest.TestCase):
                 i, state, u * m.settings.thrust_max_n, sigma * m.settings.thrust_max_n
             )
             np.testing.assert_allclose(computed, expected, atol=1e-10, rtol=1e-12)
-            self.assertAlmostEqual(
-                computed[6],
-                -sigma * m.settings.thrust_max_n / (9.80665 * m.settings.isp_s),
-                places=15,
-            )
+            # The ballistic Mars phase ignores the control: no thrust, no mass flow.
+            flow = 0.0 if m.is_ballistic(i) else sigma * m.settings.thrust_max_n
+            self.assertAlmostEqual(computed[6], -flow / (9.80665 * m.settings.isp_s), places=15)
 
     def test_free_epoch_derivatives_and_unmodified_seed(self):
         m = self.mission
@@ -125,16 +127,16 @@ class MissionTranscriptionChecks(unittest.TestCase):
         op = problem.opti
         initial = np.asarray(op.debug.value(op.x, op.initial())).ravel()
         f = ca.Function("constraints", [op.x], [op.g])
-        j = ca.Function("exit_jacobian", [op.x], [ca.jacobian(op.g, op.x)[:, :2]])
+        j = ca.Function("exit_jacobian", [op.x], [ca.jacobian(op.g, op.x)[:, :1]])
         analytic = np.array(j(initial))
-        for i in range(2):
+        for i in range(1):
             step = np.zeros_like(initial)
             step[i] = 1e-5
             numerical = np.array((f(initial + step) - f(initial - step)) / (2e-5)).ravel()
             error = abs(numerical - analytic[:, i]) / (1.0 + abs(analytic[:, i]))
             self.assertLess(error.max(), 2e-6)
-        endpoint = op.debug.value(problem.variables[3][0][:, -1], op.initial()) * m.scales[3].state
-        np.testing.assert_allclose(endpoint, m.seed["phase4_states_si"][-1], rtol=1e-14, atol=1e-5)
+        endpoint = op.debug.value(problem.variables[2][0][:, -1], op.initial()) * m.scales[2].state
+        np.testing.assert_allclose(endpoint, m.seed["phase3_states_si"][-1], rtol=1e-14, atol=1e-5)
         self.assertGreater(np.linalg.norm(endpoint[:3] - m.xf[:3]), 1e11)
         self.assertEqual(m.tf, 933552000.0)
 
@@ -146,11 +148,11 @@ class MissionTranscriptionChecks(unittest.TestCase):
                 self.assertNotIn("planet_inside_soi", problem.group_ranges)
                 self.assertNotIn("solar_outside_soi", problem.group_ranges)
                 self.assertIn("surface_exclusion", problem.group_ranges)
-                self.assertEqual(len(problem.group_ranges["exit_surface"]), 2)
+                self.assertEqual(len(problem.group_ranges["exit_surface"]), 1)
                 op = problem.opti
-                scale = m.scales[0]
-                terminal = problem.variables[0][0][:, -1]
-                radius = m.soi[399] / scale.length
+                scale = m.scales[1]
+                terminal = problem.variables[1][0][:, -1]
+                radius = m.soi[499] / scale.length
                 row = problem.group_ranges["exit_direction"][0][0]
                 expression = op.g[row] - op.lbg[row]
                 # A positive speed BELOW the previous 1 m/s margin must pass;

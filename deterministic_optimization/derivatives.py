@@ -8,7 +8,7 @@ from .flows import get_arc_flow
 
 def seed_solution(mission):
     phases = []
-    for i in range(1, 5):
+    for i in range(1, len(mission.origins) + 1):
         seed = mission.seed
         phases.append(
             {
@@ -132,17 +132,18 @@ def exit_time_derivative_checks(problem):
     op = problem.opti
     initial = np.asarray(op.debug.value(op.x, op.initial())).ravel()
     values = ca.Function("all_constraints", [op.x], [op.g])
-    jacobian = ca.Function("exit_time_jac", [op.x], [ca.jacobian(op.g, op.x)[:, :2]])
+    count = len(problem.mission.exit_phases)
+    jacobian = ca.Function("exit_time_jac", [op.x], [ca.jacobian(op.g, op.x)[:, :count]])
     analytic = np.asarray(jacobian(initial))
     errors = []
-    for i in range(2):
+    for i in range(count):
         shift = np.zeros_like(initial)
         shift[i] = 1e-05
         numerical = np.asarray((values(initial + shift) - values(initial - shift)) / 2e-05).ravel()
         errors.append(float(np.max(abs(numerical - analytic[:, i]) / (1.0 + abs(analytic[:, i])))))
     return {
-        "earth_exit_duration_error": errors[0],
-        "mars_exit_duration_error": errors[1],
+        "maximum_exit_duration_error": max(errors),
+        "exit_duration_errors": {str(body): error for (_, body), error in zip(problem.mission.exit_phases, errors)},
         "covers": "All constraints, including integrated dynamics, surface samples and ephemeris frame links",
     }
 
@@ -163,13 +164,10 @@ def reintegrate_sigma_model(mission, solution):
         records.append(
             {"phase": i + 1, "end_mismatch": error_record(state - phase["states_si"][-1])}
         )
-        if i < 3:
-            planet = mission.cache.state(
-                399 if i == 0 else 499, phase["start_et"] + phase["duration_s"]
-            )
-            state[:6] += planet if i in (0, 2) else -planet
+        if i < len(mission.origins) - 1:
+            state = mission.transform_to_next(i, state, phase["start_et"] + phase["duration_s"])
     return {
-        "method": "Continuous DOP853 from TIP, no resets, sigma-based mass flow matching the NLP",
+        "method": f"Continuous DOP853 from {mission.initial_event_name}, no resets, throttle mass flow matching the NLP",
         "role": "Report only; never changes convergence/refinement",
         "phases": records,
     }

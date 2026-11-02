@@ -21,9 +21,10 @@ class ShootingChecks(unittest.TestCase):
 
     def test_direct_rollout_initialisation_and_dimensions(self):
         m, p = self.mission, self.problem
-        self.assertEqual(p.opti.nx, 2780)
-        self.assertEqual(p.opti.ng, 12308)
-        for i, (x, u, sigma, stages) in enumerate(p.variables):
+        # 7 states per node, throttle + direction per cruise arc, one Mars exit duration.
+        self.assertEqual(p.opti.nx, 7 * (41 + 81 + 41) + 4 * (40 + 40) + 1)
+        self.assertEqual(p.opti.ng, 7884 - 2 * 80)
+        for i, (x, u, sigma) in enumerate(p.variables):
             # elapsed_s / duration can move a spline knot by one floating-point
             # increment. Compare in phase units to accommodate that roundoff.
             np.testing.assert_allclose(
@@ -37,10 +38,9 @@ class ShootingChecks(unittest.TestCase):
                 m.seed[f"phase{i+1}_thrust_n"],
                 rtol=1e-14,
             )
-            self.assertEqual(stages, [])
         self.assertNotIn("planet_inside_soi", p.group_ranges)
         self.assertNotIn("solar_outside_soi", p.group_ranges)
-        self.assertEqual(len(p.group_ranges["surface_exclusion"]), 20 * 250 + 4)
+        self.assertEqual(len(p.group_ranges["surface_exclusion"]), 20 * 160 + 3)
 
     def test_flow_first_and_second_derivatives(self):
         checks = derivative_checks(self.mission, 20)
@@ -95,15 +95,15 @@ class ShootingChecks(unittest.TestCase):
 
     def test_exit_time_derivatives_include_propagation_and_frame_links(self):
         checks = exit_time_derivative_checks(self.problem)
-        self.assertLess(checks["earth_exit_duration_error"], 2e-6)
-        self.assertLess(checks["mars_exit_duration_error"], 2e-6)
+        self.assertEqual(set(checks["exit_duration_errors"]), {"499"})
+        self.assertLess(checks["maximum_exit_duration_error"], 2e-6)
 
     def test_event_constraints_match_collocation(self):
         m, shooting = self.mission, self.problem
         hs = Transcription(m, m.initial_meshes(), "hs", objective="energy")
         for group in (
             "positive_duration",
-            "fixed_tip",
+            "fixed_initial",
             "fixed_mars_entry",
             "fixed_arrival",
             "frame_links",
@@ -123,17 +123,26 @@ class ShootingChecks(unittest.TestCase):
         # Synthetic handoff fixture, deliberately distinct from the rollout.
         source = seed_solution(m)
         source.update(
-            method="hs", objective="fuel", solver_success=True, solver_status="test fixture"
+            method="hs", objective="fuel", solver_success=True, solver_status="test fixture",
+            mass_flow_model="throttle_direction",
         )
-        for phase in source["phases"]:
+        for i, phase in enumerate(source["phases"]):
             phase["states_si"] = phase["states_si"].copy()
             phase["states_si"][:, 6] -= 10.0
-            phase["thrust_n"] = np.full_like(phase["thrust_n"], 0.01)
-            phase["sigma_n"] = np.full_like(phase["sigma_n"], np.sqrt(3.0) * 0.01)
-            phase["direction"] = phase["thrust_n"] / phase["sigma_n"][:, None]
+            component = 0.0 if m.is_ballistic(i) else 0.01
+            phase["thrust_n"] = np.full_like(phase["thrust_n"], component)
+            phase["sigma_n"] = np.full_like(phase["sigma_n"], np.sqrt(3.0) * component)
+            phase["direction"] = np.tile(np.ones(3) / np.sqrt(3.0), (len(phase["sigma_n"]), 1))
             phase["throttle"] = phase["sigma_n"] / m.settings.thrust_max_n
         shooting = Transcription(m, m.initial_meshes(), "shooting", source, objective="fuel")
-        self.assertTrue(verify_hs_handoff(shooting, source)["verified"])
+        check = verify_hs_handoff(shooting, source)
+        self.assertTrue(check["verified"])
+        self.assertTrue(check["phases"][m.mars_phase]["ballistic"])
+        powered = dict(source, phases=[dict(p) for p in source["phases"]])
+        mars = source["phases"][m.mars_phase]
+        powered["phases"][m.mars_phase]["thrust_n"] = np.full_like(mars["thrust_n"], 0.01)
+        with self.assertRaisesRegex(ValueError, "ballistic phase"):
+            verify_hs_handoff(shooting, powered)
         with self.assertRaisesRegex(ValueError, "converged Hermite-Simpson"):
             verify_hs_handoff(shooting, dict(source, solver_success=False))
         with self.assertRaisesRegex(ValueError, "same objective"):

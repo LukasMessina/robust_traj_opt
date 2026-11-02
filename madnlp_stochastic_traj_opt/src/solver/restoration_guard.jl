@@ -11,6 +11,7 @@ Base.@kwdef mutable struct RestorationGuard <: MadNLP.AbstractUserCallback
     iteration_offset::Int = 0
     blocked_phase::Symbol = :none
     limit_exceeded::Bool = false
+    flush_stdout::Bool = false
 end
 
 next_restoration_count(g::RestorationGuard,k) =
@@ -26,6 +27,7 @@ function allow_restoration!(g::RestorationGuard,k,phase)
 end
 
 function record_restoration!(g::RestorationGuard,k,phase)
+    g.flush_stdout && flush(stdout)
     allow_restoration!(g,k,phase) || return false
     g.consecutive = next_restoration_count(g,k)
     g.max_consecutive = max(g.max_consecutive,g.consecutive)
@@ -35,6 +37,7 @@ function record_restoration!(g::RestorationGuard,k,phase)
 end
 
 function (g::RestorationGuard)(solver,::MadNLP.UserCallbackRegular)
+    g.flush_stdout && flush(stdout)
     g.regular_iterations = solver.cnt.k
     # A callback precedes the regular step, which could fail without advancing
     # k. Only an actual gap in iteration indices breaks a restoration run.

@@ -46,8 +46,12 @@ function numpy_interp(x::AbstractVector, xp::AbstractVector, fp::AbstractVector)
     return result
 end
 
+"Directory of the deterministic reference: the case's energy-optimal one or its fuel-optimal sibling."
+reference_directory(case::CaseData, o::Options) =
+    o.reference_objective == :fuel ? replace(case.reference_dir, "energy_optimal" => "fuel_optimal") : case.reference_dir
+
 function load_reference(case::CaseData, o::Options)
-    path = joinpath(case.reference_dir, case.id * ".npz")
+    path = joinpath(reference_directory(case, o), case.id * ".npz")
     isfile(path) || error("missing deterministic reference $path; run deterministic_traj_opt.py first")
     data = NPZ.npzread(path, ["t_dense_days", "x_dense", "u_dense", "mesh_fraction", "x"])
     case.id == "earth_mars" && check_earth_mars_reference(case, path, data["x"])
@@ -88,6 +92,12 @@ function build_uniform_reference(case::CaseData, o::Options, data)
     horizon = mesh[end] * case.tof_nd
     dense_times[end] >= horizon - 1e-12 || error("the dense reference stops before the requested horizon")
     node_times = numpy_linspace(0.0, horizon, n + 1)
+    r = o.reference_mesh_refinement
+    if r !== nothing
+        # the reference's own nodes, every interval split into r equal pieces
+        node_times = vcat([mesh[k] .+ (mesh[k+1] - mesh[k]) .* (0:r-1) ./ r for k in 1:length(mesh)-1]..., mesh[end]) .* case.tof_nd
+        n = length(node_times) - 1
+    end
     if truncated !== nothing
         node_times = node_times[1:truncated+1]
         n = truncated
@@ -111,6 +121,10 @@ function build_uniform_reference(case::CaseData, o::Options, data)
     fuel = case.m0_wet * (node_states[7, 1] - node_states[7, end])
     return ReferenceTraj(node_times, diff(node_times), node_states, node_controls, fuel)
 end
+
+"Arc cost weights: unit on the uniform mesh, N dt_k / (t_f - t_0) on the refined reference mesh."
+single_phase_arc_weights(o::Options, ref::ReferenceTraj) =
+    o.reference_mesh_refinement === nothing ? ones(n_arcs(ref)) : n_arcs(ref) .* ref.steps ./ sum(ref.steps)
 
 "Terminal mean target: the full-transfer target or the truncated relative node."
 terminal_mean_target(case::CaseData, o::Options, ref::ReferenceTraj) =

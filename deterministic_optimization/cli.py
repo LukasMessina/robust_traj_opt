@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CASES = (*DETERMINISTIC_CASE_REGISTRY, "psyche")
 
 
-def run_one(case, objective, output, print_level, public_root=None):
+def run_one(case, objective, output, print_level, public_root=None, psyche_initial_arcs=None):
     """Independent worker: no preceding objective or reference run is a seed."""
     output = Path(output).resolve()
     directory = output / f"{case}_{objective}"
@@ -33,10 +33,13 @@ def run_one(case, objective, output, print_level, public_root=None):
                 from .psyche import Settings
                 from .psyche_driver import run
 
+                settings = replace(Settings(), print_level=print_level)
+                if psyche_initial_arcs is not None:
+                    settings = replace(settings, initial_intervals_per_phase=tuple(psyche_initial_arcs))
                 result = run(
                     directory,
                     objective=objective,
-                    settings=replace(Settings(), print_level=print_level),
+                    settings=settings,
                 )
             else:
                 from .single_phase import run_case
@@ -99,6 +102,9 @@ def main(argv=None):
         help="Independent worker processes; each solver uses one BLAS thread",
     )
     parser.add_argument("--print-level", type=int, default=5)
+    parser.add_argument("--psyche-initial-arcs", type=int, nargs=3,
+                        metavar=("CRUISE_IN", "MARS", "CRUISE_OUT"),
+                        help="Override the three initial Psyche arc counts without changing defaults")
     parser.add_argument(
         "--plots-only",
         action="store_true",
@@ -107,6 +113,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.jobs < 1:
         parser.error("--jobs must be positive")
+    if args.psyche_initial_arcs is not None and min(args.psyche_initial_arcs) < 2:
+        parser.error("Each Psyche phase needs at least two arcs")
     os.chdir(ROOT)
     cases = (
         CASES
@@ -147,6 +155,8 @@ def main(argv=None):
     output.mkdir(parents=True, exist_ok=True)
     for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
         os.environ[name] = "1"
+    from .psyche import Settings as PsycheSettings
+
     configuration = dict(
         workflow="fresh rollout -> same-objective HS -> adaptive multiple shooting",
         cases=list(cases),
@@ -154,7 +164,7 @@ def main(argv=None):
         ipopt_options=ipopt_options(args.print_level),
         solver_time_limit=None,
         initial_intervals=50,
-        psyche_initial_intervals=[60, 50, 90, 50],
+        psyche_initial_intervals=list(args.psyche_initial_arcs or PsycheSettings().initial_intervals_per_phase),
         shooting_substeps={"cr3bp": 2, "earth_mars": 20, "psyche": 20},
         defect_substeps=64,
         defect_tolerances={"cr3bp": 5e-13, "earth_mars": 1e-13, "psyche": 5e-14},
@@ -169,7 +179,7 @@ def main(argv=None):
     results = []
     with ProcessPoolExecutor(max_workers=args.jobs) as pool:
         futures = {
-            pool.submit(run_one, c, o, output, args.print_level, public_root): (c, o)
+            pool.submit(run_one, c, o, output, args.print_level, public_root, args.psyche_initial_arcs): (c, o)
             for c, o in jobs
         }
         for future in as_completed(futures):

@@ -5,8 +5,8 @@ import json
 
 import numpy as np
 from matplotlib.ticker import MaxNLocator
+from mpl_toolkits.mplot3d import proj3d
 from PIL import Image
-from scipy.optimize import minimize_scalar
 
 from .plotting import Plotter, plt, save
 from .plot_assets import ASSETS, EARTH_PCK, digest
@@ -96,46 +96,38 @@ def occulted(points, viewer, rotation, axes):
     return (discriminant > 0) & (near > 0)
 
 
-def plot_passage(plotter, solution, mission, index):
+def plot_earth_departure(plotter, solution, mission):
+    """Textured Earth with the first solar phase from the fixed Earth SOI exit.
+
+    Optimised Sun-centred states are translated to Earth-centred J2000 with the
+    cached Earth ephemeris at each plotted epoch. The globe is enlarged for
+    display only; trajectory coordinates are not scaled.
+    """
     from .psyche import evaluate_phase
 
-    body = "Earth" if index == 0 else "Mars"
-    phase = solution["phases"][index]
-    radius = (
-        mission.settings.earth_radius_m if index == 0 else mission.settings.mars_radius_m
-    ) / 1000
-    if index == 0:
-        closest = 0.0
-    else:
-        candidates = [
-            (float(tau), np.linalg.norm(state[:3]))
-            for tau, state in zip(phase["mesh"], phase["states_si"])
-        ]
-        for a, b in zip(phase["mesh"][:-1], phase["mesh"][1:]):
-            answer = minimize_scalar(
-                lambda tau: np.linalg.norm(evaluate_phase(solution, index, tau, mission)[:3]),
-                bounds=(a, b),
-                method="bounded",
-                options={"xatol": 1e-14},
-            )
-            candidates.append((answer.x, answer.fun))
-        closest = min(candidates, key=lambda v: v[1])[0]
-    anchor = evaluate_phase(solution, index, closest, mission)
-    epoch = phase["start_et"] + closest * phase["duration_s"]
-    rotation, utc, cartography = body_orientation(body, epoch)
-    # Widen the physical window and resample its longer trajectory segment below.
-    # This is 1.75 times the preceding 1.932-factor passage view.
+    phase = solution["phases"][0]
+
+    def evaluate(tau):
+        state = evaluate_phase(solution, 0, tau, mission).copy()
+        state[:6] -= mission.cache.state(399, phase["start_et"] + tau * phase["duration_s"])
+        return state
+
+    radius = mission.settings.earth_radius_m / 1000
+    anchor = evaluate(0.0)
+    epoch = phase["start_et"]
+    rotation, utc, cartography = body_orientation("Earth", epoch)
+    # Window width retained from the original passage views (3.381 times the
+    # original close-up half-width).
     limit = 3.381 * max(2.4 * radius, 1.45 * np.linalg.norm(anchor[:3]) / 1000)
-    coarse = np.unique(np.r_[np.linspace(0, 1, 1601), phase["mesh"], closest])
-    positions = np.array(
-        [evaluate_phase(solution, index, tau, mission)[:3] / 1000 for tau in coarse]
-    )
-    inside = np.flatnonzero(np.linalg.norm(positions, axis=1) < limit * 1.7)
-    if not len(inside):
-        raise ValueError("Close approach not in plotting window")
-    lo, hi = coarse[max(0, inside[0] - 1)], coarse[min(len(coarse) - 1, inside[-1] + 1)]
-    tau = np.unique(np.r_[np.linspace(lo, hi, 801), closest])
-    positions = np.array([evaluate_phase(solution, index, s, mission)[:3] / 1000 for s in tau])
+    arrow_length = 0.10 * limit
+    coarse = np.unique(np.r_[np.linspace(0, 1, 1601), phase["mesh"], 0.0])
+    positions = np.array([evaluate(tau)[:3] / 1000 for tau in coarse])
+    if not np.any(np.linalg.norm(positions, axis=1) < limit * 1.7):
+        raise ValueError("Earth departure not in plotting window")
+    outside = np.flatnonzero(np.linalg.norm(positions, axis=1) >= limit * 1.7)
+    lo, hi = 0.0, coarse[outside[0]] if len(outside) else 1.0
+    tau = np.unique(np.r_[np.linspace(lo, hi, 801), 0.0])
+    positions = np.array([evaluate(s)[:3] / 1000 for s in tau])
     k = np.clip(np.searchsorted(phase["mesh"], tau, side="right") - 1, 0, len(phase["mesh"]) - 2)
     thrust = phase["thrust_n"][k]
     visible_window = np.linalg.norm(positions, axis=1) < limit
@@ -152,7 +144,30 @@ def plot_passage(plotter, solution, mission, index):
     fig = plt.figure(figsize=plotter.THREE_D_FIGSIZE)
     ax = fig.add_subplot(111, projection="3d", computed_zorder=False)
     ax.set_proj_type("ortho")
-    geometry, colors, axes = surface_geometry(body, rotation)
+    ax.set(
+        xlim=(-limit, limit), ylim=(-limit, limit), zlim=(-limit, limit),
+        xlabel="x [km]", ylabel="y [km]", zlabel="z [km]",
+    )
+    ax.set_box_aspect((1, 1, 1))
+    plotter._style_3d_axis(ax)
+    ax.view_init(azim=-60, elev=30)
+    fig.subplots_adjust(left=0.02, right=0.82, bottom=0.10, top=0.73)
+    ax.apply_aspect()
+    geometry, colors, axes = surface_geometry("Earth", rotation)
+    # Display-only magnification: the textured globe has twice the former
+    # centre marker's diameter. Preserve its orientation and oblateness.
+    screen_right = np.array([-viewer[1], viewer[0], 0.0])
+    screen_right /= np.linalg.norm(screen_right)
+    edge = axes[0] * screen_right
+    px, py, _ = proj3d.proj_transform(
+        [0.0, edge[0]], [0.0, edge[1]], [0.0, edge[2]], ax.get_proj()
+    )
+    screen_points = ax.transData.transform(np.column_stack((px, py)))
+    radius_pixels = np.linalg.norm(screen_points[1] - screen_points[0])
+    target_radius_pixels = np.sqrt(plotter.SMALL_MARKER_SIZE) * fig.dpi / 72.0
+    surface_scale = target_radius_pixels / radius_pixels
+    geometry = geometry * surface_scale
+    displayed_axes = np.asarray(axes) * surface_scale
     ax.plot_surface(
         *geometry,
         rstride=1,
@@ -163,21 +178,25 @@ def plot_passage(plotter, solution, mission, index):
         antialiased=False,
         rasterized=True,
         zorder=2,
+        label="Earth",
     )
-    hidden = occulted(positions, viewer, rotation, axes)
+    hidden = occulted(positions, viewer, rotation, displayed_axes)
     shown = positions.copy()
     shown[hidden | (np.max(abs(shown), axis=1) > limit)] = np.nan
     ax.plot(
         *shown.T,
         color=plotter.BLACK,
         lw=plotter.TRAJECTORY_LINE_WIDTH,
-        label="Departure" if index == 0 else "Flyby",
+        label="Departure",
         zorder=4,
     )
     selection = np.unique(np.linspace(0, len(tau) - 1, 12).astype(int))
     selection = selection[(~hidden[selection]) & visible_window[selection]]
+    # Same coast cutoff as the main 3D plot.
+    arrow_cutoff = 1e-6 * mission.settings.thrust_max_n
+    selection = selection[np.linalg.norm(thrust[selection], axis=1) > arrow_cutoff]
     if max_thrust > 0 and len(selection):
-        arrows = 1.20 * radius * thrust[selection] / max_thrust
+        arrows = arrow_length * thrust[selection] / max_thrust
         ax.quiver(
             *positions[selection].T,
             *arrows.T,
@@ -192,21 +211,9 @@ def plot_passage(plotter, solution, mission, index):
         color=plotter.ENDPOINT_COLOR,
         edgecolor=plotter.BLACK,
         s=plotter.SMALL_MARKER_SIZE,
-        label="TIP" if index == 0 else "Closest approach",
+        label="Earth SOI exit",
         zorder=6,
     )
-    ax.set(
-        xlim=(-limit, limit),
-        ylim=(-limit, limit),
-        zlim=(-limit, limit),
-        xlabel="x [km]",
-        ylabel="y [km]",
-        zlabel="z [km]",
-    )
-    ax.set_box_aspect((1, 1, 1))
-    plotter._style_3d_axis(ax)
-    # The shared style sets its own camera; apply the common Psyche view last.
-    ax.view_init(azim=-60, elev=30)
     projected = positions.copy()
     projected[np.max(abs(projected), axis=1) > limit] = np.nan
     plotter._plot_trajectory_projections_3d(ax, projected.T, xz_far_side=True)
@@ -217,33 +224,43 @@ def plot_passage(plotter, solution, mission, index):
         axis.set_major_locator(MaxNLocator(3, prune="both"))
     ax.tick_params(axis="z", pad=5)
     ax.zaxis.labelpad = 8
-    fig.subplots_adjust(left=0.02, right=0.82, bottom=0.10, top=0.73)
     plotter._heliocentric_legend(fig, ax, gap=0.003)
-    save(plotter, fig, body.lower() + "_passage")
+    save(plotter, fig, "earth_passage")
     return dict(
-        body=body,
+        body="Earth",
+        trajectory_source="Optimised first solar phase from fixed Earth SOI exit",
+        trajectory_frame="Earth-centred J2000",
+        trajectory_start_et=float(phase["start_et"] + lo * phase["duration_s"]),
+        trajectory_end_et=float(phase["start_et"] + hi * phase["duration_s"]),
+        anchor_event="Earth SOI exit",
         surface_epoch_et=float(epoch),
         surface_epoch_utc=utc,
         orientation=cartography,
         rotation_body_fixed_to_j2000=rotation.tolist(),
         ellipsoid_axes_km=axes,
+        displayed_ellipsoid_axes_km=displayed_axes.tolist(),
+        surface_display_scale=float(surface_scale),
+        surface_display_diameter_points=float(2 * np.sqrt(plotter.SMALL_MARKER_SIZE)),
         displayed_half_width_km=float(limit),
         maximum_displayed_thrust_n=float(max_thrust),
-        maximum_arrow_length_km=float(1.20 * radius),
+        maximum_arrow_length_km=float(arrow_length if len(selection) else 0.0),
+        arrow_thrust_cutoff_n=float(arrow_cutoff),
         arrow_linewidth_points=1.6,
         camera_azimuth_degrees=-60,
         camera_elevation_degrees=30,
-        closest_approach_altitude_above_constraint_sphere_km=float(
-            np.linalg.norm(anchor[:3]) / 1000 - radius
+        anchor_altitude_above_surface_km=float(np.linalg.norm(anchor[:3]) / 1000 - radius),
+        note=(
+            "Static surface orientation at surface_epoch_et; inertial trajectory spans a time interval. "
+            "Earth at SOI exit is visually enlarged to twice the former centre marker diameter. "
+            "Visual ellipsoid does not alter trajectory coordinates or spherical collision constraints."
         ),
-        note="Static surface orientation at surface_epoch_et; inertial trajectory spans a time interval. Visual ellipsoid does not alter spherical collision constraints.",
     )
 
 
 def plot_psyche_export(prefix, data, meta):
     from .psyche import Mission, Settings, load_solution
 
-    mission = Mission(Settings(**meta["configuration"]["settings"]))
+    mission = Mission(Settings.from_dict(meta["configuration"]["settings"]))
     solution = load_solution(Path(prefix).with_suffix(".npz"))
     plotter = Plotter(prefix)
     t, x, u = data["t_dense_days"], data["x_dense"], data["u_dense"] * meta["force_unit_n"]
@@ -303,7 +320,7 @@ def plot_psyche_export(prefix, data, meta):
             )
         for point, label, color in (
             (np.zeros(3), "Sun", plotter.SUN_COLOR),
-            (position[:, 0], "TIP", plotter.EARTH_COLOR),
+            (position[:, 0], mission.initial_event_name.replace("_", " "), plotter.EARTH_COLOR),
             (position[:, -1], "Psyche", plotter.GREEN),
         ):
             ax.scatter(
@@ -329,7 +346,10 @@ def plot_psyche_export(prefix, data, meta):
             fig.tight_layout(rect=(0, 0, 1, 0.76))
         plotter._heliocentric_legend(fig, ax, gap=0.003 if dimension == 3 else 0.02)
         save(plotter, fig, "3d" if dimension == 3 else "projections")
-    plotter.plot_inertial_control(t, u, meta["max_thrust_n"])
+    plotter.plot_inertial_control(
+        t, u, meta["max_thrust_n"],
+        angle_mask_thrust_n=1.5e-4 if meta["configuration"]["objective"] == "fuel" else 1e-5,
+    )
     plotter.plot_interval_defect(
         data["mesh_fraction"],
         meta["tof_days"],
@@ -342,4 +362,5 @@ def plot_psyche_export(prefix, data, meta):
         data["velocity_error_m_per_s"],
         data["mass_consumption_abs_difference_kg"],
     )
-    meta["passage_figures"] = [plot_passage(plotter, solution, mission, i) for i in (0, 2)]
+    # The Mars 3D passage figure is intentionally not generated.
+    meta["passage_figures"] = [plot_earth_departure(plotter, solution, mission)]

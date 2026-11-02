@@ -31,14 +31,12 @@ def run(output, objective="fuel", settings=None, substeps=20):
     provenance = mission.provenance()
     provenance["implementation_sha256"] = snapshot_sources(output)
     np.savez_compressed(output / "initial_guess.npz", **mission.seed)
-    mass_flow_model = "throttle_direction"
     initialization = "hermite_simpson"
-    hs_barrier_strategy = barrier_strategy = "adaptive"
     defect_substeps = settings.defect_substeps_per_interval
     config = dict(
         settings=asdict(settings),
         provenance=provenance,
-        event_epochs={"TIP_ET": mission.t0, "Mars_entry_ET": mission.tm, "arrival_ET": mission.tf},
+        event_epochs={mission.initial_event_name + "_ET": mission.t0, "Mars_entry_ET": mission.tm, "arrival_ET": mission.tf},
         arrival_target_sun_state_si=mission.xf,
         arrival_target_body_id=2000016,
         objective=objective,
@@ -53,13 +51,13 @@ def run(output, objective="fuel", settings=None, substeps=20):
         initial_guess=str(output / "initial_guess.npz"),
         seed_exit_days=mission.seed_exit_days,
         ephemeris_policy="Precomputed differentiable splines; no SPICE calls during optimisation",
-        gravity_models=["Earth only", "Sun only", "Mars only", "Sun only"],
+        gravity_models=[{399: "Earth only", 10: "Sun only", 499: "Mars only"}[b] for b in mission.origins],
         warm_start="Fresh small-thrust rollout -> same-objective HS -> multiple shooting with local-defect refinement",
         initialization=initialization,
-        mass_flow_model=mass_flow_model,
+        mass_flow_model=settings.mass_flow_model,
         hs_barrier_strategy="adaptive",
         barrier_strategy="adaptive",
-        mass_flow_definition="T=Tmax*alpha*d; dot(d,d)=1; mdot=-Tmax*alpha/(Isp*g0)",
+        mass_flow_definition="Cruises: T=Tmax*alpha*d, dot(d,d)=1, mdot=-Tmax*alpha/(Isp*g0); Mars: T=0, mdot=0",
         convergence_policy=convergence_policy(settings),
         solver_time_limit=None,
         postsolve_policy="Continuous propagation is report-only; no additional acceptance or refinement",
@@ -84,21 +82,18 @@ def run(output, objective="fuel", settings=None, substeps=20):
         or derivatives["maximum_hessian_vector_error"] > 2e-5
     ):
         raise RuntimeError("Shooting flow derivative validation failed")
-    if mass_flow_model == "throttle_direction":
-        controls = control_derivative_checks(mission, seed_solution(mission), substeps)
-        write_json(output / "control_derivative_checks.json", controls)
-        if (
-            controls["maximum_jacobian_error"] > 2e-6
-            or controls["maximum_hessian_vector_error"] > 2e-5
-        ):
-            raise RuntimeError("Throttle/direction derivative validation failed")
-        config.update(
-            direction_at_zero_throttle="Free unit vector; no frozen coast schedule",
-            thrust_floor=None,
-            smoothing_used=False,
-            hs_handoff_rule="HS NLP success required; transfer states, throttle, direction and exit times on identical mesh",
-        )
+    controls = control_derivative_checks(mission, seed_solution(mission), substeps)
+    write_json(output / "control_derivative_checks.json", controls)
+    if (
+        controls["maximum_jacobian_error"] > 2e-6
+        or controls["maximum_hessian_vector_error"] > 2e-5
+    ):
+        raise RuntimeError("Throttle/direction derivative validation failed")
     config.update(
+        direction_at_zero_throttle="Free unit vector in powered phases; no Mars control variables",
+        thrust_floor=None,
+        smoothing_used=False,
+        hs_handoff_rule="HS NLP success required; transfer states, throttle, direction and exit times on identical mesh",
         shooting_substeps=substeps,
         integration_grid="uniform",
         integration_validation_reference=1e-11,
@@ -142,10 +137,7 @@ def run(output, objective="fuel", settings=None, substeps=20):
             time_checks = exit_time_derivative_checks(problem)
             write_json(output / f"{method}_exit_time_derivatives.json", time_checks)
             if (
-                max(
-                    time_checks["earth_exit_duration_error"],
-                    time_checks["mars_exit_duration_error"],
-                )
+                time_checks["maximum_exit_duration_error"]
                 > 2e-6
             ):
                 raise RuntimeError("Free-exit derivative validation failed")
@@ -185,19 +177,18 @@ def run(output, objective="fuel", settings=None, substeps=20):
         print(json.dumps(summary), flush=True)
         return candidate
 
-    hs_converged, shooting_started = None, False
-    if initialization == "hermite_simpson":
-        name = f"hs_{objective}"
-        guess = attempt(meshes, None, name, "adaptive", "hs")
-        latest_path = output / f"{name}.npz"
-        hs_converged = bool(guess["solver_success"])
-        if hs_converged:
-            save_solution(guess, output / "converged_hs_solution.npz")
-        else:
-            termination = "Hermite-Simpson did not converge; multiple shooting was not started"
-            print(termination, flush=True)
+    shooting_started = False
+    name = f"hs_{objective}"
+    guess = attempt(meshes, None, name, "adaptive", "hs")
+    latest_path = output / f"{name}.npz"
+    hs_converged = bool(guess["solver_success"])
+    if hs_converged:
+        save_solution(guess, output / "converged_hs_solution.npz")
+    else:
+        termination = "Hermite-Simpson did not converge; multiple shooting was not started"
+        print(termination, flush=True)
 
-    for iteration in range(settings.max_refinements + 1 if hs_converged is not False else 0):
+    for iteration in range(settings.max_refinements + 1 if hs_converged else 0):
         shooting_started = True
         name = f"shooting_{iteration:02d}"
         candidate = attempt(meshes, guess, name, "adaptive")
@@ -239,7 +230,7 @@ def run(output, objective="fuel", settings=None, substeps=20):
             )
         except (RuntimeError, ValueError, FloatingPointError, OverflowError) as exc:
             write_json(output / "local_defect_error.json", {"error": str(exc)})
-    diagnostics = postsolve_diagnostics(mission, guess, output, latest_path.stem)
+    postsolve_diagnostics(mission, guess, output, latest_path.stem)
     for name, callback in (
         ("sigma_model_reintegration", lambda: reintegrate_sigma_model(mission, guess)),
         ("final_integration_checks", lambda: integration_checks(mission, guess, substeps)),
@@ -297,10 +288,12 @@ def verify_hs_handoff(problem, incoming):
         raise ValueError("HS and shooting must use the same objective")
     op, mission = problem.opti, problem.mission
     differences = []
-    for i, (mesh, source, (x, u, sigma, _), scale) in enumerate(
+    for i, (mesh, source, (x, u, sigma), scale) in enumerate(
         zip(problem.meshes, incoming["phases"], problem.variables, mission.scales)
     ):
         np.testing.assert_array_equal(mesh, source["mesh"])
+        if mission.is_ballistic(i) and np.any(source["thrust_n"] != 0):
+            raise ValueError("A ballistic phase cannot receive a powered seed")
         expected = (
             source["states_si"].T / scale.state[:, None],
             source["thrust_n"].T / mission.settings.thrust_max_n,
@@ -318,14 +311,17 @@ def verify_hs_handoff(problem, incoming):
                 "max_sigma_difference_nd": errors[2],
             }
         )
-        if mission.settings.mass_flow_model == "throttle_direction":
-            for expr, reference in (
-                (problem.direction_variables[i], source["direction"].T),
-                (sigma, source["throttle"].reshape(1, -1)),
-            ):
-                actual = np.asarray(op.debug.value(expr, op.initial())).reshape(reference.shape)
-                np.testing.assert_array_equal(actual, reference)
-            differences[-1]["throttle_and_direction_identical"] = True
+        if mission.is_ballistic(i):
+            # Zero thrust is fixed data; there are no throttle/direction variables.
+            differences[-1]["ballistic"] = True
+            continue
+        for expr, reference in (
+            (problem.direction_variables[i], source["direction"].T),
+            (sigma, source["throttle"].reshape(1, -1)),
+        ):
+            actual = np.asarray(op.debug.value(expr, op.initial())).reshape(reference.shape)
+            np.testing.assert_array_equal(actual, reference)
+        differences[-1]["throttle_and_direction_identical"] = True
     np.testing.assert_array_equal(
         np.asarray(op.debug.value(problem.exit_days, op.initial())).ravel(), incoming["exit_days"]
     )

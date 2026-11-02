@@ -1,0 +1,68 @@
+# Post-solve Monte Carlo validation: the Python/JAX validators of tools/, run on
+# the device of the solve (cpu: JAX on the CPU cores, gpu and hybrid: JAX on CUDA).
+
+"JAX device of the validation: the CPU, or CUDA for the gpu and hybrid modes."
+validation_device(o::Options) = o.execution_mode == :cpu ? :cpu : :gpu
+
+"Solution file the validator reads, or `nothing` for runs it does not validate."
+function validation_input(o::Options)
+    o.feasibility_only && return nothing
+    directory = output_directory(o)
+    return joinpath(directory, o.case_id == "psyche" ? "psyche_solution.npz" : o.case_id * ".npz")
+end
+
+function validation_command(o::Options)
+    tools = joinpath(PROJECT_ROOT, "tools")
+    o.case_id == "psyche" &&
+        return `$(o.validation_python) $(joinpath(tools, "validate_psyche.py")) $(output_directory(o)) --mode=$(validation_device(o))`
+    return `$(o.validation_python) $(joinpath(tools, "validate.py")) $(validation_device(o)) --case=$(o.case_id) --directory=$(output_directory(o))`
+end
+
+"""
+Fail before any solve when the validation Python cannot import the validators'
+dependencies (the validator imports the JAX reference, hence CasADi too).
+"""
+function check_validation_python(runs)
+    for python in unique(o.validation_python for o in runs if o.validate_after_solve)
+        probe = `$python -c "import jax, casadi, scipy, matplotlib"`
+        usable = try
+            success(pipeline(probe; stdout = devnull, stderr = devnull))
+        catch   # missing executable
+            false
+        end
+        usable && continue
+        throw(ArgumentError("validation Python $python cannot import jax, casadi, scipy and matplotlib. " *
+            "Set MADNLP_VALIDATION_PYTHON or --validation-python to a Python that can, or pass --no-validation."))
+    end
+    return nothing
+end
+
+"Free this process's cached device memory before JAX starts on the same GPU."
+function release_gpu_memory()
+    GC.gc(true)
+    isdefined(@__MODULE__, :CUDA) && Base.invokelatest(() -> CUDA.reclaim())
+    return nothing
+end
+
+"""
+Run the Monte Carlo validation of a saved solve. A failure is reported, never
+thrown: the solve and its files are kept, and the manual command is printed.
+"""
+function validate_solution(o::Options)
+    input = validation_input(o)
+    if input === nothing || !isfile(input)
+        input === nothing || println("Validation skipped: no saved solution ($input).")
+        return false
+    end
+    o.execution_mode != :cpu && release_gpu_memory()
+    command = setenv(validation_command(o), merge(ENV, Dict("PYTHONUNBUFFERED" => "1")))
+    println("Monte Carlo validation on the $(o.execution_mode): $(validation_command(o))")
+    try
+        run(command)
+        return true
+    catch err
+        @warn "Monte Carlo validation failed; the solve is saved. Rerun it with the command above " *
+              "(set MADNLP_VALIDATION_PYTHON or --validation-python to a Python with JAX)." exception = err
+        return false
+    end
+end

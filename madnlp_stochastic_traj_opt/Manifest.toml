@@ -2,7 +2,7 @@
 
 julia_version = "1.13.0"
 manifest_format = "2.1"
-project_hash = "94ef67bc72c3ddf485081617bbc8c4c7a837a98f"
+project_hash = "3a3df11df9ee7bf9ac89727f59226932f6df9a5d"
 
 [[deps.AMD]]
 deps = ["LinearAlgebra", "SparseArrays", "SuiteSparse_jll"]
@@ -113,6 +113,12 @@ git-tree-sha1 = "389ad5c84de1ae7cf0e28e381131c98ea87d54fc"
 registries = "General"
 uuid = "fa961155-64e5-5f13-b03f-caf6b980ea82"
 version = "0.5.0"
+
+[[deps.CR3BPStochastic]]
+deps = ["Adapt", "CUDA", "CUDSS", "Distributions", "ExaModels", "ForwardDiff", "KernelAbstractions", "LinearAlgebra", "MadNLP", "MadNLPGPU", "NLPModels", "NPZ", "PrecompileTools", "Printf", "SHA", "StaticArrays", "TOML"]
+path = "."
+uuid = "4905b9cd-8d8f-4b36-9f4d-f78e96ddae64"
+version = "0.1.0"
 
 [[deps.CUDA]]
 deps = ["CUDACore", "CUDATools", "Reexport", "cuBLAS", "cuFFT", "cuRAND", "cuSOLVER", "cuSPARSE"]
@@ -446,14 +452,6 @@ registries = "General"
 uuid = "076d061b-32b6-4027-95e0-9a2c6f6d7e74"
 version = "0.2.0"
 
-[[deps.HybridKKT]]
-deps = ["Atomix", "CUDA", "CUDSS", "KernelAbstractions", "Krylov", "LinearAlgebra", "MadNLP", "MadNLPGPU", "NLPModels", "Printf", "SparseArrays"]
-git-tree-sha1 = "fc2cd4d531c26617dea7bbe42098a826bba09044"
-repo-rev = "fc1751c1f3b2f41afaa7168659270c2d13168d79"
-repo-url = "https://github.com/MadNLP/HybridKKT.jl"
-uuid = "59d292e8-f99c-4495-a4cc-613f4397570f"
-version = "0.4.0"
-
 [[deps.HypergeometricFunctions]]
 deps = ["Gamma", "LinearAlgebra"]
 git-tree-sha1 = "31bb6c92405c084617facc1d7ed9eb6c402d061e"
@@ -524,13 +522,6 @@ version = "0.9.42"
     EnzymeCore = "f151be2c-9106-41f4-ab19-57ee4f262869"
     LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
     SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
-
-[[deps.Krylov]]
-deps = ["LinearAlgebra", "Printf", "SparseArrays"]
-git-tree-sha1 = "909890a0d1486c392128cf4bd6e038ee0c6a7af4"
-registries = "General"
-uuid = "ba0b0d4f-ebba-5204-a429-3ac8c609bfb7"
-version = "0.10.10"
 
 [[deps.LDLFactorizations]]
 deps = ["AMD", "LinearAlgebra", "SparseArrays", "Test"]

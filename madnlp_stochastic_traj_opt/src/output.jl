@@ -5,6 +5,9 @@
 
 "Write `<case>.npz` and `<case>_diagnostics.toml`; returns the directory."
 function save_results(result)
+    # The multiphase driver writes intermediate evidence as it completes each
+    # stage, including failures before a stochastic candidate is available.
+    result.options.case_id=="psyche" && return output_directory(result.options)
     o, case, sol, report = result.options, result.case, result.solution, result.report
     ref, scaling, seed, n = result.reference, result.scaling, result.seed, n_arcs(result.reference)
     directory = mkpath(output_directory(o))
@@ -19,7 +22,9 @@ function save_results(result)
         "spectral_radius_floor" => o.spectral_radius_floor, "control_norm_eps" => o.control_norm_eps,
         "mass_flow_smoothing" => o.mass_flow_smoothing, "gain_bound" => o.gain_bound,
         "control_covariance_weight" => o.control_covariance_weight,
+        "state_covariance_weight" => o.state_covariance_weight,
         "chance_slack" => Int(o.chance_formulation == :slack), "chance_slack_floor" => o.chance_slack_floor,
+        "quantile_objective" => Int(o.objective in (:quantile, :chance_sum)),
         # problem data of the run (may differ from the JAX defaults; tools/validate.py reads them)
         "initial_position_std_km" => o.initial_position_std_km, "initial_velocity_std_km_s" => o.initial_velocity_std_km_s,
         "initial_mass_std_kg" => o.initial_mass_std_kg, "mass_scale_kg" => o.mass_scale_kg,
@@ -48,6 +53,14 @@ function save_results(result)
         # initial guess
         "seed_gains_normalized" => to_python(seed.gains),
         "seed_covariances" => to_python(seed.covariances))
+    if o.control_parameterization != :cartesian
+        # the model's exact norm, sigma-point mass flow and jitter-free Gates factors (tools/validate.py)
+        arrays["model_norm_smoothing"], arrays["model_mass_flow_smoothing"], arrays["model_gates_jitter"] =
+            0.0, o.model_mass_flow_smoothing, 0.0
+        arrays["model_mass_flow_smoothing_feedback_only"] = 1   # delta on the feedback-carrying points only
+    end
+    arrays["terminal_covariance_cost"] = Int(o.terminal_covariance == :cost)
+    arrays["terminal_covariance_weight"] = o.terminal_covariance_weight
     NPZ.npzwrite(joinpath(directory, case.id * ".npz"), arrays)
     open(joinpath(directory, case.id * "_diagnostics.toml"), "w") do io
         TOML.print(io, toml_ready(report); sorted = true)

@@ -26,10 +26,18 @@ gpu_linear_system(o::Options) = (; linear_solver = MadNLPGPU.CUDSSSolver, cudss_
 
 stochastic_linear_system(o::Options) = o.execution_mode == :gpu ? gpu_linear_system(o) : CPU_LINEAR_SYSTEM
 
-function solver_options(o::Options; tol, acceptable_tol, mu_init, mu_min, max_iter, output_file, linear_system)
+"MadNLP barrier update of `rule` (one of BARRIER_RULES)."
+function barrier_update(rule::Symbol, mu_init, mu_min)
+    rule == :quality && return MadNLP.QualityFunctionUpdate{Float64}(; mu_init, mu_min)
+    rule == :loqo && return MadNLP.LOQOUpdate{Float64}(; mu_init, mu_min)
+    return MadNLP.MonotoneUpdate{Float64}(; mu_init, mu_min)
+end
+
+function solver_options(o::Options; tol, acceptable_tol, mu_init, mu_min, max_iter, output_file, linear_system,
+        barrier_rule = :monotone)
     return (; tol, acceptable_tol, acceptable_iter = 15, max_iter,
         hessian_approximation = MadNLP.ExactHessian,
-        barrier = MadNLP.MonotoneUpdate{Float64}(; mu_init, mu_min),
+        barrier = barrier_update(barrier_rule, mu_init, mu_min),
         alpha_min_frac = o.alpha_min_frac,
         intermediate_callback = RestorationGuard(limit = something(o.max_consecutive_restoration, typemax(Int))),
         print_level = o.verbose ? MadNLP.INFO : MadNLP.ERROR,
@@ -42,9 +50,19 @@ nominal_solver_options(o::Options; output_file::String = "") = solver_options(o;
     mu_min = min(1e-4, o.nominal_tol) / 11, max_iter = o.nominal_max_iter, output_file,
     linear_system = CPU_LINEAR_SYSTEM)
 
-stochastic_solver_options(o::Options; output_file::String = "") = solver_options(o;
+stochastic_solver_options(o::Options; output_file::String = "") = merge(solver_options(o;
     tol = o.tol, acceptable_tol = o.acceptable_tol, mu_init = o.barrier_mu_init, mu_min = o.barrier_mu_min,
-    max_iter = o.max_iter, output_file, linear_system = stochastic_linear_system(o))
+    max_iter = o.max_iter, output_file, linear_system = stochastic_linear_system(o), barrier_rule = o.barrier_rule),
+    (; constr_mult_init_max = o.constr_mult_init_max, bound_push = o.bound_push))
+
+"Psyche energy seed: preserve the effective MadNLP settings of the verified runs."
+function psyche_nominal_solver_options(o::Options; output_file::String = "")
+    settings=solver_options(o;tol=o.nominal_tol,acceptable_tol=o.nominal_tol,
+        mu_init=o.psyche_nominal_barrier_mu_init,mu_min=min(1e-4,o.nominal_tol)/11,
+        max_iter=o.nominal_max_iter,output_file,linear_system=CPU_LINEAR_SYSTEM)
+    # MadNLP uses bound_push/bound_fac for both variables and slacks; bound_fac is its default 1e-2.
+    return merge(settings, (bound_push = 1e-8, bound_fac = 1e-2))
+end
 
 "Build and run a MadNLP solver; returns `(stats, solver)`."
 function run_madnlp(model, settings)

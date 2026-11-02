@@ -1,13 +1,15 @@
-"""Four-phase deterministic low-thrust transcription with two free SOI exits.
+"""Deterministic three-phase Psyche transcription (Sun, Mars, Sun).
 
-No SPICE imports or queries: all event data and differentiable ephemerides are
-verified, stored inputs. States are scaled separately in each central-body
-phase. Physical durations multiply every dynamics/mass-flow equation.
+The trajectory starts at the reconstructed Earth SOI exit, passes Mars on a
+ballistic arc by default and rendezvous with the asteroid centre. No SPICE
+imports or queries: all event data and differentiable ephemerides are verified,
+stored inputs. States are scaled separately in each central-body phase.
+Physical durations multiply every dynamics/mass-flow equation.
 """
 
 from __future__ import annotations
 from psyche_mission_events_reconstruction.paths import DATA_ROOT, resolve_input
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 import hashlib
 import json
 from pathlib import Path
@@ -42,13 +44,12 @@ class Settings:
     mass_floor_kg: float = 1662.0
     thrust_max_n: float = 0.2793
     isp_s: float = 1794.0
-    earth_duration_bounds_days: tuple = (0.05, 10.0)
     mars_duration_bounds_days: tuple = (0.05, 10.0)
     outward_speed_margin_m_s: float = 0.0
     earth_radius_m: float = 6378136.6
     mars_radius_m: float = 3396190.0
     sun_radius_m: float = 695700000.0
-    initial_intervals_per_phase: tuple[int, int, int, int] = (60, 50, 90, 50)
+    initial_intervals_per_phase: tuple[int, ...] = (40, 80, 40)
     seed_thrust_component_n: float = 0.0001
     seed_substeps_per_interval: int = 2
     ipopt_tolerance: float = 1e-09
@@ -66,6 +67,18 @@ class Settings:
     print_level: int = 5
     hessian_approximation: str = "exact"
     mass_flow_model: str = "throttle_direction"
+    ballistic_mars: bool = True
+
+    # Keys written by the retired four-phase model (free Earth exit).
+    RETIRED_KEYS = ("earth_duration_bounds_days",)
+
+    @classmethod
+    def from_dict(cls, values):
+        """Rebuild saved settings; results without the flag had a powered Mars phase."""
+        values = {k: v for k, v in values.items() if k not in cls.RETIRED_KEYS}
+        values.setdefault("ballistic_mars", False)
+        values["initial_intervals_per_phase"] = tuple(values["initial_intervals_per_phase"])
+        return cls(**values)
 
     def __post_init__(self):
         if self.mass_flow_model != "throttle_direction":
@@ -80,20 +93,15 @@ class Settings:
             0 < self.mass_floor_kg < self.wet_mass_kg and self.thrust_max_n > 0 and (self.isp_s > 0)
         ):
             raise ValueError("Invalid spacecraft properties")
-        if any(
-            (
-                not 0 < a < b
-                for a, b in (self.earth_duration_bounds_days, self.mars_duration_bounds_days)
-            )
-        ):
+        if not 0 < self.mars_duration_bounds_days[0] < self.mars_duration_bounds_days[1]:
             raise ValueError("Invalid free-exit duration bounds")
-        if len(self.initial_intervals_per_phase) != 4 or any(
+        if len(self.initial_intervals_per_phase) != 3 or any(
             (
                 not isinstance(n, (int, np.integer)) or isinstance(n, bool) or n < 2
                 for n in self.initial_intervals_per_phase
             )
         ):
-            raise ValueError("Specify four integer initial interval counts, each at least two")
+            raise ValueError("Specify three initial interval counts, each at least two")
         if self.seed_substeps_per_interval < 1 or self.defect_substeps_per_interval < 1:
             raise ValueError("RK7 substep counts must be positive")
         if not 0 <= np.sqrt(3.0) * self.seed_thrust_component_n <= self.thrust_max_n:
@@ -161,10 +169,12 @@ class Mission:
         self.cache = EphemerisCache.load(self.cache_path)
         if self.cache.metadata["tip_result_sha256"] != digest(self.tip_path):
             raise ValueError("TIP/cache mismatch")
-        self.t0 = self.tip["epochs"]["tip"]["et_tdb_s"]
+        self.earth_exit_path = DATA_ROOT / "soi/result.json"
+        self.earth_exit = json.loads(self.earth_exit_path.read_text(encoding="utf-8"))["earth"]["events"]["fixed_a"][0]
+        self.t0 = self.earth_exit["et_tdb_s"]
         self.tm = self.mars["epoch"]["et_tdb_s"]
         self.tf = self.arrival["epoch"]["et_tdb_s"]
-        self.x0 = np.r_[self.tip["earth_relative_state_si"], self.settings.wet_mass_kg]
+        self.x0 = np.r_[self.earth_exit["sun_relative_state_si"], self.settings.wet_mass_kg]
         self.xm = np.asarray(self.mars["mars_relative_state_si"])
         self.xf = np.asarray(self.arrival["sun_relative_state_si"])
         if (
@@ -175,7 +185,15 @@ class Mission:
             <= self.cache.valid_interval[1]
         ):
             raise ValueError("Event epochs outside cached ephemerides")
-        self.origins = (399, 10, 499, 10)
+        self.origins = (10, 499, 10)
+        self.mars_phase = self.origins.index(499)
+        # Planet-centred phases end at a free SOI exit: [(phase, body)].
+        self.exit_phases = [(i, b) for i, b in enumerate(self.origins) if b != 10]
+        self.initial_event_name = "Earth_SOI_exit"
+        # Frame links (left phase, right phase, planet, epoch index).
+        self.links = [(i, i + 1, self.origins[i] if self.origins[i] != 10 else self.origins[i + 1], i + 1)
+                      for i in range(len(self.origins) - 1)]
+        self.exit_duration_bounds = [self.settings.mars_duration_bounds_days]
         mu = self.cache.metadata["mu_m3_s2"]
         self.scales = [
             Scale(AU_M if b == 10 else 100000000.0, mu[str(b)], self.settings.wet_mass_kg)
@@ -195,17 +213,13 @@ class Mission:
             if provenance[key] != digest(path):
                 raise ValueError("Rollout seed has stale boundary provenance: " + key)
         with np.load(self.seed_path, allow_pickle=False) as data:
-            self.seed_exit_days = np.array(
-                [
-                    (data["phase1_epochs_et_tdb_s"][-1] - self.t0) / DAY,
-                    (data["phase3_epochs_et_tdb_s"][-1] - self.tm) / DAY,
-                ]
-            )
+            # The archived rollout's phase 3 is the Mars passage.
+            self.seed_exit_days = np.array([(data["phase3_epochs_et_tdb_s"][-1] - self.tm) / DAY])
         self.seed_thrust_n = np.full(3, self.settings.seed_thrust_component_n)
         self.seed_sigma_n = self.mass_flow_thrust(self.seed_thrust_n)
         self.seed = self.make_initial_seed()
         self.seed_splines = []
-        for i, scale in enumerate(self.scales, 1):
+        for i in range(1, len(self.origins) + 1):
             times = self.seed[f"phase{i}_elapsed_s"]
             states = self.seed[f"phase{i}_states_si"]
             derivatives = np.array(
@@ -216,16 +230,16 @@ class Mission:
             )
 
     def make_initial_seed(self):
-        """Two RK7 steps per initial arc, with 1e-4 N on each J2000 axis.
+        """Two RK7 steps per initial arc, with 1e-4 N on each J2000 axis in cruise.
 
         The Mars chain is anchored at its fixed Cartesian entry state; mass
-        comes from the Earth chain. Downstream target mismatches are retained.
-        Guessed exit epochs are not forced to be exact crossings of this seed.
+        comes from the first cruise. Downstream target mismatches are retained.
+        The guessed exit epoch is not forced to be an exact crossing of this seed.
         """
         epochs, arrays = (self.epochs(self.seed_exit_days), {})
         state = self.x0.copy()
         for phase, mesh in enumerate(self.initial_meshes()):
-            if phase == 2:
+            if phase == self.mars_phase:
                 state[:6] = self.xm
             duration = epochs[phase + 1] - epochs[phase]
             history = [state.copy()]
@@ -246,25 +260,29 @@ class Mission:
                     prefix + "elapsed_s": duration * mesh,
                     prefix + "epochs_et_tdb_s": epochs[phase] + duration * mesh,
                     prefix + "states_si": np.array(history),
-                    prefix + "thrust_n": np.tile(self.seed_thrust_n, (len(mesh) - 1, 1)),
-                    prefix + "sigma_n": np.full(len(mesh) - 1, self.seed_sigma_n),
+                    prefix + "thrust_n": np.tile(np.zeros(3) if self.is_ballistic(phase) else self.seed_thrust_n, (len(mesh) - 1, 1)),
+                    prefix + "sigma_n": np.full(len(mesh) - 1, 0. if self.is_ballistic(phase) else self.seed_sigma_n),
                 }
             )
-            if phase in (0, 2):
-                state[:6] += self.cache.state(399 if phase == 0 else 499, epochs[phase + 1])
+            if phase < len(self.origins) - 1:
+                state = self.transform_to_next(phase, state, epochs[phase + 1])
         return arrays
 
     def epochs(self, exit_days):
-        return (
-            self.t0,
-            self.t0 + DAY * exit_days[0],
-            self.tm,
-            self.tm + DAY * exit_days[1],
-            self.tf,
-        )
+        return self.t0, self.tm, self.tm + DAY * exit_days[0], self.tf
+
+    def transform_to_next(self, phase, state, epoch):
+        """Translate physical J2000 states, retaining mass without a reset."""
+        value = np.asarray(state).copy()
+        body = self.origins[phase] if self.origins[phase] != 10 else self.origins[phase + 1]
+        value[:6] += (1 if self.origins[phase] != 10 else -1) * self.cache.state(body, epoch)
+        return value
 
     def mass_flow_thrust(self, thrust):
         return float(np.linalg.norm(thrust))
+
+    def is_ballistic(self, phase):
+        return self.settings.ballistic_mars and phase == self.mars_phase
 
     def rhs(self, phase, x, u, sigma):
         """Nondimensional state derivative in the phase's Kepler time unit.
@@ -273,6 +291,8 @@ class Mission:
         regularizer only avoids evaluation at an exact zero trial vector.
         """
         s, cfg = (self.scales[phase], self.settings)
+        if self.is_ballistic(phase):
+            u, sigma = ca.DM.zeros(3), 0.
         acceleration_factor = cfg.thrust_max_n * s.time**2 / (s.mass * s.length)
         mass_factor = cfg.thrust_max_n * s.time / (s.mass * cfg.isp_s * 9.80665)
         radius = ca.sqrt(ca.dot(x[:3], x[:3]) + 1e-30)
@@ -281,6 +301,8 @@ class Mission:
         )
 
     def rhs_si(self, phase, x, thrust, sigma):
+        if self.is_ballistic(phase):
+            thrust, sigma = np.zeros(3), 0.
         radius = np.linalg.norm(x[:3])
         if radius <= 0 or x[6] <= 0:
             raise ValueError("Singular propagated state")
@@ -295,21 +317,25 @@ class Mission:
 
     def provenance(self):
         return {
+            "initial_event": self.initial_event_name,
+            "earth_exit_sha256": digest(self.earth_exit_path),
+            "initial_mass_assumption": "2747 kg at the fixed initial event; omitted departure consumes no modelled fuel",
             "tip_sha256": digest(self.tip_path),
             "mars_sha256": digest(ACTIVE_MARS_BOUNDARY),
             "arrival_sha256": digest(ACTIVE_ARRIVAL_BOUNDARY),
             "cache_sha256": digest(self.cache_path),
             "rollout_seed_sha256": digest(self.seed_path),
-            "archived_seed_usage": "Earth/Mars coast exit epochs only, as free-time initial guesses",
+            "archived_seed_usage": "Mars coast exit epoch only, as the free-time initial guess",
             "initial_guess_policy": "small_thrust_rk7_two_substeps_v1",
             "mass_flow_model": self.settings.mass_flow_model,
+            "mars_propulsion": "ballistic: exactly zero thrust and mass flow" if self.settings.ballistic_mars else "powered",
             "geometric_path_policy": "central_body_surface_exclusion_only; no SOI path inequalities",
             "exit_direction_policy": "zero radial-speed threshold; strict positivity reported separately",
             "ephemerides": "stored differentiable cubic splines; no SPICE calls in optimiser",
             "spacecraft_parameters_source": "Thesis SYS-REQ-06/07/10; 1662 kg floor assumes all 1085 kg xenon is available",
             "radii_source": "https://ssd.jpl.nasa.gov/planets/phys_par.html",
             "numerical_method_source": "HS warm start; uniform RK7 multiple shooting; local-defect h-refinement; throttle and unit direction",
-            "added_assumptions": "Planet duration bounds 0.05-10 d each and central-body spherical surface exclusion. No positive outward-speed margin and no inside/outside SOI path constraints.",
+            "added_assumptions": "Mars duration bounds 0.05-10 d and central-body spherical surface exclusion. No positive outward-speed margin and no inside/outside SOI path constraints.",
         }
 
 
@@ -367,10 +393,8 @@ class Transcription:
         self.shooting_substeps = shooting_substeps
         cfg = mission.settings
         self.opti = op = ca.Opti()
-        self.exit_days = op.variable(2)
-        for i, (lo, hi) in enumerate(
-            (cfg.earth_duration_bounds_days, cfg.mars_duration_bounds_days)
-        ):
+        self.exit_days = op.variable(len(mission.exit_phases))
+        for i, (lo, hi) in enumerate(mission.exit_duration_bounds):
             op.subject_to(op.bounded(lo, self.exit_days[i], hi))
         self.epochs = mission.epochs(self.exit_days)
         self.variables = []
@@ -402,18 +426,24 @@ class Transcription:
                 raise ValueError("Mesh must increase from zero to one")
             n = len(mesh) - 1
             X = op.variable(7, n + 1)
-            D, S = (op.variable(3, n), op.variable(1, n))
+            ballistic = mission.is_ballistic(phase)
+            D, S = ((ca.repmat(ca.DM([1., 0., 0.]), 1, n), ca.DM.zeros(1, n))
+                    if ballistic else (op.variable(3, n), op.variable(1, n)))
             U = D * ca.repmat(S, 3, 1)
             self.direction_variables.append(D)
-            stages = []
             start, end = (self.epochs[phase], self.epochs[phase + 1])
             duration = end - start
-            add("positive_duration", duration >= 1.0)
+            if isinstance(duration, (float, int, np.number)):
+                if duration < 1.0:
+                    raise ValueError("Fixed phase duration must be positive")
+            else:
+                add("positive_duration", duration >= 1.0)
             for k in range(n + 1):
                 path(phase, X[:, k])
             for k, fraction in enumerate(np.diff(mesh)):
-                add("thrust_capacity", op.bounded(0.0, S[0, k], 1.0))
-                add("unit_direction", ca.sumsqr(D[:, k]) == 1.0)
+                if not ballistic:
+                    add("thrust_capacity", op.bounded(0.0, S[0, k], 1.0))
+                    add("unit_direction", ca.sumsqr(D[:, k]) == 1.0)
                 h = duration * fraction / scale.time
                 squared_effort = ca.sumsqr(U[:, k])
                 self.energy += duration * fraction / DAY * 0.5 * squared_effort
@@ -429,19 +459,21 @@ class Transcription:
                     for j in range(samples.shape[1]):
                         path(phase, samples[:, j])
                     add("dynamics", X[:, k + 1] == propagated)
-            self.variables.append((X, U, S, stages))
+            self.variables.append((X, U, S))
         X = [v[0] for v in self.variables]
-        add("fixed_tip", X[0][:, 0] == mission.x0 / mission.scales[0].state)
-        add("fixed_mars_entry", X[2][:6, 0] == mission.xm / mission.scales[2].state[:6])
-        add("fixed_arrival", X[3][:6, -1] == mission.xf / mission.scales[3].state[:6])
-        for left, right, body, event in ((0, 1, 399, 1), (1, 2, 499, 2), (2, 3, 499, 3)):
+        add("fixed_initial", X[0][:, 0] == mission.x0 / mission.scales[0].state)
+        mp = mission.mars_phase
+        add("fixed_mars_entry", X[mp][:6, 0] == mission.xm / mission.scales[mp].state[:6])
+        add("fixed_arrival", X[-1][:6, -1] == mission.xf / mission.scales[-1].state[:6])
+        for left, right, body, event in mission.links:
             a = X[left][:6, -1] * ca.DM(mission.scales[left].state[:6])
             b = X[right][:6, 0] * ca.DM(mission.scales[right].state[:6])
             planet = mission.body_functions[body](self.epochs[event])
-            difference = a + planet - b if left in (0, 2) else a - planet - b
-            add("frame_links", difference / ca.DM(mission.scales[1].state[:6]) == 0)
+            difference = a + planet - b if mission.origins[left] != 10 else a - planet - b
+            solar_scale = mission.scales[mission.origins.index(10)]
+            add("frame_links", difference / ca.DM(solar_scale.state[:6]) == 0)
             add("mass_links", X[left][6, -1] == X[right][6, 0])
-        for phase, body in ((0, 399), (2, 499)):
+        for phase, body in mission.exit_phases:
             scale = mission.scales[phase]
             state = X[phase][:, -1]
             add("exit_surface", ca.sumsqr(state[:3]) == (mission.soi[body] / scale.length) ** 2)
@@ -456,13 +488,12 @@ class Transcription:
         objectives = {
             "fuel": self.fuel_fraction,
             "energy": self.energy / ((mission.tf - mission.t0) / DAY),
-            "feasibility": 0.0,
         }
         op.minimize(objectives[objective])
         op.set_initial(
             self.exit_days, mission.seed_exit_days if guess is None else guess["exit_days"]
         )
-        for phase, (mesh, scale, (x, u, s, stages)) in enumerate(
+        for phase, (mesh, scale, (x, _, s)) in enumerate(
             zip(meshes, mission.scales, self.variables)
         ):
             sample = (
@@ -471,6 +502,8 @@ class Transcription:
                 else lambda tau, p=phase: evaluate_phase(guess, p, tau, mission)
             )
             op.set_initial(x, np.array([sample(t) / scale.state for t in mesh]).T)
+            if mission.is_ballistic(phase):
+                continue
             if guess is None:
                 initial_thrust = np.tile(mission.seed_thrust_n, (len(mesh) - 1, 1))
             else:
@@ -534,27 +567,22 @@ class Transcription:
         exits = value(self.exit_days).ravel()
         epochs = self.mission.epochs(exits)
         phases = []
-        for i, (mesh, (x, u, s, stages), scale) in enumerate(
+        for i, (mesh, (x, u, s), scale) in enumerate(
             zip(self.meshes, self.variables, self.mission.scales)
         ):
+            # Ballistic phases store their constant zero throttle and placeholder direction.
             phases.append(
                 {
                     "mesh": np.asarray(mesh),
                     "states_si": value(x).T * scale.state,
                     "thrust_n": value(u).reshape(3, -1).T * self.mission.settings.thrust_max_n,
                     "sigma_n": value(s).ravel() * self.mission.settings.thrust_max_n,
-                    "stages_si": np.array(
-                        [value(stage).reshape(7, -1).T * scale.state for stage in stages]
-                    ),
                     "start_et": float(epochs[i]),
                     "duration_s": float(epochs[i + 1] - epochs[i]),
+                    "throttle": value(s).ravel(),
+                    "direction": value(self.direction_variables[i]).reshape(3, -1).T,
                 }
             )
-            if self.direction_variables[i] is not None:
-                phases[-1].update(
-                    throttle=value(s).ravel(),
-                    direction=value(self.direction_variables[i]).reshape(3, -1).T,
-                )
         constraints, lo, hi = (
             value(self.opti.g).ravel(),
             value(self.opti.lbg).ravel(),
@@ -596,15 +624,10 @@ class Transcription:
             "exit_days": exits,
             "phases": phases,
             "fuel_consumed_kg": fuel_kg,
-            "energy_surrogate_n2_s": float(energy_n2_s),
             "energy_cost_n2_s": float(energy_n2_s),
             "energy_definition": "0.5 integral dot(T,T) dt",
-            "objective_value": {"fuel": fuel_kg, "energy": float(energy_n2_s), "feasibility": 0.0}[
-                self.objective
-            ],
-            "objective_units": {"fuel": "kg", "energy": "N^2 s", "feasibility": "dimensionless"}[
-                self.objective
-            ],
+            "objective_value": {"fuel": fuel_kg, "energy": float(energy_n2_s)}[self.objective],
+            "objective_units": {"fuel": "kg", "energy": "N^2 s"}[self.objective],
             "max_scaled_constraint_violation": float(np.max(violation)),
             "constraint_groups": groups,
             "variables": self.opti.nx,

@@ -45,7 +45,8 @@ class ThrottleDirectionChecks(unittest.TestCase):
                 d = np.array([0.6, 0.0, 0.8])
                 end, samples = flow(state, alpha * d, alpha, seconds / scale.time)
                 mass = float(end[6]) * scale.mass
-                expected = state[6] * scale.mass - m.settings.thrust_max_n * alpha * seconds / (
+                effective = 0.0 if m.is_ballistic(i) else alpha
+                expected = state[6] * scale.mass - m.settings.thrust_max_n * effective * seconds / (
                     m.settings.isp_s * 9.80665
                 )
                 self.assertAlmostEqual(mass, expected, delta=2e-11)
@@ -75,7 +76,7 @@ class ThrottleDirectionChecks(unittest.TestCase):
             ]
             np.testing.assert_array_equal(*values)
         for p in problems:
-            for i, (state, thrust, alpha, _) in enumerate(p.variables):
+            for i, (state, thrust, alpha) in enumerate(p.variables):
                 value = lambda expr: np.asarray(p.opti.debug.value(expr, p.opti.initial()))
                 np.testing.assert_allclose(
                     value(state).T,
@@ -100,7 +101,7 @@ class ThrottleDirectionChecks(unittest.TestCase):
         p.opti.set_initial(p.variables[0][2][0, 0], 0.3)
         epochs = np.asarray(p.opti.debug.value(ca.vertcat(*p.epochs), p.opti.initial())).ravel()
         integral = 0.0
-        for i, (mesh, (_, thrust, _, _)) in enumerate(zip(p.meshes, p.variables)):
+        for i, (mesh, (_, thrust, _)) in enumerate(zip(p.meshes, p.variables)):
             values = np.asarray(p.opti.debug.value(thrust, p.opti.initial())).T
             integral += (
                 0.5 * (epochs[i + 1] - epochs[i]) * np.dot(np.diff(mesh), np.sum(values**2, axis=1))
@@ -121,8 +122,12 @@ class ThrottleDirectionChecks(unittest.TestCase):
             solver_status="fixture",
             mass_flow_model="throttle_direction",
         )
-        for phase in source["phases"]:
+        for i, phase in enumerate(source["phases"]):
             alpha, direction = throttle_direction_seed(phase["thrust_n"], m.settings.thrust_max_n)
+            if m.is_ballistic(i):
+                # Mars has no control variables; keep the stored zero-thrust convention.
+                phase.update(throttle=alpha, direction=direction)
+                continue
             alpha[0], direction[0] = 0.0, [0.0, 1.0, 0.0]
             direction[1] *= 1.0 + 1e-12
             phase.update(
@@ -134,7 +139,8 @@ class ThrottleDirectionChecks(unittest.TestCase):
         problem = Transcription(m, m.initial_meshes(), "shooting", source, "fuel", "adaptive", 20)
         check = verify_hs_handoff(problem, source)
         self.assertTrue(check["verified"])
-        self.assertTrue(all(p["throttle_and_direction_identical"] for p in check["phases"]))
+        self.assertTrue(all(p.get("throttle_and_direction_identical", p.get("ballistic"))
+                            for p in check["phases"]))
 
 
 if __name__ == "__main__":

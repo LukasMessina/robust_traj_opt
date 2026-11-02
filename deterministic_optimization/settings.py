@@ -1,7 +1,6 @@
 """Verified defaults for the consolidated deterministic workflow."""
 
 INITIAL_INTERVALS = 50
-PSYCHE_INITIAL_INTERVALS = (60, 50, 90, 50)
 DEFECT_SUBSTEPS = 64
 MAX_REFINEMENTS = 8
 MAX_INTERVALS = 1800

@@ -51,22 +51,17 @@ class IterationCheckpoint:
                 "upper_bounds": hi,
                 "exit_days": value(p.exit_days).ravel(),
             }
-            for i, (state, control, sigma, _) in enumerate(p.variables):
+            for i, (state, control, sigma) in enumerate(p.variables):
                 arrays.update(
                     {
                         f"p{i}_states_si": value(state).T * p.mission.scales[i].state,
                         f"p{i}_thrust_n": value(control).reshape(3, -1).T
                         * p.mission.settings.thrust_max_n,
                         f"p{i}_sigma_n": value(sigma).ravel() * p.mission.settings.thrust_max_n,
+                        f"p{i}_direction": value(p.direction_variables[i]).reshape(3, -1).T,
+                        f"p{i}_throttle": value(sigma).ravel(),
                     }
                 )
-                if p.direction_variables[i] is not None:
-                    arrays.update(
-                        {
-                            f"p{i}_direction": value(p.direction_variables[i]).reshape(3, -1).T,
-                            f"p{i}_throttle": value(sigma).ravel(),
-                        }
-                    )
             arrays["metadata"] = np.array(json.dumps(record))
             temporary = self.directory / "latest.tmp.npz"
             np.savez_compressed(temporary, **arrays)

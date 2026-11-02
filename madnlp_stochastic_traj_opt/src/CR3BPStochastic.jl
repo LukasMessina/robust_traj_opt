@@ -1,5 +1,5 @@
 """
-CR3BP and heliocentric (Earth--Mars) stochastic low-thrust trajectory optimization
+CR3BP, Earth--Mars and multiphase Psyche stochastic low-thrust trajectory optimization
 with ExaModels and MadNLP.
 
 Julia port of `stochastic_traj_opt_jax.py`: the same normalized
@@ -9,6 +9,7 @@ with navigation error, XMDS2 RK9 acceleration diffusion and nested Gates
 execution error, thrust chance and terminal covariance constraints, and the same
 energy-optimal + TVLQR + propagated-covariance initial guess. Exact Hessians only;
 runs on the CPU (MUMPS) or on a CUDA GPU (condensed KKT system, cuDSS).
+Mission code is precompilable; CUDA is still loaded only for GPU runs.
 """
 module CR3BPStochastic
 
@@ -47,14 +48,26 @@ include("reference.jl")
 include("initialization.jl")
 include("solver/restoration_guard.jl")
 include("solver/madnlp.jl")
+include("solver/host_model.jl")
 include("oracles/dual_numbers.jl")
 include("nominal.jl")
 include("oracles/ut_moments.jl")
+include("oracles/ut_factor.jl")
 include("oracles/chance.jl")
-include("model.jl") 
+include("oracles/chance_slack.jl")
+include("oracles/chance_objective.jl")
+include("model.jl")
 include("diagnostics.jl")
 include("solve.jl")
 include("output.jl")
+include("psyche/data.jl")
+include("psyche/geometry.jl")
+include("psyche/nominal.jl")
+include("psyche/initialization.jl")
+include("psyche/model.jl")
+include("psyche/solve.jl")
+include("validation.jl")
 include("cli.jl")
+include("precompile_workload.jl")
 
 end # module

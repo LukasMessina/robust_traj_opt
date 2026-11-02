@@ -38,9 +38,9 @@ function profile(o, backend)
     flip = Ref(false)
     point() = (flip[] = !flip[]; flip[] ? x2 : x)
     stages = [
-        "UT values" => () -> C.ut_values!(out, xl, ut, p, n),
-        "UT Jacobian" => () -> C.ut_jacobian!(ut_jac, xl, ut, p, n),
-        "UT Hessian" => () -> C.ut_hessian!(ut_hess, xl, yl, ut, p, n),
+        "UT values" => () -> C.ut_values!(out, xl, ut),
+        "UT Jacobian" => () -> C.ut_jacobian!(ut_jac, xl, ut),
+        "UT Hessian" => () -> C.ut_hessian!(ut_hess, xl, yl, ut),
         "model constraints" => () -> NLPModels.cons!(model, point(), y),
         "model Jacobian" => () -> NLPModels.jac_coord!(model, point(), jac),
         "model Hessian" => () -> NLPModels.hess_coord!(model, point(), y, hess),

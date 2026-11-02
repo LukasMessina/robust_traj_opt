@@ -44,7 +44,7 @@ class AcceptanceChecks(unittest.TestCase):
     def test_defaults_are_independent_of_saved_experiments(self):
         self.assertEqual(len(CASES), 5)
         s = Settings()
-        self.assertEqual(s.initial_intervals_per_phase, (60, 50, 90, 50))
+        self.assertEqual(s.initial_intervals_per_phase, (40, 80, 40))
         self.assertEqual(s.mass_flow_model, "throttle_direction")
         self.assertEqual(s.defect_substeps_per_interval, 64)
         self.assertEqual(s.defect_tolerance, 5e-14)

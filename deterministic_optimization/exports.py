@@ -219,10 +219,11 @@ def psyche_data(directory, config, result):
     from .psyche import Mission, Settings, load_solution, evaluate_phase
     from .psyche_validation import propagate_interval
 
-    mission = Mission(Settings(**config["settings"]))
+    mission = Mission(Settings.from_dict(config["settings"]))
     solution_path = directory / Path(result["last_candidate"]).name
     solution = load_solution(solution_path)
-    scale = mission.scales[1].state
+    solar_scale = mission.scales[mission.origins.index(10)]
+    scale = solar_scale.state
     force = scale[6] * scale[3] ** 2 / scale[0]
     total = mission.tf - mission.t0
     times, states, thrust, magnitudes, integrated, phase_index = [], [], [], [], [], []
@@ -232,8 +233,8 @@ def psyche_data(directory, config, result):
 
     def heliocentric(state, i, epoch):
         value = state.copy()
-        if i in (0, 2):
-            value[:6] += mission.cache.state(399 if i == 0 else 499, epoch)
+        if mission.origins[i] != 10:
+            value[:6] += mission.cache.state(mission.origins[i], epoch)
         return value / scale
 
     for i, phase in enumerate(solution["phases"]):
@@ -266,9 +267,8 @@ def psyche_data(directory, config, result):
                 thrust.append(phase["thrust_n"][k] / force)
                 magnitudes.append(phase["sigma_n"][k] / force)
                 phase_index.append(i)
-        if i < 3:
-            origin = mission.cache.state(399 if i == 0 else 499, epoch_nodes[-1])
-            current[:6] += origin if i in (0, 2) else -origin
+        if i < len(mission.origins) - 1:
+            current = mission.transform_to_next(i, current, epoch_nodes[-1])
     defects = read(solution_path.with_name(solution_path.stem + "_defects.json"))[
         "interval_defects"
     ]
@@ -291,7 +291,7 @@ def psyche_data(directory, config, result):
         result["history"],
     )
     with np.load(solution_path) as native:
-        data.update(dict(native))  # Exact four-phase solution, loadable by load_solution.
+        data.update(dict(native))  # Exact native-phase solution, loadable by load_solution.
     # Subtract in each phase's native SI frame before a large heliocentric
     # translation can round away sub-micrometre planet-relative discrepancies.
     native_states, native_integrated = np.array(native_states).T, np.array(native_integrated).T
@@ -308,7 +308,7 @@ def psyche_data(directory, config, result):
     )
     data.update(
         length_unit_km=scale[0] / 1000,
-        time_unit_s=mission.scales[1].time,
+        time_unit_s=solar_scale.time,
         mass_unit_kg=scale[6],
         thrust_unit_n=force,
         phase_index_dense=np.array(phase_index),
@@ -320,7 +320,7 @@ def psyche_data(directory, config, result):
         data[name + "_track_times_days"] = (epochs - mission.t0) / 86400
     meta = dict(
         length_unit_km=scale[0] / 1000,
-        time_unit_s=mission.scales[1].time,
+        time_unit_s=solar_scale.time,
         velocity_unit_km_s=scale[3] / 1000,
         mass_unit_kg=scale[6],
         force_unit_n=force,
@@ -329,13 +329,8 @@ def psyche_data(directory, config, result):
         tof_days=total / 86400,
         x0_nd=np.array(nodes)[0, :6],
         xf_nd=np.array(nodes)[-1, :6],
-        frame="Sun-centred J2000 for common x/u/CSV arrays; p0 and p2 native arrays are planet-relative SI",
-        native_dense_frames=[
-            "Earth-centred J2000",
-            "Sun-centred J2000",
-            "Mars-centred J2000",
-            "Sun-centred J2000",
-        ],
+        frame="Sun-centred J2000 for common x/u/CSV arrays; native arrays use the recorded phase origins in SI",
+        native_dense_frames=[{399: "Earth", 10: "Sun", 499: "Mars"}[b] + "-centred J2000" for b in mission.origins],
         error_evaluation="Subtract native SI phase states before origin translation; native dense arrays indexed by phase_index_dense",
         defect_tolerance=mission.settings.defect_tolerance,
         verification="Continuous standard DOP853 rtol=2e-12, physical thrust norm mass flow; origin translations, no resets; report only",

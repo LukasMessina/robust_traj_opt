@@ -1,7 +1,41 @@
-# CR3BP stochastic trajectory optimization with ExaModels and MadNLP
+# Stochastic trajectory optimization with ExaModels and MadNLP
 
 Julia port of [`../stochastic_traj_opt_jax.py`](../stochastic_traj_opt_jax.py). It
-solves the same chance-constrained covariance-steering NLP with the same methodology:
+solves the same chance-constrained covariance-steering NLP with the same methodology.
+
+The thrust chance constraints (spectral and Cholesky-slack forms) use the
+executed-control covariance: feedback and navigation dispersion combined with
+conditional Gates execution error. Execution uncertainty also enters UT
+propagation and the covariance cost. MadNLP acceptance uses solver success and
+the restoration requirement; the independently recomputed original residual is
+reported as a diagnostic. Set `MADNLP_STOCHASTIC_OUTPUT_ROOT` to write a run
+outside `output/`.
+
+**Psyche** (three phases, ballistic Mars) runs through the same pipeline and the same
+stochastic NLP builder, oracles and solver settings as the single-phase cases, with a
+multiphase layout (`src/psyche/README.md`; formulation in
+[`stochastic_optimization/README.md`](../stochastic_optimization/README.md), except for the
+problem data below). It needs the exported mission arrays, which are tied to the
+deterministic energy reference by SHA256:
+
+```sh
+python madnlp_stochastic_traj_opt/tools/export_psyche_inputs.py --output madnlp_stochastic_traj_opt/data/psyche_inputs.npz
+julia --project=madnlp_stochastic_traj_opt --threads=4 madnlp_stochastic_traj_opt/run.jl --case=psyche --mode=cpu
+julia --project=madnlp_stochastic_traj_opt --threads=4 madnlp_stochastic_traj_opt/run.jl --case=psyche --mode=gpu
+```
+
+The export refines the deterministic energy mesh by `--mesh-refinement` (default 1.5):
+an integer factor splits every interval into equal pieces, a factor between 1 and 2 halves
+the longest intervals of each phase, keeping every original node. The default gives
+155 intervals, 56 / 54 / 45 in the Earth–Mars, Mars and Mars–Psyche phases, 101 of them powered.
+Every stage uses one RK9 step per interval (UT dimension 16, as the other cases). The
+energy reoptimisation keeps the closest-approach and Mars-exit epochs free; the stochastic
+solve fixes them, so its durations, cost weights `N dt_k / T` and origin translations are
+constants. Psyche defaults: 2500 km initial position standard deviation per axis
+(`--initial-position-std-km`), terminal bound 200 km / 2 m/s per axis
+(`--psyche-terminal-position-std-km`, `--psyche-terminal-velocity-std-km-s`).
+
+The single-phase cases share with the JAX script:
 
 - the same normalization and nondimensionalization;
 - the augmented unscented transform with navigation error, XMDS2 RK9 acceleration
@@ -10,21 +44,12 @@ solves the same chance-constrained covariance-steering NLP with the same methodo
 - the same decision variables (56N + 28) and constraints (36N + 34).
 
 The model is built with ExaModels and solved by MadNLP with **exact Hessians only**, in
-one of three execution modes:
+one of two execution modes:
 
 | Mode | KKT system and linear solver | Equality constraints |
 |---|---|---|
 | `cpu` (default) | `SparseKKTSystem` + MUMPS | exact |
 | `gpu` | `SparseCondensedKKTSystem` (Lifted-KKT) + cuDSS LDL on a CUDA device | relaxed by `bound_relax_factor` = `--condensed-relaxation` (default `tol`/100) |
-| `hybrid` | `HybridKKT.HybridCondensedKKTSystem` (HyKKT) + cuDSS LDL on a CUDA device | exact: `K + γ GᵀG` is factorized and the equality multipliers come from a CG solve on its Schur complement; `γ` = `--hybrid-gamma` (default 1000) |
-
-`hybrid` follows the HybridKKT setting of the MadNLP GPU tutorial
-(<https://madsuite.org/MadNLP.jl/stable/tutorials/gpu/>) and the HybridKKT README
-(<https://github.com/MadNLP/HybridKKT.jl>): `EnforceEquality`, `MakeParameter`, cuDSS with
-LDL, and `γ` set on the KKT system before the solve; bounds are exact, as in `cpu` mode.
-HybridKKT is not in the General registry: `Project.toml` pins it to its GitHub repository
-(`[sources]`, version 0.4.0), and it is loaded only in `hybrid` mode. The diagnostics report
-the effective `γ` and the CG statistics (`settings.hybrid_*`).
 
 All modes build the same model; only the array backend, the kernel layout (see
 [Kernels](#kernels)) and the linear algebra differ. CPU and GPU evaluations agree to
@@ -33,28 +58,40 @@ solved on the CPU.
 
 ## Quick start
 
-From the repository root, with Julia 1.12. The deterministic references
-`output/cr3bp_deterministic_traj_opt/energy_optimal/<case>.npz` must exist, as for the
-JAX script.
+From the repository root, with Julia 1.12 or newer (this validation uses 1.13).
+The deterministic energy references must exist, as for the JAX script. Running
+all five cases also requires the Psyche mission export shown above.
 
 ```sh
 # once
 julia --project=madnlp_stochastic_traj_opt -e "using Pkg; Pkg.instantiate()"
 
-# CPU: one case, or all three in turn
+# CPU: one case, or all five in turn (--case=cr3bp selects only the three CR3BP cases)
 julia --project=madnlp_stochastic_traj_opt --threads=auto madnlp_stochastic_traj_opt/run.jl --case=lyapunov_l1_to_l2
 julia --project=madnlp_stochastic_traj_opt --threads=auto madnlp_stochastic_traj_opt/run.jl --case=all
 
 # GPU (condensed KKT system)
 julia --project=madnlp_stochastic_traj_opt --threads=auto madnlp_stochastic_traj_opt/run.jl --mode=gpu --case=all
 
-# GPU (HybridKKT, exact equalities)
-julia --project=madnlp_stochastic_traj_opt --threads=auto madnlp_stochastic_traj_opt/run.jl --mode=hybrid --case=earth_mars --hybrid-gamma=1e3
-
-# Monte Carlo validation and figures with the reference code (Python, JAX on the CPU)
+# Monte Carlo validation and figures alone, e.g. for an earlier solve
+# (run.jl already does this after every solve; the mode also selects the JAX device)
 python madnlp_stochastic_traj_opt/tools/validate.py cpu
 python madnlp_stochastic_traj_opt/tools/validate.py gpu --case=nrho_l2_to_dro
+python madnlp_stochastic_traj_opt/tools/validate_psyche.py madnlp_stochastic_traj_opt/output/gpu/psyche
 ```
+
+After every solve, `run.jl` runs the Monte Carlo validation with the Python
+validator of the case (`tools/validate.py`, or `tools/validate_psyche.py` for
+Psyche) on the device of the solve: `--mode=cpu` runs JAX on every CPU core
+(`JAX_NUM_CPU_DEVICES`), `--mode=gpu` runs JAX on CUDA (no preallocation, after
+the solve's cached GPU memory is released); a missing GPU is an error, never a
+CPU fallback. The validator Python comes from `--validation-python=PATH` or
+`MADNLP_VALIDATION_PYTHON` (default `python3`) and needs JAX, e.g.
+`export MADNLP_VALIDATION_PYTHON=$HOME/anaconda3/envs/project/bin/python`.
+`--no-validation` skips it. A failed validation is reported with its command and
+never discards the solve. All Monte Carlo draws come from `jax.random`, keyed by
+seed, noise stream, arc and sample, so the CPU and GPU versions propagate the
+same realizations and agree to floating-point roundoff.
 
 `run.jl --help` lists every option. The first run of a session compiles the derivative
 kernels (a few minutes, included in the reported times). On an 8 GB laptop GPU, run one
@@ -62,7 +99,7 @@ GPU process at a time: two processes oversubscribe the device and WDDM paging st
 
 ## Outputs
 
-Every file of a run goes to `output/<mode>/<case>/` (`<mode>` is `cpu`, `gpu` or `hybrid`); a new
+Every file of a run goes to `output/<mode>/<case>/` (`<mode>` is `cpu` or `gpu`); a new
 run of the same case and mode replaces it.
 
 | File | Content |
@@ -76,45 +113,66 @@ run of the same case and mode replaces it.
 `tools/summarize_runs.py [cpu|gpu]` tabulates the diagnostics of a mode into
 `output/<mode>/summary.csv`.
 
-`validate.py` imports the unchanged JAX script, so its Monte Carlo (50 000 samples,
-NumPy seed 42, 3 RK9 substeps), diagnostics and figures are exactly the reference's. It
+Psyche additionally writes `psyche_nominal.npz` and `psyche_seed.npz` as the
+initialisation stages finish, followed by `psyche_solution.npz` for the native
+stochastic candidate. Its post-processing command is
+`python madnlp_stochastic_traj_opt/tools/validate_psyche.py <result-directory>`;
+this writes physical NPZ/CSV/JSON files, a continuous Monte Carlo
+(by default the other cases' sample count and seed, 50 000 and 42, with 16 RK9
+substeps per interval; `--samples 0` skips it) and the
+figures: dispersion evolution, thrust budget, heliocentric projection and
+terminal distribution in the other cases' style, plus the Mars B-plane, where
+each sample is placed in the B-plane of its own osculating hyperbola at its own
+closest approach.
+
+`validate.py` imports the JAX reference, so its Monte Carlo (50 000 samples,
+jax.random seed 42, 3 RK9 substeps), diagnostics and figures are exactly the reference's. It
 also re-checks the Julia seed and evaluates the reference NLP residuals at the Julia
-optimum with the reference's own functions (unsmoothed eigenvalue formula, plain ‖u‖
-sigma-point mass flow).
+optimum with the reference's own functions and the regularisation settings saved
+in the native result. The Psyche helper is separate because its event topology
+and covariance scales differ from the single-phase cases.
 
 ## Status fields: what "converged" means
 
-MadNLP stops on a single tolerance of its *scaled* KKT error, while the reference
-accepts a solution only when SNOPT succeeds **and** every original residual is at most
-1e-8. The report keeps these apart:
+Following the user's 26 October revision, convergence requires MadNLP's
+`SOLVE_SUCCEEDED` status and the retained restoration requirement. The independent
+original-constraint residuals are still reported, but no additional 1e-8 residual
+acceptance test is performed. The existing default solver tolerance remains 1e-6.
 
 | Field | Meaning |
 |---|---|
-| `madnlp_status`, `solver_success` | MadNLP's own termination (`SOLVE_SUCCEEDED`: scaled KKT error ≤ `tol`) |
-| `restoration_requirement_met` | No run of more than 5 consecutive restoration iterations. By default there is no limit and the requirement is only checked; with `--max-restoration=5` a 6th consecutive restoration step is blocked and the solve stops with `USER_REQUESTED_STOP`. |
-| `max_constraint_violation`, `jax_feasibility_met` | Largest original (unscaled, unrelaxed) residual, and whether it is ≤ 1e-8 |
-| `converged` | All three: the reference's acceptance criterion |
-| `final_kkt` | MadNLP's final dual infeasibility, constraint violation and complementarity, scaled and unscaled |
+| `madnlp_status`, `solver_success` | MadNLP's own termination at its configured scaled KKT tolerance |
+| `restoration_requirement_met` | No run of more than five consecutive restoration iterations |
+| `max_constraint_violation` | Independently recomputed original residual, diagnostic only |
+| `original_residual_acceptance_check` | `false` under the current policy |
+| `converged` | Solver success and restoration requirement |
+| `final_kkt` | Scaled and unscaled final KKT measures |
 
-The process exit status is 1 when a run does not end with `SOLVE_SUCCEEDED` or breaks
-the restoration requirement. In `gpu` mode the equalities are relaxed by
-`bound_relax_factor`, so their residuals end near that value and `converged` is
-normally `no`. `hybrid` mode enforces the equalities exactly, like `cpu`.
+The same acceptance policy applies to CPU and GPU and to the external Python
+validation/export helper. GPU equality relaxation remains part of the configured
+solver model and its actual original residual remains visible in the report.
+Historical reports retain the acceptance policy used when they were generated.
+Psyche additionally retains its strict closest-approach domain check: positive
+distance curvature and positive hyperbolic excess energy. This is not an
+original-residual acceptance threshold.
 
 ## Defaults
 
-Problem data are the JAX defaults. These robustification settings differ from the
-reference and are the same in every mode:
+The shared regularisation settings now match the current JAX defaults and are
+the same in both execution modes. Older comparisons used smaller spectral
+regularisation and an unsmoothed sigma-point mass-flow norm; those are historical
+settings, not the defaults of the present comparison.
 
 | Setting | Default | JAX reference |
 |---|---|---|
 | control norm ε in `sqrt(‖S‖² + ε²)` (seed and stochastic solves) | 1e-5 | 1e-5 |
-| box bound on the scaled feedback gains, `|K̂| ≤ B` (`--gain-bound`, `Inf` disables) | 20 | 20 |
-| weight `w` of `tr(T)` (control covariance) in the cost and TVLQR seed `R~ = w I` (`--control-covariance-weight`) | CR3BP 1, Earth–Mars 1000 | CR3BP 1, Earth–Mars 1000 |
-| sigma-point mass flow `T_max·sqrt(‖e‖² + δ²)` | δ = ε | δ = 0 (plain ‖u‖) |
-| eigenvalue smoothing `s` in `p = sqrt(p2/6 + s²)` | 1e-6 | 1e-15 (literal 1e-30 for s²) |
-| spectral radius floor `f` in `sqrt(λ_max + f²)` | 1e-6 | 1e-7 |
-| terminal margin factor diagonal floor | 1e-5 | 1e-4 |
+| box bound on the scaled feedback gains, `|K̂| ≤ B` (`--gain-bound`, `Inf` disables) | 50 | 50 |
+| weight `w` of `tr(T)` (control covariance) in the cost and TVLQR seed `R~ = w I` (`--control-covariance-weight`) | Lyapunov 33.56, Halo 118.4, NRHO 129.2, Earth–Mars 151.8, Psyche 1000 | same |
+| weight `w_P` of `tr(P)/c²` (state covariance) in the cost and TVLQR seed `Q~ = w_P I/c²` (`--state-covariance-weight`) | Lyapunov 0.01994, Halo 0.2128, NRHO 0.1531, Earth–Mars 0.1530, Psyche 1 | same |
+| sigma-point mass flow `T_max·sqrt(‖e‖² + δ²)` | δ = ε | δ = ε |
+| eigenvalue smoothing `s` in `p = sqrt(p2/6 + s²)` | 1e-6 | 1e-6 |
+| spectral radius floor `f` in `sqrt(λ_max + f²)` | 1e-6 | 1e-6 |
+| terminal margin factor diagonal floor | 1e-5 | 1e-5 |
 
 Solver settings of the stochastic solve:
 
@@ -126,12 +184,14 @@ Solver settings of the stochastic solve:
 | barrier | monotone, μ from 0.1 down to 1e-10 |
 | consecutive restoration limit | none (the ≤ 5 requirement is still checked) |
 | `gpu`: `bound_relax_factor` | `tol`/100 = 1e-8 |
-| `cpu`, `hybrid`: `bound_relax_factor` | 0 (exact bounds) |
-| `hybrid`: `γ` | 1000 (HybridKKT default) |
+| `cpu`: `bound_relax_factor` | 0 (exact bounds) |
 
 The energy-optimal seed is solved with `tol` = 1e-8, exact equalities and MUMPS.
 
-## Results with the defaults
+## Historical results
+
+The tables below predate the current executed-covariance formulation and
+acceptance policy; they are kept for reference.
 
 CPU (`--threads=auto`, 20 threads; CPU runs are deterministic and independent of the
 thread count):
@@ -194,25 +254,34 @@ Exact second derivatives:
   Hessian path). The nested-UT executed-control covariance has an exact closed form,
   `T = (1/d)[(1+σ₂²−σ₄²) K M Kᵀ + σ₄² tr(K M Kᵀ) I] + Q_G(f) + εI` with
   `M = d P₆ + εI + d R_nav`; it agrees with the literal 198-point sum to about 1e-15.
-- **UT moments.** An `ExaModels.add_eval` oracle on the native defect rows. The
-  Hessian is `Σ_s W_sᵀ (H_s + 2w J_sᵀ N J_s) W_s − 2 V̄ᵀ N V̄ + ∇²ζ`, built from
-  per-sigma-point forward-over-reverse RK9 Hessians (a hand-written discrete adjoint
-  evaluated with dual numbers) and pair-seeded pre-map curvature.
+- **UT moments.** An `ExaModels.add_eval` oracle on the native defect rows (one per set
+  of UT parameters; Psyche has two). The Hessian is
+  `Σ_s W_sᵀ [H_s W_s + 2w J_sᵀ N (V_s − V̄)] + ∇²ζ`, built from per-sigma-point
+  forward-over-reverse RK9 Hessians (a hand-written discrete adjoint evaluated with dual
+  numbers). Every term is exact. The Gauss–Newton term uses the centered `V_s − V̄`, and
+  the deviations `y_s − ȳ` and `V_s − V̄` use corrected two-pass means, so the
+  cancellations that make these sums vanish are exact to rounding of the deviations
+  rather than of the states: against a 128-bit reference the Hessian is accurate to
+  1e-14 (Earth–Mars) and 1e-12 (Psyche); the previous assembly lost up to 5e-6 in its
+  mean–mean block. The state spread is the node factor itself, `S = √d diag(std) L`
+  (`S Sᵀ = d P`; the JAX script refactorizes `chol(d P + 1e-12 I)`, equal to 1e-12), so
+  the pre-map curvature `∇²ζ` comes only from the executed controls: per outer sigma
+  point the gradient and Hessian of the Gates sum in the 3-vector command, contracted
+  with the closed-form command Jacobian and its bilinear gain–factor cross terms.
 - **Thrust chance constraint.** A `VectorNonlinearOracle` with the smoothed
   trigonometric 3×3 eigenvalue formula applied to the closed-form `T`.
 
 ## Kernels
 
-All derivative kernels are KernelAbstractions kernels (threads on the CPU, CUDA on the
-GPU). The per-arc kernels (moments, spread-factor derivative, reductions, Jacobian rows,
-multipliers, pre-map curvature ζ) are shared. The per-sigma-point derivatives
+All cases, Psyche included, use the same kernels. All derivative kernels are
+KernelAbstractions kernels (threads on the CPU, CUDA on the GPU). The per-arc kernels
+(moments, reductions, Jacobian rows, multipliers, command curvature and ζ) are shared. The per-sigma-point derivatives
 (`W_s`, `J_s`, `H_s` and the products `V_s = J_s W_s`, `B_s`) are organized per backend
 in `oracles/ut_moments.jl`:
 
 | | CPU | GPU |
 |---|---|---|
 | Sigma-point derivatives | one thread per sigma point, dual numbers over all 56 arc inputs | stages split over threads: `W_s` in chunks of 8 of the 56 directions, `J_s` and `H_s` per point, `V_s` and `B_s` one column per thread |
-| Spread-factor derivative | all 28 directions per thread | 4 directions per thread |
 | `Σ_s W_sᵀ B_s` | one entry per thread | shared-memory tiles |
 
 On the same device the two layouts give bitwise identical results: every partial
@@ -222,7 +291,38 @@ together: StaticArrays' `dot` sums with `@simd`, so a narrower dual would change
 summation order. GPU launches are asynchronous (kernels on one stream run in order;
 copies to the host synchronize).
 
-## Verification
+## Compilation and performance measurements
+
+`run.jl` loads the local `CR3BPStochastic` Julia package. The first load builds
+Julia's package cache; later processes reuse it. `src/precompile_workload.jl`
+uses small synthetic CR3BP and heliocentric models. It does not run an optimiser, read mission data, or create a CUDA
+context. A source/dependency/Julia-version change can invalidate that cache.
+GPU kernels and mission-specific model construction can still compile at run
+time; package precompilation does not eliminate GPU startup costs.
+
+The commands below measure fixed candidates without running optimisation or
+overwriting production results. Run them sequentially on an otherwise idle
+GPU. `OPENBLAS_NUM_THREADS=1` avoids nested BLAS threading in these measurements.
+
+```sh
+OPENBLAS_NUM_THREADS=1 julia --project=madnlp_stochastic_traj_opt --threads=4 madnlp_stochastic_traj_opt/tools/profile_gpu.jl --case=psyche --repeats=5
+OPENBLAS_NUM_THREADS=1 julia --project=madnlp_stochastic_traj_opt --threads=4 madnlp_stochastic_traj_opt/tools/benchmark_startup.jl source
+OPENBLAS_NUM_THREADS=1 julia --project=madnlp_stochastic_traj_opt --threads=4 madnlp_stochastic_traj_opt/tools/benchmark_startup.jl package
+```
+
+`profile_gpu.jl` also accepts each CR3BP case and `earth_mars`. It measures
+first-call and warmed CPU/GPU evaluations, checks numerical agreement, and times initial KKT assembly
+and factorisation. CUDA events and explicit synchronization distinguish device
+elapsed time from CPU submission time. CUPTI activity traces record transfers,
+synchronization, device gaps, and kernel resource usage. Initial-candidate KKT
+timings do not predict factorisation cost at every later iterate.
+
+Results go to `output/profile/<case>/` unless `--output` is given. On the RTX 5060
+Laptop GPU, the cached package reduced startup from about 103 s (source include
+plus first workloads) to about 2 s after a one-time 100 s cache build. These
+checks establish numerical equivalence of evaluations, not trajectory convergence.
+
+## Verification commands
 
 ```sh
 julia --project=madnlp_stochastic_traj_opt --threads=auto madnlp_stochastic_traj_opt/test/runtests.jl        # CPU
@@ -235,8 +335,11 @@ julia --project=madnlp_stochastic_traj_opt madnlp_stochastic_traj_opt/test/runte
 - `model_tests.jl` (3-arc problem): oracle values against the literal arc map
   (1e-12), objective against the literal nested UT, Jacobian and full Lagrangian
   Hessian against central differences.
-- `gpu_tests.jl`: CUDA objective, gradient, constraint, Jacobian and Hessian entries
-  against the CPU model.
+- `psyche_tests.jl` (needs the mission export): uncertainty model, ballistic Mars,
+  B-plane Jacobian against ForwardDiff, the Psyche model against the literal arc map,
+  directional central differences of its Jacobian and Lagrangian Hessian.
+- `gpu_tests.jl`, `psyche_gpu_tests.jl`: CUDA objective, gradient, constraint, Jacobian
+  and Hessian entries against the CPU model.
 - `tools/oracle_snapshot.jl`: bitwise regression check of every model and oracle
   evaluation at three fixed points against a saved snapshot.
 - `tools/validate.py`, against the JAX reference: TVLQR gains and gain scales to
@@ -264,5 +367,5 @@ tools/
   oracle_snapshot.jl         bitwise regression check of the NLP evaluations
   profile_oracles.jl         timing of the oracle callbacks and model evaluations
   export_reference_data.py   regenerate src/generated/ from the Python sources
-output/cpu/<case>/  output/gpu/<case>/  output/hybrid/<case>/
+output/cpu/<case>/  output/gpu/<case>/
 ```

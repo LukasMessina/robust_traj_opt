@@ -5,9 +5,10 @@
 # Loads CUDA into the module; a separate top-level statement so the new methods are visible.
 const GPU_BACKEND = C.execution_backend(C.Options(execution_mode = :gpu))
 
-@testset "GPU kernels match the CPU model ($case_id)" for case_id in ("lyapunov_l1_to_l2", "earth_mars")
-    cpu = truncated_setup(; case_id)
-    gpu = truncated_setup(; case_id, backend = GPU_BACKEND)
+@testset "GPU kernels match the CPU model ($case_id, $objective)" for case_id in ("lyapunov_l1_to_l2", "earth_mars"),
+        objective in (:standard, :quantile)
+    cpu = truncated_setup(; case_id, objective)
+    gpu = truncated_setup(; case_id, objective, backend = GPU_BACKEND)
     mc, mg = cpu.blocks.model, gpu.blocks.model
     rng = Xoshiro(5)
     x = Array(mc.meta.x0) .* (1 .+ 1e-3 .* randn(rng, mc.meta.nvar))
@@ -22,3 +23,5 @@ const GPU_BACKEND = C.execution_backend(C.Options(execution_mode = :gpu))
     @test sparsity(mg, false) == sparsity(mc, false)
     @test rel(NLPModels.hess_coord(mg, xg, yg), NLPModels.hess_coord(mc, x, y)) < 1e-10
 end
+
+isdefined(@__MODULE__, :PSYCHE) && include(joinpath(@__DIR__, "psyche_gpu_tests.jl"))
