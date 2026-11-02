@@ -4,9 +4,14 @@ import ForwardDiff
 import NLPModels
 const C = CR3BPStochastic
 
+# The formulation the model checks were written for (the cartesian reference with product defects and the
+# hard terminal bound), not the package defaults: tests that need others pass them.
+const LEGACY_OPTIONS = (control_parameterization = :cartesian, covariance_defect = :product, terminal_covariance = :constraint,
+    gain_bound = 50.0, constr_mult_init_max = 1e3, model_mass_flow_smoothing = 0.0, reference_objective = :energy)
+
 "A truncated problem (default 3 arcs) built from the resampled reference, without re-optimization."
 function truncated_setup(; arcs = 3, backend = nothing, options...)
-    o = C.Options(; truncated_uniform_mesh_arcs = arcs, options...)
+    o = C.Options(; LEGACY_OPTIONS..., truncated_uniform_mesh_arcs = arcs, options...)
     case = C.case_data(o.case_id)
     normalization = C.build_normalization(case, o)
     p = C.ut_params(case, o, normalization)
