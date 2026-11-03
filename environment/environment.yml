@@ -1,0 +1,14 @@
+name: trajectory
+channels:
+  - tudat-team/label/dev
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.11.17
+  - tudatpy=1.0.0.dev75
+  - numpy=2.4.6
+  - scipy=1.17.1
+  - spiceypy=8.3.0
+  - pip
+  - pip:
+      - -r requirements.txt

@@ -1,0 +1,1530 @@
+"""Plotting utilities for CR3BP transfer results."""
+
+from __future__ import annotations
+
+
+from pathlib import Path
+import shutil
+from typing import Any, Iterable, Mapping
+
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.ticker import FormatStrFormatter, LinearLocator
+
+
+mpl.rcParams.update(
+    {
+        "font.family": "serif",
+        "font.serif": ["Computer Modern Roman", "DejaVu Serif", "Times New Roman"],
+        "mathtext.fontset": "cm",
+        "figure.facecolor": "white",
+        "axes.facecolor": "white",
+        "savefig.facecolor": "white",
+        "text.usetex": bool(shutil.which("latex") and shutil.which("dvipng")),
+    }
+)
+
+
+class Plotter:
+    AXIS_LABELS = ("x [LU]", "y [LU]", "z [LU]")
+    PROJECTION_SUFFIXES = {
+        (0, 1): "xy",
+        (0, 2): "xz",
+        (1, 2): "yz",
+    }
+
+    BLACK = "#000000"
+    BLUE = "#0088ab"
+    DARK_BLUE = "#1f29bb"
+    ORANGE = "#ff7f0e"
+    GREEN = "#2ca02c"
+    RED = "#d61b1b"
+    PURPLE = "#6601ea"
+    GREY = "#7f7f7f"
+    DARK_GREY = "#333333"
+    LIGHT_GREY = "#d9d9d9"
+    THREE_D_GRID_COLOR = (0.0, 0.0, 0.0, 0.12)
+    THREE_D_GRID_LINE_WIDTH = 0.25
+
+    TRAJECTORY_COLOR = BLACK
+    DEPARTURE_COLOR = BLUE
+    TARGET_COLOR = GREEN
+    THRUST_COLOR = RED
+    THRUST_ARROW_3D_COLOR = PURPLE
+    ENDPOINT_COLOR = ORANGE
+    MOON_COLOR = GREY
+    LAGRANGE_COLOR = BLACK
+    L1_COLOR = BLUE
+    L2_COLOR = GREEN
+
+    FIGURE_DPI = 240
+    SINGLE_FIGSIZE = (4.7, 4.3)
+    TRIPLE_FIGSIZE = (7.4, 2.85)
+    # Three side-by-side panels drawn as congruent squares (see the covariance
+    # projection figure): proportioned so each box is ~2 in per side once the
+    # legend band at the top is reserved.
+    TRIPLE_SQUARE_FIGSIZE = (7.8, 3.6)
+    WIDE_FIGSIZE = (5.8, 3.35)
+    SQUARE_DIAGNOSTIC_FIGSIZE = (4.2, 4.2)
+    THREE_PANEL_FIGSIZE = (7.4, 2.65)
+    THREE_D_FIGSIZE = (5.6, 5.1)
+
+    LABEL_SIZE = 11
+    TICK_SIZE = 9
+    DIAGNOSTIC_LABEL_SIZE = 10
+    DIAGNOSTIC_TICK_SIZE = 8
+    VERIFICATION_LABEL_SIZE = 9.5
+    VERIFICATION_TICK_SIZE = 8
+    PROJECTION_TICK_SIZE = 8
+    THREE_D_TICK_SIZE = 8
+    LEGEND_SIZE = 8.5
+    SPINE_WIDTH = 1.05
+    MAJOR_TICK_WIDTH = 1.0
+    MINOR_TICK_WIDTH = 0.8
+    TRAJECTORY_LINE_WIDTH = 1.4
+    TRAJECTORY_PROJECTION_LINE_WIDTH = 1.2
+    REFERENCE_LINE_WIDTH = 1.15
+    GUIDE_LINE_WIDTH = 1.05
+    MARKER_SIZE = 26
+    SMALL_MARKER_SIZE = 16
+
+    def __init__(self, output_prefix: Path):
+        self.output_prefix = Path(output_prefix)
+        self.output_prefix.parent.mkdir(parents=True, exist_ok=True)
+
+    def _path(self, suffix: str) -> Path:
+        return self.output_prefix.with_name(
+            f"{self.output_prefix.name}_{suffix}"
+        ).with_suffix(".png")
+
+    def _style_2d_axis(
+        self,
+        ax,
+        *,
+        equal_axis: bool = False,
+        grid: bool = True,
+        grid_which: str = "major",
+        tick_size: float | None = None,
+        label_size: float | None = None,
+    ) -> None:
+        tick_size = self.TICK_SIZE if tick_size is None else tick_size
+        label_size = self.LABEL_SIZE if label_size is None else label_size
+        ax.set_facecolor("white")
+        ax.minorticks_on()
+        if grid:
+            ax.grid(
+                True, which=grid_which, color=self.LIGHT_GREY, alpha=0.8, linewidth=0.55
+            )
+        else:
+            ax.grid(False)
+        ax.tick_params(
+            axis="both",
+            which="major",
+            direction="out",
+            top=False,
+            right=False,
+            colors=self.BLACK,
+            labelsize=tick_size,
+            width=self.MAJOR_TICK_WIDTH,
+            length=5.0,
+        )
+        ax.tick_params(
+            axis="both",
+            which="minor",
+            direction="out",
+            top=False,
+            right=False,
+            colors=self.BLACK,
+            width=self.MINOR_TICK_WIDTH,
+            length=2.8,
+        )
+        ax.xaxis.label.set_size(label_size)
+        ax.yaxis.label.set_size(label_size)
+        ax.title.set_size(label_size)
+        ax.xaxis.label.set_color(self.BLACK)
+        ax.yaxis.label.set_color(self.BLACK)
+        for side, spine in ax.spines.items():
+            spine.set_visible(side in ("left", "bottom"))
+            spine.set_color(self.BLACK)
+            spine.set_linewidth(self.SPINE_WIDTH)
+        if equal_axis:
+            ax.set_aspect("equal", adjustable="box")
+
+    def _legend(self, ax, **kwargs) -> None:
+        handles, labels = ax.get_legend_handles_labels()
+        unique: dict[str, Any] = {}
+        for handle, label in zip(handles, labels):
+            if label and not label.startswith("_") and label not in unique:
+                unique[label] = handle
+        if unique:
+            kwargs.setdefault("frameon", False)
+            kwargs.setdefault("fontsize", self.LEGEND_SIZE)
+            legend = ax.legend(
+                unique.values(),
+                unique.keys(),
+                **kwargs,
+            )
+            if kwargs.get("frameon", False):
+                legend.get_frame().set_linewidth(0.8)
+
+    def _libration_point_from_label(self, label: str) -> str | None:
+        normalized = label.replace("_", "").replace(" ", "").upper()
+        if "L1" in normalized:
+            return "L1"
+        if "L2" in normalized:
+            return "L2"
+        return None
+
+    def _libration_color(self, name: str | None) -> str:
+        if name == "L1":
+            return self.L1_COLOR
+        if name == "L2":
+            return self.L2_COLOR
+        return self.ENDPOINT_COLOR
+
+    def _figure_legend(self, fig, axes: Iterable[Any], *, ncol: int, **kwargs) -> None:
+        unique: dict[str, Any] = {}
+        for ax in axes:
+            handles, labels = ax.get_legend_handles_labels()
+            for handle, label in zip(handles, labels):
+                if label and not label.startswith("_") and label not in unique:
+                    unique[label] = handle
+        if unique:
+            kwargs.setdefault("loc", "lower center")
+            kwargs.setdefault("bbox_to_anchor", (0.5, 0.01))
+            kwargs.setdefault("frameon", False)
+            kwargs.setdefault("fontsize", self.LEGEND_SIZE)
+            fig.legend(
+                unique.values(),
+                unique.keys(),
+                ncol=ncol,
+                **kwargs,
+            )
+
+    def _projection_axes_for_case(self, case: Any) -> tuple[tuple[int, int], ...]:
+        if case.test_case_id == "lyapunov_l1_to_l2":
+            return ((0, 1),)
+        return ((0, 1), (0, 2), (1, 2))
+
+    def _plot_system_points_2d(
+        self,
+        ax,
+        case: Any,
+        axis_0: int,
+        axis_1: int,
+        lagrange: Mapping[str, float],
+    ) -> None:
+        moon = np.array([1.0 - case.mu, 0.0, 0.0])
+        ax.scatter(
+            moon[axis_0],
+            moon[axis_1],
+            color=self.MOON_COLOR,
+            edgecolor=self.BLACK,
+            linewidth=0.6,
+            marker="o",
+            s=58,
+            zorder=6,
+            label="Moon",
+        )
+        for name in ("L1", "L2"):
+            point = np.array([lagrange[name], 0.0, 0.0])
+            ax.scatter(
+                point[axis_0],
+                point[axis_1],
+                color=self._libration_color(name),
+                marker="o",
+                s=self.SMALL_MARKER_SIZE,
+                zorder=7,
+                label=rf"${name[0]}_{name[1]}$",
+            )
+
+    def _plot_thrust_arrows_2d(
+        self,
+        ax,
+        case: Any,
+        x_dense: np.ndarray,
+        u_dense: np.ndarray,
+        axis_0: int,
+        axis_1: int,
+    ) -> None:
+        u_norm = np.linalg.norm(u_dense, axis=0)
+        active = np.flatnonzero(u_norm > 0.03 * case.max_thrust_nd)
+        if not active.size:
+            return
+        chosen = active[
+            np.unique(np.linspace(0, active.size - 1, min(26, active.size)).astype(int))
+        ]
+        direction = u_dense[:, chosen] / np.maximum(u_norm[chosen], 1e-14)
+        thrust_ratio = u_norm[chosen] / max(case.max_thrust_nd, float(np.max(u_norm)))
+        arrow_scale_lu = 0.025
+        arrow_width = 0.0060 if case.test_case_id == "halo_l2_to_halo_l1" else 0.0046
+        ax.quiver(
+            x_dense[axis_0, chosen],
+            x_dense[axis_1, chosen],
+            direction[axis_0] * thrust_ratio * arrow_scale_lu,
+            direction[axis_1] * thrust_ratio * arrow_scale_lu,
+            angles="xy",
+            scale_units="xy",
+            scale=1.0,
+            color=self.THRUST_ARROW_3D_COLOR,
+            width=arrow_width,
+            headwidth=3.0,
+            headlength=3.8,
+            alpha=0.82,
+            zorder=5,
+            label="Thrust direction",
+        )
+
+    def _plot_projection(
+        self,
+        ax,
+        case: Any,
+        x_dense: np.ndarray,
+        u_dense: np.ndarray,
+        departure_orbit: np.ndarray | None,
+        target_orbit: np.ndarray | None,
+        lagrange: Mapping[str, float],
+        axis_0: int,
+        axis_1: int,
+        arrow_states: np.ndarray | None = None,
+        arrow_controls: np.ndarray | None = None,
+    ) -> None:
+        # The thrust arrows are normally placed on the same samples as the
+        # trajectory. A caller that draws a densified trajectory can pass the
+        # coarser node arrays here instead, so the arrow count stays readable.
+        if arrow_states is None:
+            arrow_states = x_dense
+        if arrow_controls is None:
+            arrow_controls = u_dense
+        departure_point = self._libration_point_from_label(case.departure_label)
+        target_point = self._libration_point_from_label(case.target_label)
+        departure_color = self._libration_color(departure_point)
+        target_color = self._libration_color(target_point)
+        if departure_orbit is not None:
+            ax.plot(
+                departure_orbit[axis_0],
+                departure_orbit[axis_1],
+                color=departure_color,
+                linestyle="-",
+                lw=self.REFERENCE_LINE_WIDTH,
+                label=case.departure_label,
+            )
+        if target_orbit is not None:
+            ax.plot(
+                target_orbit[axis_0],
+                target_orbit[axis_1],
+                color=target_color,
+                linestyle="-",
+                lw=self.REFERENCE_LINE_WIDTH,
+                label=case.target_label,
+            )
+        ax.plot(
+            x_dense[axis_0],
+            x_dense[axis_1],
+            color=self.TRAJECTORY_COLOR,
+            lw=self.TRAJECTORY_LINE_WIDTH - 0.5,
+            zorder=4,
+            label="Transfer",
+        )
+        self._plot_thrust_arrows_2d(
+            ax, case, arrow_states, arrow_controls, axis_0, axis_1
+        )
+        self._plot_system_points_2d(ax, case, axis_0, axis_1, lagrange)
+        ax.scatter(
+            x_dense[axis_0, 0],
+            x_dense[axis_1, 0],
+            color=departure_color,
+            edgecolor=self.BLACK,
+            linewidth=0.45,
+            marker="D",
+            s=0.72 * self.MARKER_SIZE,
+            zorder=8,
+            label=r"$x_0$",
+        )
+        ax.scatter(
+            x_dense[axis_0, -1],
+            x_dense[axis_1, -1],
+            color=target_color,
+            edgecolor=self.BLACK,
+            linewidth=0.45,
+            marker="D",
+            s=0.72 * self.MARKER_SIZE,
+            zorder=8,
+            label=r"$x_f$",
+        )
+        ax.set_xlabel(self.AXIS_LABELS[axis_0])
+        ax.set_ylabel(self.AXIS_LABELS[axis_1])
+        self._style_2d_axis(ax, equal_axis=True, tick_size=self.PROJECTION_TICK_SIZE)
+
+    def _square_projection_panels(self, fig, axes, gap: float = 0.85) -> None:
+        """Redraw side-by-side projection panels as congruent squares.
+
+        The side of every square is the height of the left panel after
+        tight_layout. Each panel's data limits are widened about their centre to
+        a common span, so the equal aspect fills the whole square; ``gap`` [in]
+        leaves room for the next panel's y tick labels and axis label.
+        """
+        fig.canvas.draw()
+        fig_w, fig_h = fig.get_size_inches()
+        reference = axes[0].get_position()
+        side = reference.height * fig_h
+        left = reference.x0 * fig_w
+        bottom = reference.y0 * fig_h
+        width = left + len(axes) * side + (len(axes) - 1) * gap + 0.15
+        fig.set_size_inches(width, fig_h)
+        for index, ax in enumerate(axes):
+            x_low, x_high = ax.get_xlim()
+            y_low, y_high = ax.get_ylim()
+            half_span = 0.5 * max(x_high - x_low, y_high - y_low)
+            x_mid, y_mid = 0.5 * (x_low + x_high), 0.5 * (y_low + y_high)
+            ax.set_xlim(x_mid - half_span, x_mid + half_span)
+            ax.set_ylim(y_mid - half_span, y_mid + half_span)
+            ax.set_aspect("equal", adjustable="box")
+            ax.set_position(
+                [
+                    (left + index * (side + gap)) / width,
+                    bottom / fig_h,
+                    side / width,
+                    side / fig_h,
+                ]
+            )
+
+    def plot_traj_projection(
+        self,
+        case: Any,
+        x_dense: np.ndarray,
+        u_dense: np.ndarray,
+        departure_orbit: np.ndarray | None,
+        target_orbit: np.ndarray | None,
+        lagrange: Mapping[str, float],
+    ) -> Path:
+        axes_to_plot = self._projection_axes_for_case(case)
+        if len(axes_to_plot) == 1:
+            fig, ax = plt.subplots(figsize=self.SINGLE_FIGSIZE, dpi=self.FIGURE_DPI)
+            axes_array = [ax]
+        else:
+            fig, axes = plt.subplots(
+                1, len(axes_to_plot), figsize=self.TRIPLE_FIGSIZE, dpi=self.FIGURE_DPI
+            )
+            axes_array = list(np.atleast_1d(axes))
+
+        for ax, (axis_0, axis_1) in zip(axes_array, axes_to_plot):
+            self._plot_projection(
+                ax,
+                case,
+                x_dense,
+                u_dense,
+                departure_orbit,
+                target_orbit,
+                lagrange,
+                axis_0,
+                axis_1,
+            )
+
+        is_single_projection = len(axes_to_plot) == 1
+        legend_anchor_y = 0.90 if is_single_projection else 0.995
+        layout_top = 0.76 if is_single_projection else 0.82
+
+        self._figure_legend(
+            fig,
+            axes_array,
+            ncol=3,
+            loc="upper center",
+            bbox_to_anchor=(0.5, legend_anchor_y),
+            frameon=True,
+            fancybox=False,
+            edgecolor=self.BLACK,
+            facecolor="white",
+            framealpha=1.0,
+            fontsize=7.4,
+            columnspacing=1.0,
+            handlelength=1.7,
+            borderpad=0.35,
+        )
+        fig.tight_layout(rect=(0.0, 0.0, 1.0, layout_top))
+        if not is_single_projection:
+            self._square_projection_panels(fig, axes_array)
+        suffix = (
+            self.PROJECTION_SUFFIXES[axes_to_plot[0]]
+            if len(axes_to_plot) == 1
+            else "projections"
+        )
+        output_path = self._path(suffix)
+        fig.savefig(output_path, dpi=self.FIGURE_DPI, bbox_inches="tight")
+        plt.close(fig)
+        return output_path
+
+    def _set_axes_equal_3d(self, ax) -> None:
+        x_limits = ax.get_xlim3d()
+        y_limits = ax.get_ylim3d()
+        z_limits = ax.get_zlim3d()
+        ranges = np.array(
+            [
+                x_limits[1] - x_limits[0],
+                y_limits[1] - y_limits[0],
+                z_limits[1] - z_limits[0],
+            ]
+        )
+        centers = np.array([sum(x_limits), sum(y_limits), sum(z_limits)]) * 0.5
+        radius = 0.5 * max(ranges)
+        ax.set_xlim3d(centers[0] - radius, centers[0] + radius)
+        ax.set_ylim3d(centers[1] - radius, centers[1] + radius)
+        ax.set_zlim3d(centers[2] - radius, centers[2] + radius)
+
+    def _style_3d_axis(self, ax) -> None:
+        ax.set_facecolor("white")
+        for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
+            axis.pane.set_facecolor((1.0, 1.0, 1.0, 1.0))
+            axis.pane.set_edgecolor(self.BLACK)
+            axis.label.set_size(self.LABEL_SIZE)
+            axis.label.set_color(self.BLACK)
+            axis._axinfo["grid"].update(
+                color=self.THREE_D_GRID_COLOR,
+                linewidth=self.THREE_D_GRID_LINE_WIDTH,
+            )
+        ax.tick_params(
+            axis="both",
+            which="major",
+            colors=self.BLACK,
+            labelsize=self.THREE_D_TICK_SIZE,
+            width=self.MAJOR_TICK_WIDTH,
+        )
+        ax.tick_params(axis="z", which="major", pad=12.0)
+        ax.zaxis.labelpad = 14.0
+        ax.grid(True)
+        ax.view_init(azim=78, elev=15)
+
+    def _plot_thrust_arrows_3d(
+        self, ax, case: Any, x_dense: np.ndarray, u_dense: np.ndarray
+    ) -> None:
+        u_norm = np.linalg.norm(u_dense, axis=0)
+        active = np.flatnonzero(u_norm > 0.03 * case.max_thrust_nd)
+        if not active.size:
+            return
+        chosen = active[
+            np.unique(np.linspace(0, active.size - 1, min(30, active.size)).astype(int))
+        ]
+        direction = u_dense[:, chosen] / np.maximum(u_norm[chosen], 1e-14)
+        thrust_ratio = u_norm[chosen] / max(case.max_thrust_nd, float(np.max(u_norm)))
+        arrows = direction * thrust_ratio * 0.032
+        ax.quiver(
+            x_dense[0, chosen],
+            x_dense[1, chosen],
+            x_dense[2, chosen],
+            arrows[0],
+            arrows[1],
+            arrows[2],
+            color=self.THRUST_ARROW_3D_COLOR,
+            arrow_length_ratio=0.18,
+            linewidths=0.75,
+            alpha=0.82,
+            label="Thrust direction",
+        )
+
+    def _plot_trajectory_projections_3d(
+        self, ax, x_dense: np.ndarray, *, xz_far_side: bool = False
+    ) -> None:
+        """Project only the transfer trajectory onto the three visible box planes."""
+        x_min = ax.get_xlim3d()[0]
+        y_min = ax.get_ylim3d()[1 if xz_far_side else 0]
+        z_min = ax.get_zlim3d()[0]
+        projection_style = {
+            "color": self.GREY,
+            "linestyle": "--",
+            "lw": self.TRAJECTORY_PROJECTION_LINE_WIDTH,
+            "alpha": 0.65,
+            "label": "_nolegend_",
+        }
+        point_count = x_dense.shape[1]
+        ax.plot(x_dense[0], x_dense[1], np.full(point_count, z_min), **projection_style)
+        ax.plot(x_dense[0], np.full(point_count, y_min), x_dense[2], **projection_style)
+        ax.plot(np.full(point_count, x_min), x_dense[1], x_dense[2], **projection_style)
+
+    def plot_3d_traj(
+        self,
+        case: Any,
+        x_dense: np.ndarray,
+        u_dense: np.ndarray,
+        departure_orbit: np.ndarray | None,
+        target_orbit: np.ndarray | None,
+        lagrange: Mapping[str, float],
+    ) -> Path:
+        fig = plt.figure(figsize=self.THREE_D_FIGSIZE, dpi=self.FIGURE_DPI)
+        ax = fig.add_subplot(111, projection="3d")
+        departure_point = self._libration_point_from_label(case.departure_label)
+        target_point = self._libration_point_from_label(case.target_label)
+        departure_color = self._libration_color(departure_point)
+        target_color = self._libration_color(target_point)
+        if departure_orbit is not None:
+            ax.plot(
+                departure_orbit[0],
+                departure_orbit[1],
+                departure_orbit[2],
+                color=departure_color,
+                linestyle="-",
+                lw=self.REFERENCE_LINE_WIDTH,
+                label=case.departure_label,
+            )
+        if target_orbit is not None:
+            ax.plot(
+                target_orbit[0],
+                target_orbit[1],
+                target_orbit[2],
+                color=target_color,
+                linestyle="-",
+                lw=self.REFERENCE_LINE_WIDTH,
+                label=case.target_label,
+            )
+        ax.plot(
+            x_dense[0],
+            x_dense[1],
+            x_dense[2],
+            color=self.TRAJECTORY_COLOR,
+            lw=self.TRAJECTORY_LINE_WIDTH,
+            label="Transfer",
+        )
+        self._plot_thrust_arrows_3d(ax, case, x_dense, u_dense)
+        ax.scatter(
+            x_dense[0, 0],
+            x_dense[1, 0],
+            x_dense[2, 0],
+            color=departure_color,
+            edgecolor=self.BLACK,
+            linewidth=0.45,
+            marker="D",
+            s=0.72 * self.MARKER_SIZE,
+            label=r"$x_0$",
+        )
+        ax.scatter(
+            x_dense[0, -1],
+            x_dense[1, -1],
+            x_dense[2, -1],
+            color=target_color,
+            edgecolor=self.BLACK,
+            linewidth=0.45,
+            marker="D",
+            s=0.72 * self.MARKER_SIZE,
+            label=r"$x_f$",
+        )
+        moon = np.array([1.0 - case.mu, 0.0, 0.0])
+        ax.scatter(
+            moon[0],
+            moon[1],
+            moon[2],
+            color=self.MOON_COLOR,
+            edgecolor=self.BLACK,
+            linewidth=0.6,
+            marker="o",
+            s=58,
+            label="Moon",
+        )
+        for name in ("L1", "L2"):
+            ax.scatter(
+                lagrange[name],
+                0.0,
+                0.0,
+                color=self._libration_color(name),
+                marker="o",
+                s=self.SMALL_MARKER_SIZE,
+                label=rf"${name[0]}_{name[1]}$",
+            )
+        ax.set_xlabel(self.AXIS_LABELS[0])
+        ax.set_ylabel(self.AXIS_LABELS[1])
+        ax.set_zlabel(self.AXIS_LABELS[2])
+        self._style_3d_axis(ax)
+        self._set_axes_equal_3d(ax)
+        self._plot_trajectory_projections_3d(ax, x_dense)
+        self._legend(
+            ax,
+            loc="upper center",
+            bbox_to_anchor=(0.5, 1.04),
+            ncol=3,
+            frameon=True,
+            fancybox=False,
+            edgecolor=self.BLACK,
+            facecolor="white",
+            framealpha=1.0,
+            columnspacing=1.0,
+            handlelength=1.7,
+            borderpad=0.35,
+        )
+        fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.90), pad=0.2)
+        output_path = self._path("3d")
+        fig.savefig(output_path, dpi=self.FIGURE_DPI, bbox_inches="tight")
+        plt.close(fig)
+        return output_path
+
+    def plot_thrust_time_evolution(
+        self, t_days: np.ndarray, u_norm_n: np.ndarray, max_thrust_n: float
+    ) -> Path:
+        fig, ax = plt.subplots(
+            figsize=self.SQUARE_DIAGNOSTIC_FIGSIZE, dpi=self.FIGURE_DPI
+        )
+        ax.plot(
+            t_days,
+            u_norm_n,
+            color=self.TRAJECTORY_COLOR,
+            lw=self.TRAJECTORY_LINE_WIDTH,
+            label="_nolegend_",
+        )
+        ax.axhline(
+            max_thrust_n,
+            color=self.RED,
+            linestyle=":",
+            lw=self.GUIDE_LINE_WIDTH,
+            label="Maximum thrust",
+        )
+        ax.set_xlabel("time [days]")
+        ax.set_ylabel("thrust [N]")
+        self._style_2d_axis(
+            ax,
+            tick_size=self.DIAGNOSTIC_TICK_SIZE,
+            label_size=self.DIAGNOSTIC_LABEL_SIZE,
+        )
+        self._legend(
+            ax,
+            loc="best",
+            frameon=True,
+            fancybox=False,
+            edgecolor=self.BLACK,
+            facecolor="white",
+            framealpha=1.0,
+        )
+        fig.tight_layout()
+        output_path = self._path("thrust")
+        fig.savefig(output_path, dpi=self.FIGURE_DPI, bbox_inches="tight")
+        plt.close(fig)
+        return output_path
+
+    SUN_COLOR = "#f4d03f"
+    EARTH_COLOR = "#0088ab"
+    MARS_COLOR = "#c65d3b"
+
+    def _heliocentric_tracks(self, case):
+        for key, name, color in (
+            ("earth_track_si", "Earth", self.EARTH_COLOR),
+            ("mars_track_si", "Mars", self.MARS_COLOR),
+        ):
+            yield (
+                np.asarray(case.ephemeris[key])[:3] / (case.length_unit * 1000.0),
+                name,
+                color,
+            )
+
+    def _heliocentric_arrows(self, case, time_days, states, controls):
+        indices = np.searchsorted(
+            time_days, np.linspace(time_days[0], time_days[-1], 45)
+        )
+        active = (
+            np.linalg.norm(controls[:, indices], axis=0) > 0.03 * case.max_thrust_nd
+        )
+        indices = indices[active]
+        return states[:3, indices], 0.25 * controls[:, indices] / case.max_thrust_nd
+
+    def _heliocentric_legend(self, fig, ax, *, gap=0.02):
+        # Anchor just above the rendered axes, including ticks and labels.
+        fig.canvas.draw()
+        axes_top = (
+            ax.get_tightbbox(fig.canvas.get_renderer())
+            .transformed(fig.transFigure.inverted())
+            .y1
+        )
+        self._figure_legend(
+            fig,
+            [ax],
+            loc="lower center",
+            bbox_to_anchor=(0.5, axes_top + gap),
+            ncol=3,
+            fontsize=7.4,
+            frameon=True,
+            fancybox=False,
+            edgecolor=self.BLACK,
+            facecolor="white",
+            framealpha=1.0,
+            columnspacing=1.0,
+            handlelength=1.7,
+            borderpad=0.35,
+        )
+
+    def plot_heliocentric_transfer(
+        self, case, time_days: np.ndarray, states: np.ndarray, controls: np.ndarray
+    ) -> Path:
+        """Sun-centered J2000 x-y projection, using CR3BP marker/legend styles."""
+        fig, ax = plt.subplots(figsize=self.SINGLE_FIGSIZE, dpi=self.FIGURE_DPI)
+        for track, name, color in self._heliocentric_tracks(case):
+            ax.plot(
+                track[0],
+                track[1],
+                "--",
+                color=color,
+                lw=self.REFERENCE_LINE_WIDTH,
+                label=f"{name} orbit",
+                zorder=3,
+            )
+        ax.plot(
+            states[0],
+            states[1],
+            color=self.TRAJECTORY_COLOR,
+            lw=self.TRAJECTORY_LINE_WIDTH,
+            label="Transfer",
+            zorder=4,
+        )
+        for position, name, color in (
+            (np.zeros(3), "Sun", self.SUN_COLOR),
+            (states[:3, 0], "Earth", self.EARTH_COLOR),
+            (states[:3, -1], "Mars", self.MARS_COLOR),
+        ):
+            ax.scatter(
+                position[0],
+                position[1],
+                marker="o",
+                s=58 / 1.5**2 if name == "Sun" else 58 / 2.5**2,
+                color=color,
+                edgecolor=self.BLACK,
+                linewidth=0.6,
+                label=name,
+                zorder=6,
+            )
+        points, arrows = self._heliocentric_arrows(case, time_days, states, controls)
+        ax.quiver(
+            points[0],
+            points[1],
+            arrows[0],
+            arrows[1],
+            angles="xy",
+            scale_units="xy",
+            scale=1,
+            color=self.THRUST_ARROW_3D_COLOR,
+            width=0.0046,
+            headwidth=3.0,
+            headlength=3.8,
+            alpha=0.82,
+            zorder=5,
+            label="Thrust",
+        )
+        ax.set_xlabel("x [AU]")
+        ax.set_ylabel("y [AU]")
+        self._style_2d_axis(ax, equal_axis=True)
+        ax.set_axisbelow(True)
+        ax.margins(0.12)
+        fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.76))
+        self._heliocentric_legend(fig, ax)
+        path = self._path("projections")
+        fig.savefig(path, dpi=self.FIGURE_DPI, bbox_inches="tight")
+        plt.close(fig)
+        return path
+
+    def plot_heliocentric_3d(
+        self, case, time_days: np.ndarray, states: np.ndarray, controls: np.ndarray
+    ) -> Path:
+        """Match the CR3BP 3D axes and dashed gray wall projections."""
+        fig = plt.figure(figsize=self.THREE_D_FIGSIZE, dpi=self.FIGURE_DPI)
+        ax = fig.add_subplot(111, projection="3d", computed_zorder=False)
+        for track, name, color in self._heliocentric_tracks(case):
+            ax.plot(
+                *track,
+                "--",
+                color=color,
+                lw=self.REFERENCE_LINE_WIDTH,
+                label=f"{name} orbit",
+                zorder=3,
+            )
+        ax.plot(
+            *states[:3],
+            color=self.TRAJECTORY_COLOR,
+            lw=self.TRAJECTORY_LINE_WIDTH,
+            label="Transfer",
+            zorder=4,
+        )
+        points, arrows = self._heliocentric_arrows(case, time_days, states, controls)
+        ax.quiver(
+            *points,
+            *arrows,
+            color=self.THRUST_ARROW_3D_COLOR,
+            arrow_length_ratio=0.18,
+            linewidths=0.75,
+            alpha=0.82,
+            label="Thrust",
+            zorder=5,
+        )
+        for position, name, color in (
+            (np.zeros(3), "Sun", self.SUN_COLOR),
+            (states[:3, 0], "Earth", self.EARTH_COLOR),
+            (states[:3, -1], "Mars", self.MARS_COLOR),
+        ):
+            ax.scatter(
+                *position,
+                marker="o",
+                s=58 / 1.5**2 if name == "Sun" else 58 / 2.5**2,
+                color=color,
+                edgecolor=self.BLACK,
+                linewidth=0.6,
+                label=name,
+                depthshade=False,
+                zorder=6,
+            )
+        ax.set_xlabel("x [AU]")
+        ax.set_ylabel("y [AU]")
+        ax.set_zlabel("z [AU]")
+        self._style_3d_axis(ax)
+        # The CR3BP camera looks nearly edge-on to the heliocentric orbital
+        # plane; keep its styling but use an oblique view for this geometry.
+        ax.view_init(azim=-60, elev=30)
+        ax.tick_params(axis="z", which="major", pad=6.0)
+        ax.zaxis.labelpad = 8.0
+        ax.set_axisbelow(True)
+        self._set_axes_equal_3d(ax)
+        # Move the far XZ wall away from the transfer without changing its data.
+        y_lower, y_upper = ax.get_ylim3d()
+        ax.set_ylim3d(y_lower, y_upper + 0.10 * (y_upper - y_lower))
+        self._plot_trajectory_projections_3d(ax, states, xz_far_side=True)
+        fig.subplots_adjust(left=0.02, right=0.82, bottom=0.10, top=0.73)
+        self._heliocentric_legend(fig, ax, gap=0.003)
+        path = self._path("3d")
+        fig.savefig(
+            path,
+            dpi=self.FIGURE_DPI,
+            bbox_inches="tight",
+            bbox_extra_artists=(
+                ax.xaxis.label,
+                ax.yaxis.label,
+                ax.zaxis.label,
+                *fig.legends,
+            ),
+        )
+        plt.close(fig)
+        return path
+
+    def plot_inertial_control(
+        self,
+        time_days: np.ndarray,
+        thrust_n: np.ndarray,
+        max_thrust_n: float,
+        *,
+        angle_mask_thrust_n: float = 1e-5,
+    ) -> Path:
+        """J2000 thrust angles and magnitude; mask angles using an absolute N cutoff."""
+        norm = np.linalg.norm(thrust_n, axis=0)
+        alpha = np.degrees(np.arctan2(thrust_n[1], thrust_n[0]))
+        beta = np.degrees(np.arctan2(thrust_n[2], np.hypot(thrust_n[0], thrust_n[1])))
+        coast = norm <= angle_mask_thrust_n  # Magnitude is unchanged.
+        alpha[coast] = np.nan
+        beta[coast] = np.nan
+        fig, axes = plt.subplots(
+            3, 1, sharex=True, figsize=(5.8, 6.0), dpi=self.FIGURE_DPI
+        )
+        for ax, values, label in zip(
+            axes,
+            (alpha, beta, norm),
+            (r"$\alpha$ [deg]", r"$\beta$ [deg]", "thrust [N]"),
+        ):
+            ax.plot(
+                time_days,
+                values,
+                color=self.TRAJECTORY_COLOR,
+                lw=self.TRAJECTORY_LINE_WIDTH,
+            )
+            ax.set_ylabel(label)
+            self._style_2d_axis(ax)
+        axes[-1].axhline(
+            max_thrust_n,
+            color=self.RED,
+            ls=":",
+            lw=self.GUIDE_LINE_WIDTH,
+            label="Maximum thrust",
+        )
+        axes[-1].set_xlabel("time [days]")
+        axes[-1].set_xlim(0, time_days[-1])
+        self._legend(
+            axes[-1],
+            loc="best",
+            frameon=True,
+            fancybox=False,
+            edgecolor=self.BLACK,
+            facecolor="white",
+            framealpha=1.0,
+        )
+        fig.tight_layout()
+        path = self._path("thrust")
+        fig.savefig(path, dpi=self.FIGURE_DPI, bbox_inches="tight")
+        plt.close(fig)
+        return path
+
+    def plot_moon_distance_time_evolution(
+        self, t_dense_days: np.ndarray, moon_distance_km: np.ndarray
+    ) -> Path:
+        fig, ax = plt.subplots(
+            figsize=self.SQUARE_DIAGNOSTIC_FIGSIZE, dpi=self.FIGURE_DPI
+        )
+        ax.plot(
+            t_dense_days,
+            moon_distance_km,
+            color=self.BLACK,
+            lw=self.TRAJECTORY_LINE_WIDTH,
+            label="_nolegend_",
+        )
+        ax.axhline(
+            0.0,
+            color=self.RED,
+            linestyle=":",
+            lw=self.GUIDE_LINE_WIDTH,
+            label="_nolegend_",
+        )
+        ax.set_xlabel("time [days]")
+        ax.set_ylabel("distance to Moon surface [km]")
+        self._style_2d_axis(
+            ax,
+            tick_size=self.DIAGNOSTIC_TICK_SIZE,
+            label_size=self.DIAGNOSTIC_LABEL_SIZE,
+        )
+        fig.tight_layout()
+        output_path = self._path("moon_distance")
+        fig.savefig(output_path, dpi=self.FIGURE_DPI, bbox_inches="tight")
+        plt.close(fig)
+        return output_path
+
+    def plot_collocation_approx_errors(
+        self,
+        t_dense_days: np.ndarray,
+        position_error_m: np.ndarray,
+        velocity_error_m_per_s: np.ndarray,
+        mass_consumption_abs_difference_kg: np.ndarray,
+    ) -> Path:
+        specs = [
+            (
+                "position",
+                "position error [m]",
+                np.maximum(position_error_m, 1e-16),
+                self.BLACK,
+            ),
+            (
+                "velocity",
+                "velocity error [m/s]",
+                np.maximum(velocity_error_m_per_s, 1e-16),
+                self.BLUE,
+            ),
+            (
+                "mass",
+                "mass-consumption error [kg]",
+                np.maximum(mass_consumption_abs_difference_kg, 1e-16),
+                self.RED,
+            ),
+        ]
+        fig, axes = plt.subplots(
+            1, 3, figsize=self.THREE_PANEL_FIGSIZE, dpi=self.FIGURE_DPI
+        )
+        for ax, (_, ylabel, values, color) in zip(axes, specs):
+            max_error = float(np.max(values))
+            ax.semilogy(
+                t_dense_days,
+                values,
+                color=color,
+                lw=self.TRAJECTORY_LINE_WIDTH,
+                label=f"max = {max_error:.3e}",
+            )
+            ax.set_xlabel("time [days]")
+            ax.set_ylabel(ylabel)
+            self._style_2d_axis(
+                ax,
+                grid=True,
+                grid_which="both",
+                tick_size=self.VERIFICATION_TICK_SIZE,
+                label_size=self.VERIFICATION_LABEL_SIZE,
+            )
+            self._legend(
+                ax,
+                loc="lower right",
+                fontsize=7.2,
+                frameon=True,
+                fancybox=False,
+                edgecolor=self.BLACK,
+                facecolor="white",
+                framealpha=1.0,
+                borderpad=0.28,
+                handlelength=1.2,
+            )
+        fig.tight_layout()
+        output_path = self._path("verification_errors")
+        fig.savefig(output_path, dpi=self.FIGURE_DPI, bbox_inches="tight")
+        plt.close(fig)
+        return output_path
+
+    def plot_monte_carlo_rollouts(
+        self,
+        case: Any,
+        options: Any,
+        dynamics: Any,
+        normalization: Any,
+        solution: Any,
+        steps: np.ndarray,
+        count: int = 160,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Generate the saturated Monte Carlo subset used only in figures."""
+
+        count = min(max(int(count), 1), options.monte_carlo_samples)
+        generator = np.random.default_rng(options.monte_carlo_seed)
+        state_dimension = solution.means.shape[0]
+        policy_state_dimension = solution.gains.shape[2]
+        # Draw the full initial ensemble before subsetting so these are exactly
+        # the first `count` samples used by the full Monte Carlo analysis.
+        noise = generator.standard_normal(
+            (state_dimension, options.monte_carlo_samples)
+        )[:, :count]
+        states = solution.means[:, 0:1] + normalization.initial_std[:, None] * noise
+        histories = np.empty((state_dimension, count, steps.size + 1), dtype=float)
+        histories[:, :, 0] = states
+        applied_magnitudes = np.empty((steps.size, count), dtype=float)
+
+        for k, step in enumerate(steps):
+            deviation = (
+                states[0:policy_state_dimension]
+                - solution.means[0:policy_state_dimension, k : k + 1]
+            ) / normalization.scale[0:policy_state_dimension, None]
+            commanded = case.max_thrust_nd * (
+                solution.feedforward[:, k : k + 1] + solution.gains[k] @ deviation
+            )
+            magnitudes = np.linalg.norm(commanded, axis=0)
+            saturation = np.ones_like(magnitudes)
+            over_limit = magnitudes > case.max_thrust_nd
+            saturation[over_limit] = case.max_thrust_nd / magnitudes[over_limit]
+            applied = commanded * saturation[None, :]
+            applied_magnitudes[k] = (
+                np.minimum(magnitudes, case.max_thrust_nd) * case.thrust_unit
+            )
+            states, _, _ = dynamics.propagate(
+                states,
+                applied,
+                float(step),
+                options.integrator_substeps,
+            )
+            histories[:, :, k + 1] = states
+
+        return histories, applied_magnitudes
+
+    def plot_zero_order_hold_data(
+        self,
+        node_times: np.ndarray,
+        values: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Expand arc values into a zero-order-hold trace ending at the last node."""
+
+        return (
+            np.repeat(node_times, 2)[1:-1],
+            np.repeat(np.asarray(values), 2, axis=0),
+        )
+
+    def get_projection_magnification(
+        self,
+        solution: Any,
+        normalization: Any,
+    ) -> float:
+        """Return a common magnification that makes position dispersion legible."""
+
+        path_span = float(np.max(np.ptp(solution.means[0:3], axis=1)))
+        position_scale = normalization.scale[0:3]
+        largest_sigma = 0.0
+        for covariance in solution.covariances:
+            physical = covariance[0:3, 0:3] * np.outer(position_scale, position_scale)
+            largest_sigma = max(
+                largest_sigma,
+                float(np.sqrt(max(np.linalg.eigvalsh(physical)[-1], 0.0))),
+            )
+        if path_span <= 0.0 or largest_sigma <= 0.0:
+            return 1.0
+        # Make the largest three-sigma cross-section about 3.5 % of the path span.
+        return float(
+            np.clip(
+                0.035 * path_span / (3.0 * largest_sigma),
+                1.0,
+                1e6,
+            )
+        )
+
+    def get_thrust_deviation_magnification(
+        self,
+        feedback_n: np.ndarray,
+        maximum_thrust_n: float,
+    ) -> float:
+        """Scale the largest thrust deviation to 3.5 % of the plotting range."""
+
+        finite_deviations = np.abs(np.asarray(feedback_n, dtype=float))
+        finite_deviations = finite_deviations[np.isfinite(finite_deviations)]
+        largest_deviation = (
+            float(np.max(finite_deviations)) if finite_deviations.size else 0.0
+        )
+        if largest_deviation <= np.finfo(float).eps or maximum_thrust_n <= 0.0:
+            return 1.0
+        return float(
+            np.clip(
+                0.035 * maximum_thrust_n / largest_deviation,
+                1.0,
+                1e4,
+            )
+        )
+
+    def plot_magnification_label(self, magnification: float) -> str:
+        """Return compact legend text such as ``x10`` or ``x2.5e+03``."""
+
+        rounded = round(magnification)
+        if np.isclose(
+            magnification,
+            rounded,
+            rtol=5e-3,
+            atol=5e-3,
+        ):
+            return f"x{rounded:d}"
+        if magnification >= 1e3:
+            return f"x{magnification:.2e}"
+        return f"x{magnification:.1f}"
+
+    def plot_gaussian_density(
+        self,
+        values: np.ndarray,
+        mean: float,
+        variance: float,
+    ) -> np.ndarray:
+        """Evaluate a univariate Gaussian density with a safe variance floor."""
+
+        standard_deviation = np.sqrt(max(float(variance), np.finfo(float).tiny))
+        normalized = (values - mean) / standard_deviation
+        return np.exp(-0.5 * normalized**2) / (
+            np.sqrt(2.0 * np.pi) * standard_deviation
+        )
+
+    def plot_covariance_ellipse_points(
+        self,
+        covariance: np.ndarray,
+        sigma_scale: float,
+        samples: int = 120,
+    ) -> np.ndarray:
+        """Return points on a covariance ellipse at the requested sigma scale."""
+
+        eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+        radii = sigma_scale * np.sqrt(np.clip(eigenvalues, 0.0, None))
+        angles = np.linspace(0.0, 2.0 * np.pi, samples)
+        circle = np.vstack([np.cos(angles), np.sin(angles)])
+        return eigenvectors @ (radii[:, None] * circle)
+
+    def plot_terminal_distribution(
+        self,
+        case: Any,
+        options: Any,
+        solution: Any,
+        normalization: Any,
+        monte_carlo_result: Mapping[str, Any],
+    ) -> Path:
+        """Plot terminal samples and predicted, fitted and target Gaussians."""
+
+        primed_dimension = solution.gains.shape[2]
+        units = np.array(
+            [case.length_unit] * 3 + [case.velocity_unit * 1e3] * 3,
+            dtype=float,
+        )
+        if primed_dimension != units.size:
+            raise ValueError(
+                "Terminal distribution plotting expects three position and "
+                "three velocity states."
+            )
+        physical_scale = normalization.scale[:primed_dimension] * units
+        terminal_deviation = np.asarray(
+            monte_carlo_result["terminal_deviation"], dtype=float
+        )
+        samples = terminal_deviation[0:primed_dimension].T * physical_scale[None, :]
+        predicted_covariance = solution.covariances[-1][
+            0:primed_dimension, 0:primed_dimension
+        ] * np.outer(physical_scale, physical_scale)
+        sample_mean = np.mean(samples, axis=0)
+        sample_covariance = np.cov(samples, rowvar=False)
+        target_ratios = np.array(
+            [1.0 / options.position_covariance_reduction] * 3
+            + [1.0 / options.velocity_covariance_reduction] * 3,
+            dtype=float,
+        )
+        target_covariance = np.diag(target_ratios * physical_scale**2)
+        labels = (
+            r"$x$ [km]",
+            r"$y$ [km]",
+            r"$z$ [km]",
+            r"$\dot{x}$ [m/s]",
+            r"$\dot{y}$ [m/s]",
+            r"$\dot{z}$ [m/s]",
+        )
+        pdf_labels = (
+            r"PDF [$\mathrm{km}^{-1}$]",
+            r"PDF [$\mathrm{km}^{-1}$]",
+            r"PDF [$\mathrm{km}^{-1}$]",
+            r"PDF [$\mathrm{s}\,\mathrm{m}^{-1}$]",
+            r"PDF [$\mathrm{s}\,\mathrm{m}^{-1}$]",
+            r"PDF [$\mathrm{s}\,\mathrm{m}^{-1}$]",
+        )
+
+        limits: list[tuple[float, float]] = []
+        for index in range(primed_dimension):
+            standard_deviations = [
+                np.sqrt(max(predicted_covariance[index, index], 0.0)),
+                np.sqrt(max(sample_covariance[index, index], 0.0)),
+                np.sqrt(target_covariance[index, index]),
+            ]
+            radius = max(
+                abs(float(np.percentile(samples[:, index], 0.1))),
+                abs(float(np.percentile(samples[:, index], 99.9))),
+                abs(float(sample_mean[index])) + 3.5 * max(standard_deviations),
+                3.5 * max(standard_deviations),
+            )
+            limits.append(
+                (
+                    -max(radius, np.finfo(float).eps),
+                    max(radius, np.finfo(float).eps),
+                )
+            )
+
+        figure, axes = plt.subplots(
+            primed_dimension,
+            primed_dimension,
+            figsize=(12.0, 12.0),
+            dpi=self.FIGURE_DPI,
+            gridspec_kw={
+                "width_ratios": [1.0] * primed_dimension,
+                "height_ratios": [1.0] * primed_dimension,
+            },
+        )
+        legend_handles = None
+        for row in range(primed_dimension):
+            for column in range(primed_dimension):
+                axis = axes[row, column]
+                if column > row:
+                    axis.set_visible(False)
+                    continue
+
+                axis.set_box_aspect(1.0)
+                self._style_2d_axis(
+                    axis,
+                    grid=True,
+                    grid_which="major",
+                    tick_size=12.0,
+                    label_size=15.0,
+                )
+                axis.tick_params(axis="both", which="major", pad=2.0)
+                axis.xaxis.set_major_locator(LinearLocator(3))
+                axis.xaxis.set_major_formatter(FormatStrFormatter("%.3g"))
+                axis.yaxis.set_major_locator(LinearLocator(3))
+                axis.yaxis.set_major_formatter(FormatStrFormatter("%.3g"))
+
+                if row == column:
+                    histogram = axis.hist(
+                        samples[:, row],
+                        bins=25,
+                        density=True,
+                        color=self.GREY,
+                        alpha=0.48,
+                        edgecolor=self.BLACK,
+                        linewidth=0.25,
+                        label="Samples",
+                    )
+                    domain = np.linspace(*limits[row], 320)
+                    (predicted_line,) = axis.plot(
+                        domain,
+                        self.plot_gaussian_density(
+                            domain,
+                            0.0,
+                            predicted_covariance[row, row],
+                        ),
+                        color=self.RED,
+                        lw=2.4,
+                        label="Predicted distribution",
+                    )
+                    (sample_line,) = axis.plot(
+                        domain,
+                        self.plot_gaussian_density(
+                            domain,
+                            sample_mean[row],
+                            sample_covariance[row, row],
+                        ),
+                        color=self.BLUE,
+                        lw=2.2,
+                        ls="--",
+                        label="Sample distribution",
+                    )
+                    (target_line,) = axis.plot(
+                        domain,
+                        self.plot_gaussian_density(
+                            domain,
+                            0.0,
+                            target_covariance[row, row],
+                        ),
+                        color=self.GREEN,
+                        lw=0.95,
+                        label="Target distribution",
+                    )
+                    axis.set_xlim(limits[row])
+                    axis.set_xlabel(labels[row], fontsize=15.0, labelpad=3.0)
+                    axis.set_ylabel(pdf_labels[row], fontsize=15.0, labelpad=3.0)
+                    # Put each density scale in the empty upper-triangle space
+                    # to the right of its diagonal panel. This prevents its PDF
+                    # label and tick labels from intruding on the subplot to the
+                    # left while preserving uniform panel-to-panel spacing.
+                    axis.yaxis.set_label_position("right")
+                    axis.yaxis.tick_right()
+                    axis.spines["left"].set_visible(False)
+                    axis.spines["right"].set_visible(True)
+                    axis.spines["right"].set_color(self.BLACK)
+                    axis.spines["right"].set_linewidth(self.SPINE_WIDTH)
+                    axis.tick_params(
+                        axis="y",
+                        which="both",
+                        labelleft=False,
+                        labelright=True,
+                        pad=2.0,
+                    )
+                    if row == 0:
+                        legend_handles = [
+                            histogram[2][0],
+                            predicted_line,
+                            sample_line,
+                            target_line,
+                        ]
+                else:
+                    axis.scatter(
+                        samples[:, column],
+                        samples[:, row],
+                        s=1.0,
+                        color=self.GREY,
+                        alpha=0.12,
+                        linewidths=0.0,
+                        rasterized=True,
+                    )
+                    pairs = (
+                        (
+                            predicted_covariance,
+                            np.zeros(primed_dimension),
+                            self.RED,
+                            "-",
+                        ),
+                        (
+                            sample_covariance,
+                            sample_mean,
+                            self.BLUE,
+                            "--",
+                        ),
+                        (
+                            target_covariance,
+                            np.zeros(primed_dimension),
+                            self.GREEN,
+                            "-",
+                        ),
+                    )
+                    indices = [column, row]
+                    for covariance, center, color, linestyle in pairs:
+                        points = self.plot_covariance_ellipse_points(
+                            covariance[np.ix_(indices, indices)],
+                            3.0,
+                        )
+                        axis.plot(
+                            center[column] + points[0],
+                            center[row] + points[1],
+                            color=color,
+                            ls=linestyle,
+                            lw=0.95 if color == self.GREEN else 2.2,
+                        )
+                    axis.set_xlim(limits[column])
+                    axis.set_ylim(limits[row])
+                    axis.set_xlabel(labels[column], fontsize=15.0, labelpad=3.0)
+                    axis.set_ylabel(labels[row], fontsize=15.0, labelpad=3.0)
+
+                # Every diagonal density panel is self-contained, with visible
+                # ticks and inverse-unit PDF labels. Pairwise panels retain the
+                # less cluttered outer-edge tick-label convention.
+                if column > 0 and row != column:
+                    axis.tick_params(labelleft=False)
+                if row < primed_dimension - 1 and row != column:
+                    axis.tick_params(labelbottom=False)
+
+        if legend_handles is not None:
+            figure.legend(
+                legend_handles,
+                (
+                    "Samples",
+                    "Predicted distribution",
+                    "Sample distribution",
+                    "Target distribution",
+                ),
+                loc="upper right",
+                bbox_to_anchor=(0.99, 0.99),
+                frameon=True,
+                fancybox=False,
+                edgecolor=self.BLACK,
+                facecolor="white",
+                framealpha=1.0,
+                fontsize=21.0,
+                handlelength=2.6,
+                borderpad=0.6,
+            )
+        figure.subplots_adjust(
+            left=0.085,
+            right=0.94,
+            bottom=0.075,
+            top=0.96,
+            wspace=0.42,
+            hspace=0.48,
+        )
+        output_path = self._path("terminal_distribution")
+        figure.savefig(
+            output_path,
+            dpi=self.FIGURE_DPI,
+            bbox_inches="tight",
+        )
+        plt.close(figure)
+        return output_path
+
+    def plot_interval_defect(
+        self,
+        mesh: np.ndarray,
+        tof_days: float,
+        scaled_defects: np.ndarray,
+        defect_tolerance: float,
+    ) -> Path:
+        centers = 0.5 * (mesh[:-1] + mesh[1:]) * tof_days
+        scaled = np.maximum(scaled_defects, 1e-16)
+        fig, ax = plt.subplots(
+            figsize=self.SQUARE_DIAGNOSTIC_FIGSIZE, dpi=self.FIGURE_DPI
+        )
+        ax.semilogy(
+            centers,
+            scaled,
+            linestyle="none",
+            marker="o",
+            markersize=2.2,
+            markerfacecolor=self.BLACK,
+            markeredgecolor=self.BLACK,
+            label="_nolegend_",
+        )
+        ax.axhline(
+            defect_tolerance,
+            color=self.RED,
+            linestyle=":",
+            lw=self.GUIDE_LINE_WIDTH,
+            label="Tolerance",
+        )
+        ax.set_xlabel("time [days]")
+        ax.set_ylabel("scaled endpoint defect")
+        self._style_2d_axis(
+            ax,
+            grid=False,
+            tick_size=self.DIAGNOSTIC_TICK_SIZE,
+            label_size=self.DIAGNOSTIC_LABEL_SIZE,
+        )
+        self._legend(
+            ax,
+            loc="best",
+            frameon=True,
+            fancybox=False,
+            edgecolor=self.BLACK,
+            facecolor="white",
+            framealpha=1.0,
+        )
+        fig.tight_layout()
+        output_path = self._path("defect")
+        fig.savefig(output_path, dpi=self.FIGURE_DPI, bbox_inches="tight")
+        plt.close(fig)
+        return output_path

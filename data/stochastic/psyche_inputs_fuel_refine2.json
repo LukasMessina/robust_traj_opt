@@ -1,0 +1,27 @@
+{
+  "reference": "output/psyche_mission_deterministic_traj_opt/fuel_optimal/psyche.npz",
+  "reference_sha256": "63004128b1320bf5db9d25c4d730124eee204dfb70dd44999896ff9c07e5043d",
+  "export_sha256": "61d1a767f84dde5dc3a0d28669ba6057ea5cf095d23ab1e54227400720e13a6b",
+  "phase_mesh": [
+    80,
+    172,
+    80
+  ],
+  "reference_phase_mesh": [
+    40,
+    86,
+    40
+  ],
+  "mesh_refinement": 2.0,
+  "cruise_subdivision": 1,
+  "control_arcs": 160,
+  "numerical_intervals": 332,
+  "position_units": "m",
+  "velocity_units": "m/s",
+  "time_units": "TDB seconds past J2000; free segment durations in days",
+  "orientation": "J2000",
+  "preparation_only": true,
+  "optimisation_backend": "native Julia/ExaModels",
+  "state_array_order": "components x nodes",
+  "ephemeris_array_order": "polynomial coefficient x interval x component"
+}

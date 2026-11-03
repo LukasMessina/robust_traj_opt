@@ -1,0 +1,73 @@
+# Result files in output/<mode>/<case>/. `<case>.npz` uses the JAX output key names
+# and axis conventions wherever they apply and carries everything verification/__main__.py
+# needs to re-evaluate the solution with the reference code; `<case>_diagnostics.toml`
+# holds the report. MadNLP writes its logs to the same directory during the solve.
+
+"Write `<case>.npz` and `<case>_diagnostics.toml`; returns the directory."
+function save_results(result)
+    # The multiphase driver writes intermediate evidence as it completes each
+    # stage, including failures before a stochastic candidate is available.
+    result.options.case_id=="psyche" && return output_directory(result.options)
+    o, case, sol, report = result.options, result.case, result.solution, result.report
+    ref, scaling, seed, n = result.reference, result.scaling, result.seed, n_arcs(result.reference)
+    directory = mkpath(output_directory(o))
+    scale = Vector(result.normalization.scale)
+    to_python(A::AbstractArray{<:Any,3}) = permutedims(A, (3, 1, 2))   # (N, rows, cols)
+    arrays = Dict{String,Any}(
+        # run identification (the case id is the file name)
+        "n_arcs" => n, "objective" => report["objective"],
+        "solver_success" => Int(report["solver_success"]),
+        "restoration_requirement_met" => Int(report["restoration_requirement_met"]),
+        # the formulation constants (verification/__main__.py replays the reference's eps and the model's exact norm)
+        "eigenvalue_smoothing" => EIGENVALUE_SMOOTHING, "terminal_margin_floor" => TERMINAL_MARGIN_FLOOR,
+        "spectral_radius_floor" => SPECTRAL_RADIUS_FLOOR, "control_norm_eps" => CONTROL_NORM_EPS,
+        "mass_flow_smoothing" => CONTROL_NORM_EPS, "gain_bound" => Inf,
+        "control_covariance_weight" => o.control_covariance_weight,
+        "state_covariance_weight" => o.state_covariance_weight,
+        "chance_slack" => Int(chance_sum(o)), "chance_slack_floor" => CHANCE_SLACK_FLOOR,
+        "quantile_objective" => Int(chance_sum(o)),
+        # problem data of the run (may differ from the JAX defaults; verification/__main__.py reads them)
+        "initial_position_std_km" => o.initial_position_std_km, "initial_velocity_std_km_s" => o.initial_velocity_std_km_s,
+        "initial_mass_std_kg" => o.initial_mass_std_kg, "mass_scale_kg" => o.mass_scale_kg,
+        "position_covariance_reduction" => o.position_covariance_reduction,
+        "velocity_covariance_reduction" => o.velocity_covariance_reduction,
+        "navigation_position_std_km" => o.navigation_position_std_km,
+        "navigation_velocity_std_km_s" => o.navigation_velocity_std_km_s,
+        # time grid and energy-optimal reference
+        "node_times_nd" => ref.node_times, "node_days" => ref.node_times .* case.time_unit ./ 86400.0,
+        "steps_nd" => ref.steps, "ref_states" => ref.states, "ref_controls" => ref.controls,
+        # solution (JAX names)
+        "means" => sol.means, "feedforward" => sol.feedforward,
+        "feedforward_n" => sol.feedforward .* case.tmax .* case.thrust_unit,
+        "gains_normalized" => to_python(sol.gains),
+        "gains" => to_python(case.tmax .* sol.gains ./ reshape(scale[1:NP], 1, :, 1)),
+        "radius_normalized" => sol.radius,
+        "covariance_normalized" => to_python(sol.covariances),
+        "control_covariance_normalized" => to_python(sol.control_covariances),
+        "normalization_scale_nd" => scale,
+        # NLP variables and their fixed scalings
+        "cholesky_factor" => permutedims(sol.cholesky_factor, (2, 1)),
+        "terminal_margin" => sol.terminal_margin,
+        "node_std" => scaling.std,
+        "covariance_scale_variances" => permutedims(scaling.variances, (2, 1)),
+        "gain_scale" => seed.gain_scale,
+        # initial guess
+        "seed_gains_normalized" => to_python(seed.gains),
+        "seed_covariances" => to_python(seed.covariances),
+        # the model's exact norm, sigma-point mass flow (delta on the feedback-carrying points only) and
+        # jitter-free Gates factors (verification/__main__.py)
+        "model_norm_smoothing" => 0.0, "model_mass_flow_smoothing" => MASS_FLOW_SMOOTHING, "model_gates_jitter" => 0.0,
+        "model_mass_flow_smoothing_feedback_only" => 1,
+        "terminal_covariance_cost" => Int(!chance_sum(o)), "terminal_covariance_weight" => TERMINAL_COVARIANCE_WEIGHT)
+    NPZ.npzwrite(joinpath(directory, case.id * ".npz"), arrays)
+    open(joinpath(directory, case.id * "_diagnostics.toml"), "w") do io
+        TOML.print(io, toml_ready(report); sorted = true)
+    end
+    log_line("[$(case.id)] results written to $directory")
+    return directory
+end
+
+toml_ready(d::AbstractDict) = Dict{String,Any}(string(k) => toml_ready(v) for (k, v) in d)
+toml_ready(v::Bool) = v
+toml_ready(v::Real) = isfinite(v) ? v : string(v)
+toml_ready(v) = v

@@ -22,9 +22,16 @@ output/**/*.log
 # Generated local font/formatter caches and immutable solver output snapshots.
 /.cache/
 /output/
+/.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
 
 # Version the pinned scientific inputs and reconstruction evidence despite the
 # broad generated-file rules above. Large downloaded kernels remain excluded.
-!psyche_mission_events_reconstruction/**/*.json
-!psyche_mission_events_reconstruction/artifacts/**/*.npz
-!psyche_mission_events_reconstruction/artifacts/**/*.csv
+!data/psyche/**/*.json
+!data/psyche/**/*.npz
+!data/psyche/**/*.csv
+
+!data/stochastic/*.npz
+!data/stochastic/*.json
