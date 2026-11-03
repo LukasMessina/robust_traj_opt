@@ -18,13 +18,14 @@ function save_results(result)
         "n_arcs" => n, "objective" => report["objective"],
         "solver_success" => Int(report["solver_success"]),
         "restoration_requirement_met" => Int(report["restoration_requirement_met"]),
-        "eigenvalue_smoothing" => o.eigenvalue_smoothing, "terminal_margin_floor" => o.terminal_margin_floor,
-        "spectral_radius_floor" => o.spectral_radius_floor, "control_norm_eps" => o.control_norm_eps,
-        "mass_flow_smoothing" => o.mass_flow_smoothing, "gain_bound" => o.gain_bound,
+        # the formulation constants (tools/validate.py replays the reference's eps and the model's exact norm)
+        "eigenvalue_smoothing" => EIGENVALUE_SMOOTHING, "terminal_margin_floor" => TERMINAL_MARGIN_FLOOR,
+        "spectral_radius_floor" => SPECTRAL_RADIUS_FLOOR, "control_norm_eps" => CONTROL_NORM_EPS,
+        "mass_flow_smoothing" => CONTROL_NORM_EPS, "gain_bound" => Inf,
         "control_covariance_weight" => o.control_covariance_weight,
         "state_covariance_weight" => o.state_covariance_weight,
-        "chance_slack" => Int(o.chance_formulation == :slack), "chance_slack_floor" => o.chance_slack_floor,
-        "quantile_objective" => Int(o.objective in (:quantile, :chance_sum)),
+        "chance_slack" => Int(chance_sum(o)), "chance_slack_floor" => CHANCE_SLACK_FLOOR,
+        "quantile_objective" => Int(chance_sum(o)),
         # problem data of the run (may differ from the JAX defaults; tools/validate.py reads them)
         "initial_position_std_km" => o.initial_position_std_km, "initial_velocity_std_km_s" => o.initial_velocity_std_km_s,
         "initial_mass_std_kg" => o.initial_mass_std_kg, "mass_scale_kg" => o.mass_scale_kg,
@@ -52,15 +53,12 @@ function save_results(result)
         "gain_scale" => seed.gain_scale,
         # initial guess
         "seed_gains_normalized" => to_python(seed.gains),
-        "seed_covariances" => to_python(seed.covariances))
-    if o.control_parameterization != :cartesian
-        # the model's exact norm, sigma-point mass flow and jitter-free Gates factors (tools/validate.py)
-        arrays["model_norm_smoothing"], arrays["model_mass_flow_smoothing"], arrays["model_gates_jitter"] =
-            0.0, o.model_mass_flow_smoothing, 0.0
-        arrays["model_mass_flow_smoothing_feedback_only"] = 1   # delta on the feedback-carrying points only
-    end
-    arrays["terminal_covariance_cost"] = Int(o.terminal_covariance == :cost)
-    arrays["terminal_covariance_weight"] = o.terminal_covariance_weight
+        "seed_covariances" => to_python(seed.covariances),
+        # the model's exact norm, sigma-point mass flow (delta on the feedback-carrying points only) and
+        # jitter-free Gates factors (tools/validate.py)
+        "model_norm_smoothing" => 0.0, "model_mass_flow_smoothing" => MASS_FLOW_SMOOTHING, "model_gates_jitter" => 0.0,
+        "model_mass_flow_smoothing_feedback_only" => 1,
+        "terminal_covariance_cost" => Int(!chance_sum(o)), "terminal_covariance_weight" => TERMINAL_COVARIANCE_WEIGHT)
     NPZ.npzwrite(joinpath(directory, case.id * ".npz"), arrays)
     open(joinpath(directory, case.id * "_diagnostics.toml"), "w") do io
         TOML.print(io, toml_ready(report); sorted = true)

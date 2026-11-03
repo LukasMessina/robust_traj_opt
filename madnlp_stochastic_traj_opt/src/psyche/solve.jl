@@ -10,9 +10,8 @@ function psyche_solution(x, blocks, seed::InitialGuess)
     feedforward, gains = zeros(NU, n), zeros(NU, NP, n)
     feedforward[:, controlled] = feedforward_values(x, blocks)
     gains[:, :, controlled] = get(blocks.gains) .* reshape(seed.gain_scale[controlled], 1, 1, :)
-    level = blocks.level === nothing ? 1.0 : first(get(blocks.level))
     margin = blocks.margin === nothing ? zeros(NM) : get(blocks.margin)
-    return (; means = get(blocks.means), feedforward, gains, factors = get(blocks.chol), margin, level)
+    return (; means = get(blocks.means), feedforward, gains, factors = get(blocks.chol), margin)
 end
 
 """
@@ -61,18 +60,17 @@ function psyche_evaluate(d::PsycheData, o::Options, u::PsycheUncertainty, params
         state += w * pc.inv_sigma_sq * tr(covariances[1:NP, 1:NP, k])
         if controlled[k]
             f = SVector{3}(sol.feedforward[:, k])
-            chance[k] = feedforward_norm(pc, f) + pc.psi * spectral_radius(SMatrix{3,3}(T), pc.floor, pc.smoothing_sq)
-            control += w * feedforward_norm(pc, f)
+            chance[k] = norm(f) + pc.psi * spectral_radius(SMatrix{3,3}(T), pc.floor, pc.smoothing_sq)
+            control += w * norm(f)
             control_covariance += w * o.control_covariance_weight * tr(T)
         end
     end
     G = layout.terminal_transform
     target = G * covariances[1:NP, 1:NP, end] * G'
-    terminal_bound = o.terminal_covariance == :constraint
-    terminal = terminal_bound ? 0.0 : o.terminal_covariance_weight * tr(target) / o.bryson_sigma_factor^2
+    terminal = chance_sum(o) ? 0.0 : TERMINAL_COVARIANCE_WEIGHT * tr(target) / BRYSON_SIGMA_FACTOR^2
     G = unpack_lower(sol.margin, NP)
     total = control + state + control_covariance + terminal
-    # objective = :chance_sum: the arc-weighted chance left-hand sides are the cost (the terms above are diagnostics)
+    # step 4: the arc-weighted chance left-hand sides are the cost (the terms above are diagnostics)
     chance_cost = sum(layout.weights[k] * chance[k] for k in 1:n if controlled[k])
     si(k) = psyche_si_covariance(u, covariances[:, :, k])
     ca = d.ca_node
@@ -81,7 +79,7 @@ function psyche_evaluate(d::PsycheData, o::Options, u::PsycheUncertainty, params
                  for k in 1:n)
     scaled_gains = sol.gains[:, :, controlled] ./ reshape(seed.gain_scale[controlled], 1, 1, :)
     return Dict{String,Any}(
-        "objective" => o.objective == :chance_sum ? chance_cost : total, "objective_chance_sum" => chance_cost,
+        "objective" => chance_sum(o) ? chance_cost : total, "objective_chance_sum" => chance_cost,
         "objective_mean_control" => control, "objective_state_covariance" => state,
         "objective_control_covariance" => control_covariance,
         "objective_share_mean_control" => control / total, "objective_share_state_covariance" => state / total,
@@ -89,9 +87,8 @@ function psyche_evaluate(d::PsycheData, o::Options, u::PsycheUncertainty, params
         "objective_terminal_covariance" => terminal, "objective_share_terminal_covariance" => terminal / total,
         "max_mean_defect" => mean_defect, "max_scaled_covariance_defect" => covariance_defect,
         "max_boundary_residual" => maximum(abs(sol.means[t.i, t.node] - t.value) for t in layout.boundary),
-        "max_terminal_constraint_violation" => terminal_bound ? maximum(abs, sol.level * I - target - G * G') :
+        "max_terminal_constraint_violation" => chance_sum(o) ? maximum(abs, I - target - G * G') :
             max(0.0, eigmax(Symmetric(target)) - 1),
-        "terminal_dispersion_level" => sol.level,
         "terminal_covariance_max_eigenvalue" => eigmax(Symmetric(target)),
         "terminal_std_si" => sqrt.(diag(si(n + 1))),
         "max_thrust_budget" => maximum(chance[controlled]),
@@ -120,33 +117,29 @@ function _solve_psyche(o::Options, backend)
     report = Dict{String,Any}("case" => "psyche", "execution_mode" => String(o.execution_mode),
         "implementation" => "native Julia/ExaModels (shared stochastic NLP)", "converged" => false,
         "solver_success" => false, "substeps_per_interval" => 1,
-        "mars_events" => "fixed at the energy reoptimisation epochs", "ballistic_mars" => true,
+        "mars_events" => "fixed at the fuel reoptimisation epochs", "ballistic_mars" => true,
         "flyby_risk" => PSYCHE_FLYBY_RISK, "minimum_mars_altitude_m" => PSYCHE_MINIMUM_MARS_ALTITUDE_M,
         "initial_position_std_km" => o.initial_position_std_km, "initial_mass_std_kg" => o.initial_mass_std_kg,
         "terminal_position_std_km" => o.psyche_terminal_position_std_km,
         "terminal_velocity_std_km_s" => o.psyche_terminal_velocity_std_km_s,
         "control_chance_covariance" => "executed: commanded plus execution",
-        "seed_gain" => String(o.psyche_seed_gain), "terminal_covariance" => String(o.terminal_covariance),
-        "control_parameterization" => String(o.control_parameterization))
+        "objective_kind" => String(o.objective), "seed_weights" => collect(seed_weights(o)))
     try
-        d = load_psyche_data(o.psyche_input_file)
+        d = load_psyche_data(PSYCHE_INPUT_FILE)
         u = psyche_uncertainty(d, o)
         params = psyche_phase_params(d, o, u)
-        # Throttle controls: the energy reoptimisation and the seed use the model's exact parameters as well
-        # (mass flow T_max Gamma, no smoothing, no Gates jitter), as in the deterministic optimisation.
-        nominal_params = o.control_parameterization == :throttle ? model_params(o, params) : params
         merge!(report, Dict{String,Any}("input_sha256" => d.sha256, "n_intervals" => d.n, "n_arcs" => d.n,
             "powered_control_arcs" => count(>(0), d.slots), "phase_mesh_counts" => d.mesh_counts,
             "mesh_refinement" => d.mesh_refinement, "cruise_subdivision" => d.cruise_subdivision,
             "reference_path" => d.reference_path, "initial_std_si" => sqrt.(diag(u.initial_covariance_si)),
             "terminal_std_limits_si" => u.terminal_std_si,
-            "initialisation" => "energy reoptimisation -> duration-weighted Bryson TVLQR -> UT covariance -> terminal margin"))
+            "initialisation" => "fuel reoptimisation -> duration-weighted Bryson TVLQR -> UT covariance -> terminal margin"))
         log_line(@sprintf("%s %d intervals (%d powered), UT dimension %d, mode %s", tag, d.n, count(>(0), d.slots),
             UT_DIMENSION, o.execution_mode))
 
-        stage = "energy reoptimisation"
-        log_line("$tag $(o.psyche_nominal_objective) reoptimisation (RK9, free Mars epochs, MadNLP/MUMPS on the CPU) ...")
-        nominal_seconds = @elapsed ref, nominal = psyche_reoptimize(d, o, nominal_params;
+        stage = "fuel reoptimisation"
+        log_line("$tag fuel reoptimisation (RK9, free Mars epochs, MadNLP/MUMPS on the CPU) ...")
+        nominal_seconds = @elapsed ref, nominal = psyche_reoptimize(d, o, params;
             output_file = joinpath(directory, "psyche_madnlp_nominal.log"))
         report["nominal"] = nominal
         NPZ.npzwrite(joinpath(directory, "psyche_nominal.npz"),
@@ -155,7 +148,7 @@ function _solve_psyche(o::Options, backend)
             nominal["status"], nominal["iterations"], nominal["energy_n2_s"], ref.days..., nominal_seconds))
 
         stage = "initial guess"
-        seed_seconds = @elapsed seed, scaling = psyche_initial_guess(d, o, u, nominal_params, ref)
+        seed_seconds = @elapsed seed, scaling = psyche_initial_guess(d, o, u, params, ref)
         seed_std, seed_factors, seed_initial = diagonal_convention(seed.covariances)
         NPZ.npzwrite(joinpath(directory, "psyche_seed.npz"), Dict("means" => seed.means, "feedforward" => seed.feedforward,
             "days" => ref.days, "gains" => seed.gains, "gain_scale" => seed.gain_scale, "covariances" => seed.covariances,
@@ -163,13 +156,11 @@ function _solve_psyche(o::Options, backend)
             "margin" => seed.terminal_margin))
 
         stage = "stochastic model"
-        # The nominal and seed solves above keep `params`; polar and throttle controls change the model's (`model_params`).
-        mparams = model_params(o, params)
-        build_seconds = @elapsed blocks = psyche_stochastic_model(d, o, u, mparams, ref, seed, scaling, backend)
+        build_seconds = @elapsed blocks = psyche_stochastic_model(d, o, u, params, ref, seed, scaling, backend)
         model = solver_model(o, blocks.model)
         x0 = Array(model.meta.x0)
         seed_violation = original_violation(model, model.meta.x0)
-        seed_report = psyche_evaluate(d, o, u, mparams, blocks.layout, scaling, seed, psyche_solution(x0, blocks, seed))
+        seed_report = psyche_evaluate(d, o, u, params, blocks.layout, scaling, seed, psyche_solution(x0, blocks, seed))
         log_line(@sprintf("%s model: %d variables, %d constraints; seed: max violation %.3e, objective %.10f", tag,
             model.meta.nvar, model.meta.ncon, seed_violation, seed_report["objective"]))
 
@@ -181,7 +172,7 @@ function _solve_psyche(o::Options, backend)
 
         x = Array(stats.solution)
         sol = psyche_solution(x, blocks, seed)
-        evaluation = psyche_evaluate(d, o, u, mparams, blocks.layout, scaling, seed, sol)
+        evaluation = psyche_evaluate(d, o, u, params, blocks.layout, scaling, seed, sol)
         events = psyche_event_report(d, sol.means, ref.days)
         values = Array(NLPModels.cons(model, stats.solution))
         success = stats.status == MadNLP.SOLVE_SUCCEEDED
@@ -190,8 +181,7 @@ function _solve_psyche(o::Options, backend)
         merge!(report, evaluation, Dict{String,Any}(
             "madnlp_status" => string(stats.status), "iterations" => stats.iter, "solver_success" => success,
             "model_objective" => stats.objective + blocks.objective_constant,
-            "objective_units" => o.objective == :terminal_dispersion ? "level t of G P_N G' <= t I (G: terminal target)" :
-                "dimensionless, arc-duration-weighted stochastic cost",
+            "objective_units" => "dimensionless, arc-duration-weighted stochastic cost",
             "restoration_requirement_met" => restoration_ok, "restoration_iterations" => guard.restoration_iterations,
             "longest_restoration_run" => guard.max_consecutive, "blocked_restoration_request" => String(guard.blocked_phase),
             "hyperbolic_minimum_valid" => domain, "converged" => success && restoration_ok && domain,
@@ -206,7 +196,7 @@ function _solve_psyche(o::Options, backend)
             "seconds" => Dict{String,Any}("nominal" => nominal_seconds, "seed" => seed_seconds,
                 "build" => build_seconds, "solve" => solve_seconds),
             "julia_threads" => Threads.nthreads()))
-        report["settings"]["psyche_nominal_barrier_mu_init"] = o.psyche_nominal_barrier_mu_init
+        report["settings"]["psyche_nominal_barrier_mu_init"] = PSYCHE_NOMINAL_BARRIER_MU_INIT
         covariances = psyche_covariances(scaling, sol.factors)
         solution_std, solution_factors, _ = diagonal_convention(covariances)
         NPZ.npzwrite(joinpath(directory, "psyche_solution.npz"), Dict("x" => x, "means" => sol.means,

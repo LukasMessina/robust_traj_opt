@@ -1,17 +1,15 @@
-# Energy reoptimisation of the deterministic Psyche reference on the stochastic mesh
-# (CPU, exact derivatives). It restores dynamic consistency with one XMDS2 RK9 step per
-# interval and the smoothed mass flow, and fixes the Mars epochs used by the stochastic NLP.
+# Fuel reoptimisation of the deterministic Psyche reference on the stochastic mesh (CPU, exact derivatives).
+# It restores dynamic consistency with one XMDS2 RK9 step per interval and fixes the Mars epochs used by the
+# stochastic NLP.
 #
-# Variables: node means, feedforward of the powered arcs and the Mars inbound/outbound days.
-# Objective: 0.5 sum_k dt_k ||f_k||^2 / (t_f - t_0), dt_k affine in the days.
+# Variables: node means, the deterministic optimisation's throttle Gamma_k in [0, 1] and direction d_k of the
+# powered arcs (thrust U = Gamma d, mass flow T_max Gamma, no smoothing) and the Mars inbound/outbound days.
+# Objective: the fuel 1 - m_f / m_wet (the constant left out).
 # Constraints: fixed Earth SOI exit (7), Mars SOI entry (6) and arrival (6) states, shooting
-# defects (with the ephemeris translations at both SOI crossings), ||f||_eps <= 1, Mars
+# defects (with the ephemeris translations at both SOI crossings), ||d_k||^2 = 1, Mars
 # altitude >= 500 km at the Mars nodes, and the events: Mars SOI exit radius, closest-approach
 # r.v = 0, outward exit crossing, 0.05..10 day Mars passage, q = v.v + r.a > 0 and C3 > 0
 # (a hyperbolic closest-approach minimum).
-# With control_parameterization = :throttle the controls are the deterministic optimisation's: throttle
-# Gamma_k in [0, 1] and direction d_k with rows ||d_k||^2 = 1, thrust U = Gamma d, mass flow T_max Gamma and
-# energy 0.5 sum_k dt_k Gamma_k^2 ||d_k||^2 / (t_f - t_0) (no smoothing); the ||f||_eps row is dropped.
 
 const PSYCHE_MINIMUM_MARS_ALTITUDE_M = 500e3
 
@@ -66,52 +64,31 @@ function psyche_nominal_model(d::PsycheData, o::Options, params)
     lower, upper = fill(-Inf, NX, n + 1), fill(Inf, NX, n + 1)
     lower[7, :] .= d.mass_floor_kg ./ d.node_scales[7, :]
     c = ExaCore(Float64)
-    throttled = o.control_parameterization == :throttle
     @add_var(c, means, 1:NX, 1:n+1; start = d.seed_states, lvar = lower, uvar = upper)
-    throttle = nothing
-    if throttled
-        # the deterministic seed convention: every nonzero thrust kept, zero thrust with direction e1
-        S0 = d.seed_controls[:, powered]
-        gamma0 = [norm(S0[:, k]) for k in 1:np]
-        @add_var(c, ff, 1:NU, 1:np; start = reduce(hcat, [gamma0[k] > 0 ? S0[:, k] / gamma0[k] : [1.0, 0.0, 0.0] for k in 1:np]))
-        @add_var(c, throttle, 1:np; start = gamma0, lvar = zeros(np), uvar = ones(np))
-    else
-        @add_var(c, ff, 1:NU, 1:np; start = d.seed_controls[:, powered])
-    end
+    # the deterministic seed convention: every nonzero thrust kept, zero thrust with direction e1
+    S0 = d.seed_controls[:, powered]
+    gamma0 = [norm(S0[:, k]) for k in 1:np]
+    @add_var(c, ff, 1:NU, 1:np; start = reduce(hcat, [gamma0[k] > 0 ? S0[:, k] / gamma0[k] : [1.0, 0.0, 0.0] for k in 1:np]))
+    @add_var(c, throttle, 1:np; start = gamma0, lvar = zeros(np), uvar = ones(np))
     @add_var(c, days, 1:2; start = d.seed_days, lvar = fill(1e-9, 2), uvar = fill(10.0, 2))
-    total = d.epochs[3] - d.epochs[1]
-    energy = [(k = d.slots[k], c0 = d.duration[1, k] / (2total), c1 = d.duration[2, k] / (2total),
-               c2 = d.duration[3, k] / (2total)) for k in powered]
-    if o.psyche_nominal_objective == :fuel
-        # the deterministic optimisation's fuel objective 1 - m_f / m_wet (the constant 1 left out)
-        @add_obj(c, -t.s * means[7, t.node] for t in [(node = n + 1, s = d.node_scales[7, n+1] / d.wet_mass_kg)])
-    elseif throttled
-        @add_obj(c, (t.c0 + t.c1 * days[1] + t.c2 * days[2]) * throttle[t.k]^2 * (ff[1, t.k]^2 + ff[2, t.k]^2 + ff[3, t.k]^2)
-            for t in energy)
-    else
-        @add_obj(c, (t.c0 + t.c1 * days[1] + t.c2 * days[2]) * (ff[1, t.k]^2 + ff[2, t.k]^2 + ff[3, t.k]^2) for t in energy)
-    end
+    # the deterministic optimisation's fuel objective 1 - m_f / m_wet (the constant 1 left out)
+    @add_obj(c, -t.s * means[7, t.node] for t in [(node = n + 1, s = d.node_scales[7, n+1] / d.wet_mass_kg)])
     boundary = psyche_boundary(d)
     @add_con(c, means[t.i, t.node] - t.value for t in boundary)
     @add_con(c, defects, means[t.i, t.k+1] for t in [(i = i, k = k) for k in 1:n for i in 1:NX])
-    if throttled
-        @add_con(c, ff[1, t.k]^2 + ff[2, t.k]^2 + ff[3, t.k]^2 - 1 for t in [(k = k,) for k in 1:np])
-    else
-        @add_con(c, sqrt(ff[1, t.k]^2 + ff[2, t.k]^2 + ff[3, t.k]^2 + t.e2)
-            for t in [(k = k, e2 = o.control_norm_eps^2) for k in 1:np]; lcon = -Inf, ucon = 1.0)
-    end
+    @add_con(c, ff[1, t.k]^2 + ff[2, t.k]^2 + ff[3, t.k]^2 - 1 for t in [(k = k,) for k in 1:np])
     radius = d.mars_radius_m + PSYCHE_MINIMUM_MARS_ALTITUDE_M
     surfaces = [(node = node, r2 = (radius / d.node_scales[1, node])^2) for node in 1:n+1 if d.node_origin[node] == 2]
     @add_con(c, means[1, t.node]^2 + means[2, t.node]^2 + means[3, t.node]^2 - t.r2 for t in surfaces; lcon = 0.0, ucon = Inf)
 
     # Shooting defects means[k+1] - end_k(theta_k): exact first and second derivatives by ForwardDiff.
-    # theta_k = (mean 7, feedforward 3, days 2), or (mean 7, direction 3, throttle, days 2) for the throttle controls.
+    # theta_k = (mean 7, direction 3, throttle, days 2).
     index = [vcat(means.offset .+ 7(k-1) .+ (1:7), d.slots[k] == 0 ? zeros(Int, 3) : ff.offset .+ 3(d.slots[k]-1) .+ (1:3),
-                  throttled ? [d.slots[k] == 0 ? 0 : throttle.offset + d.slots[k]] : Int[], days.offset .+ (1:2)) for k in 1:n]
-    ninputs = throttled ? 13 : 12
-    arc_end = throttled ? psyche_arc_end_throttle : psyche_arc_end
+                  [d.slots[k] == 0 ? 0 : throttle.offset + d.slots[k]], days.offset .+ (1:2)) for k in 1:n]
+    ninputs = 13
+    arc_end = psyche_arc_end_throttle
     input(x, k, q) = index[k][q] == 0 ? 0.0 : x[index[k][q]]
-    load(x, k) = throttled ? SVector{13}(ntuple(q -> input(x, k, q), Val(13))) : SVector{12}(ntuple(q -> input(x, k, q), Val(12)))
+    load(x, k) = SVector{13}(ntuple(q -> input(x, k, q), Val(13)))
     jac_rows, jac_cols, hess_rows, hess_cols = Int[], Int[], Int[], Int[]
     jac_offsets, hess_offsets = zeros(Int, n), zeros(Int, n)
     for k in 1:n
@@ -122,7 +99,7 @@ function psyche_nominal_model(d::PsycheData, o::Options, params)
         end
         lower_structure!(hess_rows, hess_cols, index[k])
     end
-    c, _ = ExaModels.add_eval(c, (defects,), throttled ? (means, ff, throttle, days) : (means, ff, days),
+    c, _ = ExaModels.add_eval(c, (defects,), (means, ff, throttle, days),
         function (out, x)
             Threads.@threads for k in 1:n
                 out[7(k-1) .+ (1:7)] = -arc_end(d, params, k, load(x, k))
@@ -148,7 +125,7 @@ function psyche_nominal_model(d::PsycheData, o::Options, params)
         jac_structure! = (r, cc) -> (append!(r, jac_rows); append!(cc, jac_cols)),
         hess_structure! = (r, cc) -> (append!(r, hess_rows); append!(cc, hess_cols)))
 
-    nvar = NX * (n + 1) + NU * np + np * throttled + 2
+    nvar = NX * (n + 1) + NU * np + np + 2
     event_index = vcat(means.offset .+ 7(d.ca_node-1) .+ (1:7), means.offset .+ 7(d.exit_node-1) .+ (1:7),
         days.offset .+ (1:2))
     c = ExaModels.constraint(c, psyche_cpu_oracle(nvar, event_index, v -> psyche_events(d, v), 6,
@@ -177,7 +154,7 @@ psyche_boundary(d::PsycheData) =
      [(node = d.entry_node, i = i, value = d.xm[i] / d.node_scales[i, d.entry_node]) for i in 1:NP];
      [(node = d.n + 1, i = i, value = d.xf[i] / d.node_scales[i, d.n+1]) for i in 1:NP]]
 
-"Energy reoptimisation on the CPU; returns the reference (means, feedforward of every arc, days) and a report."
+"Fuel reoptimisation on the CPU; returns the reference (means, feedforward of every arc, days) and a report."
 function psyche_reoptimize(d::PsycheData, o::Options, params; output_file = "")
     built = psyche_nominal_model(d, o, params)
     settings = psyche_nominal_solver_options(o; output_file)
@@ -186,17 +163,16 @@ function psyche_reoptimize(d::PsycheData, o::Options, params; output_file = "")
     means = Array(ExaModels.solution(stats, built.means))
     feedforward = zeros(NU, d.n)
     feedforward[:, d.slots .> 0] = Array(ExaModels.solution(stats, built.ff))
-    built.throttle === nothing || (feedforward[:, d.slots .> 0] .*= Array(ExaModels.solution(stats, built.throttle))')
+    feedforward[:, d.slots .> 0] .*= Array(ExaModels.solution(stats, built.throttle))'
     days = Array(ExaModels.solution(stats, built.days))
-    total = d.epochs[3] - d.epochs[1]
     report = Dict{String,Any}("status" => string(stats.status), "iterations" => stats.iter,
         "objective" => stats.objective, "max_constraint_violation" => original_violation(built.model, stats.solution),
         "restoration_iterations" => guard.restoration_iterations, "longest_restoration_run" => guard.max_consecutive,
-        "objective_kind" => String(o.psyche_nominal_objective),
+        "objective_kind" => "fuel",
         "energy_n2_s" => sum(0.5 * d.thrust_max_n^2 * arc_duration(d, k, days) * sum(abs2, feedforward[:, k]) for k in 1:d.n),
         "propellant_kg" => means[7, 1] * d.node_scales[7, 1] - means[7, end] * d.node_scales[7, end],
         "minimum_mars_altitude_m" => PSYCHE_MINIMUM_MARS_ALTITUDE_M, "substeps_per_interval" => 1,
         "events" => psyche_event_report(d, means, days))
-    stats.status == MadNLP.SOLVE_SUCCEEDED || error("the Psyche energy reoptimisation did not converge: $(stats.status)")
+    stats.status == MadNLP.SOLVE_SUCCEEDED || error("the Psyche fuel reoptimisation did not converge: $(stats.status)")
     return (; means, feedforward, days, steps = arc_steps(d, days)), report
 end

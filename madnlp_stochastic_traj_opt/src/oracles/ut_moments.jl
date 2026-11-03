@@ -3,12 +3,10 @@
 # `pack(L_{k+1} L_{k+1}')` through ExaModels.add_eval. No decision variable is
 # introduced.
 #
-# Arc inputs theta = (m 7, f 3, K_hat 18, L_tilde 28). An input that is not a
-# variable (the fixed initial factor, the controls of an arc without thrust) is read
-# from `theta_fixed`. With polar controls (`PolarControls`) the f inputs are (Gamma, alpha, beta),
-# S = Gamma H(n) (cos a cos b, sin a cos b, sin b) with the seed direction n in theta_fixed[8:10]; with
-# throttle controls the f inputs are the direction d and input 57 is the throttle Gamma, S = Gamma d
-# (`ntheta(p)` = 57 inputs: the GPU chunks and assembly tiles of 8 then have a partial last one). For sigma point s, z_s = (x_s, u_s) = Z_s(theta) and
+# Arc inputs theta = (m 7, d 3, K_hat 18, L_tilde 28, Gamma): the direction d and the throttle Gamma give the
+# feedforward S = Gamma d (`ntheta(p)` = 57 inputs: the GPU chunks and assembly tiles of 8 then have a partial
+# last one). An input that is not a variable (the fixed initial factor, the controls of an arc without thrust)
+# is read from `theta_fixed`. For sigma point s, z_s = (x_s, u_s) = Z_s(theta) and
 # y_s = Phi(z_s) is one XMDS2 RK9 step. With l = a'ybar + tr(B C) and
 # g_s = dl/dy_s = w (a + 2 N (y_s - ybar)):
 #
@@ -37,26 +35,21 @@
 #
 # The per-arc kernels are shared by both backends. The per-sigma-point derivatives
 # (W_s, J_s, H_s and the products V_s, B_s) are organized per backend:
-#  * CPU: one thread per sigma point, with dual numbers over all 56 arc inputs;
+#  * CPU: one thread per sigma point, with dual numbers over all 57 arc inputs;
 #  * GPU: stages split over threads to keep the dual numbers small: W_s in chunks of
-#    8 of the 56 directions, J_s and H_s per point, V_s and B_s one column per thread,
+#    8 of the 57 directions, J_s and H_s per point, V_s and B_s one column per thread,
 #    and sum_s W_s' B_s in shared-memory tiles.
-# With lifted commands (`ThrottleControls{true}`, 153 inputs) the outer points that carry feedback
-# take c_o = eta_o e_o from inputs 58..153 (the model's rows tie them to S + sigma K m_o, so K_hat is
-# not an input); the CPU then runs the GPU's per-point stages (`staged`).
 # Every kernel reads `@index(Global, Linear)` in a plain assignment: KernelAbstractions'
 # CPU backend does not rewrite it inside a larger expression.
 
-const NTHETA = 56                              # cartesian and polar inputs (`ntheta(p)`: 57 with the throttle)
 const NUT_ROWS = NX + NL                       # 35 oracle rows per arc
-const NHESS_ARC = NTHETA * (NTHETA + 1) ÷ 2    # 1596
 
-# GPU: dual-number directions per thread of the 56 arc inputs.
+# GPU: dual-number directions per thread of the 57 arc inputs.
 const GPU_ARC_CHUNK = Val(8)
 
 struct UTOracleData{VI,MI,VF,MF}
-    theta_index::MI      # 56 x n local-x index of each arc input (0: fixed data)
-    theta_fixed::MF      # 56 x n values of the fixed inputs
+    theta_index::MI      # 57 x n local-x index of each arc input (0: fixed data)
+    theta_fixed::MF      # 57 x n values of the fixed inputs
     rows::MI             # 35 x n output rows, local to the oracle's constraint blocks
     ratio::MF            # 7 x n mean-row factor: end-node units per propagated unit
     arc_std::MF          # start node scale: 7 x n standard deviations, or 28 x n packed lower S_k (full)
@@ -115,17 +108,11 @@ end
     return m, f, k, L
 end
 
-"Seed direction n of a polar arc (in `theta_fixed[8:10]`, unused by the variable inputs there)."
-@inline arc_direction(theta_fixed, a) = SVector{3}(ntuple(i -> @inbounds(theta_fixed[7 + i, a]), Val(3)))
+"Throttle Gamma of an arc (input 57)."
+@inline arc_throttle(::UTParams, x, theta_index, theta_fixed, a) = arc_input(x, theta_index, theta_fixed, 57, a)
 
-"Throttle Gamma of a throttle-controls arc (input 57; unused otherwise)."
-@inline arc_throttle(::UTParams, x, theta_index, theta_fixed, a) = 1.0
-@inline arc_throttle(::UTParams{<:GravityModel,<:Any,<:ThrottleControls}, x, theta_index, theta_fixed, a) =
-    arc_input(x, theta_index, theta_fixed, 57, a)
-
-"The arc's feedforward S from its loaded f inputs `theta`."
-@inline arc_feedforward(p::UTParams, x, theta_index, theta_fixed, theta, a) =
-    feedforward_command(p, theta, arc_direction(theta_fixed, a), arc_throttle(p, x, theta_index, theta_fixed, a))
+"The arc's feedforward S = Gamma d from its loaded direction inputs `theta`."
+@inline arc_feedforward(p::UTParams, x, theta_index, theta_fixed, theta, a) = arc_throttle(p, x, theta_index, theta_fixed, a) * theta
 
 @inline arc_column(A, a) = SVector{7}(ntuple(i -> @inbounds(A[i, a]), Val(7)))
 @inline packed_scale(A, a) = lower_matrix(SVector{28}(ntuple(i -> @inbounds(A[i, a]), Val(28))))
@@ -146,12 +133,8 @@ end
 @inline end_weight(B, ::SVector{7}) = B
 @inline end_weight(B, Sinv::SMatrix{7,7}) = Sinv' * B * Sinv
 
-"""
-Outer sigma point `o` (1..2d): state, commanded control and Wiener increment. `lift` holds the inputs
-(eta_o, e_o) of the lifted commands (`point_lift`; `nothing` without lifting).
-"""
-@inline function outer_point(p::UTParams, m::SVector{7}, f::SVector{3}, K::SMatrix{3,6}, S::SVector{28}, o::Int, h,
-        lift = nothing)
+"Outer sigma point `o` (1..2d): state, commanded control c_o = S + sigma K m_o and Wiener increment."
+@inline function outer_point(p::UTParams, m::SVector{7}, f::SVector{3}, K::SMatrix{3,6}, S::SVector{28}, o::Int, h)
     TS = eltype(S)
     j = (o - 1) % p.d + 1
     sigma = o <= p.d ? 1.0 : -1.0
@@ -160,31 +143,8 @@ Outer sigma point `o` (1..2d): state, commanded control and Wiener increment. `l
     measurement = j <= NX ? SVector{6,TS}(ntuple(i -> column[i], Val(6))) :
         j <= NX + NP ? SVector{6,TS}(ntuple(i -> TS(p.nav_factor[i, nav]), Val(6))) : zero(SVector{6,TS})
     x = m + sigma * to_state(p.scale, column)
-    c = outer_command(p, f, K, measurement, sigma, o, lift)
+    c = f + sigma * (K * measurement)
     return x, c, wiener_increment(p, o, h)
-end
-
-"Command c_o = S + sigma K m_o, or eta_o e_o for a lifted point (the model's rows tie the two)."
-@inline outer_command(p::UTParams, f, K, measurement, sigma, o, ::Nothing) = f + sigma * (K * measurement)
-@inline outer_command(p::UTParams, f, K, measurement, sigma, o, lift::SVector{4}) =
-    lift_index(p, o) == 0 ? f + sigma * (K * measurement) : lift[1] * SVector(lift[2], lift[3], lift[4])
-
-"""
-Inputs (eta_o, e_o) of outer point `o` of arc `a`: `nothing` without lifting, the inputs of its lift index
-otherwise (those of lift index 1, unused, for a point that is not lifted).
-"""
-@inline point_lift(p::UTParams, x, theta_index, theta_fixed, a, o) = nothing
-@inline function point_lift(p::UTParams{<:GravityModel,<:Any,ThrottleControls{true}}, x, theta_index, theta_fixed, a, o)
-    base = LIFT_BASE + 4(max(lift_index(p, o), 1) - 1)
-    return SVector{4}(ntuple(i -> arc_input(x, theta_index, theta_fixed, base + i, a), Val(4)))
-end
-
-"`point_lift` as duals on the directions c0+1 : c0+C (no partials for a point that is not lifted)."
-@inline point_lift_chunk(p::UTParams, x, theta_index, theta_fixed, a, o, c0, chunk) = nothing
-@inline function point_lift_chunk(p::UTParams{<:GravityModel,<:Any,ThrottleControls{true}}, x, theta_index, theta_fixed,
-        a, o, c0, chunk)
-    l = lift_index(p, o)
-    return chunk_seed(TagArc, point_lift(p, x, theta_index, theta_fixed, a, o), l == 0 ? -4 : LIFT_BASE + 4(l - 1), c0, chunk)
 end
 
 "Wiener increment of outer sigma point `o`."
@@ -209,8 +169,8 @@ end
     p.inner == 1 ? p.tmax * c : inner_control(p, c, gates_factor(c, p), (s - 1) % p.inner + 1)
 
 "Sigma point `s` = (outer point, executed point): state, executed control, Wiener increment."
-@inline function point_input(p::UTParams, m, f, K, S, s::Int, h, lift = nothing)
-    x, c, dw = outer_point(p, m, f, K, S, outer_index(p, s), h, lift)
+@inline function point_input(p::UTParams, m, f, K, S, s::Int, h)
+    x, c, dw = outer_point(p, m, f, K, S, outer_index(p, s), h)
     return x, executed_control(p, c, s), dw
 end
 
@@ -274,8 +234,7 @@ end
     h = @inbounds steps[a]
     S = spread_factor(p, start_scale(full, arc_std, a), L)
     K = @inbounds(gain_scale[a]) * SMatrix{3,6}(k)
-    lift = point_lift(p, x, theta_index, theta_fixed, a, outer_index(p, s))
-    xs, us, dw = point_input(p, m, f, K, S, s, h, lift)
+    xs, us, dw = point_input(p, m, f, K, S, s, h)
     y = sigma_step(p, xs, us, dw, h, s)
     for i in 1:7
         @inbounds Y[i, s, a] = y[i]
@@ -450,8 +409,7 @@ end
     m, theta, k, L = load_arc(x, theta_index, theta_fixed, a)
     f = arc_feedforward(p, x, theta_index, theta_fixed, theta, a)
     S = spread_factor(p, start_scale(full, arc_std, a), L)
-    _, c, _ = outer_point(p, m, f, @inbounds(gain_scale[a]) * SMatrix{3,6}(k), S, o, @inbounds(steps[a]),
-        point_lift(p, x, theta_index, theta_fixed, a, o))
+    _, c, _ = outer_point(p, m, f, @inbounds(gain_scale[a]) * SMatrix{3,6}(k), S, o, @inbounds(steps[a]))
     if p.inner == 1
         # phi_o = tmax mu_o[8:10]' c: linear
         for i in 1:3
@@ -566,44 +524,10 @@ end
     return g[(qq - 11) % 3 + 1] * sigma * gs * p.sqrt_d * S[row, m]
 end
 
-# Feedforward map S(theta_f, Gamma) in c_o = S + sigma gs K_hat m_o: dS/dtheta_f, dS/dGamma, and the
-# feedforward pairs' g . d^2 S (summed over the outer points, the same map for all of them).
-@inline feedforward_jacobian(::UTParams, theta, n, gamma) = SMatrix{3,3}(1.0I), zero(SVector{3,Float64})
-@inline feedforward_jacobian(::UTParams{<:GravityModel,<:Any,PolarControls}, theta, n, gamma) =
-    first(polar_derivatives(theta, n)), zero(SVector{3,Float64})
-@inline feedforward_jacobian(::UTParams{<:GravityModel,<:Any,<:ThrottleControls}, theta, n, gamma) = gamma * SMatrix{3,3}(1.0I), theta
-
-@inline add_feedforward_curvature(::UTParams, total, pp, qq, g, theta, n) = total
-@inline function add_feedforward_curvature(::UTParams{<:GravityModel,<:Any,PolarControls}, total, pp, qq, g, theta, n)
-    8 <= qq <= pp <= 10 || return total
-    return total + dot(g, last(polar_derivatives(theta, n))[lower_position(pp - 7, qq - 7)])
-end
-# d^2 (Gamma d) / dGamma dd_i = e_i
-@inline add_feedforward_curvature(::UTParams{<:GravityModel,<:Any,<:ThrottleControls}, total, pp, qq, g, theta, n) =
-    pp == 57 && 8 <= qq <= 10 ? total + g[qq - 7] : total
-
-"""
-Column `q` of dc_o/dtheta of outer point `o` (`command_column`); a lifted command c_o = eta_o e_o has the
-columns e_o (eta_o) and eta_o times a unit vector (e_o), and no others.
-"""
-@inline outer_column(p::UTParams, q, o, j, sigma, gs, std, k, L, Jf, Jg, ::Nothing) =
-    command_column(p, q, j, sigma, gs, std, k, L, Jf, Jg)
-@inline function outer_column(p::UTParams, q, o, j, sigma, gs, std, k, L, Jf, Jg, lift::SVector{4})
-    l = lift_index(p, o)
-    l == 0 && return command_column(p, q, j, sigma, gs, std, k, L, Jf, Jg)
-    i = q - LIFT_BASE - 4(l - 1)
-    i == 1 && return SVector(lift[2], lift[3], lift[4])
-    return SVector{3}(ntuple(t -> t == i - 1 ? lift[1] : 0.0, Val(3)))
-end
-
-"g_o . d^2 c_o / d theta_pp d theta_qq (pp >= qq; `command_cross`); for c_o = eta_o e_o: g_i on the (e_i, eta) pairs."
-@inline outer_cross(p::UTParams, pp, qq, o, j, sigma, gs, std, g, ::Nothing) = command_cross(p, pp, qq, j, sigma, gs, std, g)
-@inline function outer_cross(p::UTParams, pp, qq, o, j, sigma, gs, std, g, lift::SVector{4})
-    l = lift_index(p, o)
-    l == 0 && return command_cross(p, pp, qq, j, sigma, gs, std, g)
-    base = LIFT_BASE + 4(l - 1)
-    return qq == base + 1 && base + 2 <= pp <= base + 4 ? g[pp - base - 1] : 0.0
-end
+# Feedforward map S = Gamma d in c_o = S + sigma gs K_hat m_o: dS/dd and dS/dGamma, and the feedforward pairs'
+# g . d^2 S (summed over the outer points, the same map for all of them): d^2 (Gamma d) / dGamma dd_i = e_i.
+@inline feedforward_jacobian(theta, gamma) = gamma * SMatrix{3,3}(1.0I), theta
+@inline add_feedforward_curvature(total, pp, qq, g) = pp == 57 && 8 <= qq <= 10 ? total + g[qq - 7] : total
 
 "Hess(zeta) along one input pair from the command curvatures of the outer points."
 @kernel function ut_zeta_kernel!(zeta, @Const(gH), @Const(x), @Const(theta_index), @Const(theta_fixed),
@@ -618,27 +542,24 @@ end
         _, theta, k, L = load_arc(x, theta_index, theta_fixed, a)
         std = start_scale(full, arc_std, a)
         gs = @inbounds gain_scale[a]
-        # Polar and throttle inputs: c_o = S(theta_f, Gamma) + sigma gs K_hat m_o, so dc_o/dtheta_f = Jf,
-        # dc_o/dGamma = Jg, and every outer point adds g_o . d^2 S to the feedforward pairs.
-        n = arc_direction(theta_fixed, a)
-        Jf, Jg = feedforward_jacobian(p, theta, n, arc_throttle(p, x, theta_index, theta_fixed, a))
+        # c_o = Gamma d + sigma gs K_hat m_o, so dc_o/dd = Jf, dc_o/dGamma = Jg, and every outer point adds
+        # g_o . d^2 S to the feedforward pairs.
+        Jf, Jg = feedforward_jacobian(theta, arc_throttle(p, x, theta_index, theta_fixed, a))
         total = 0.0
         gsum = zero(SVector{3,Float64})
         for o in 1:2p.d
             j = (o - 1) % p.d + 1
             sigma = o <= p.d ? 1.0 : -1.0
-            lift = point_lift(p, x, theta_index, theta_fixed, a, o)
-            u = outer_column(p, pp, o, j, sigma, gs, std, k, L, Jf, Jg, lift)
-            v = outer_column(p, qq, o, j, sigma, gs, std, k, L, Jf, Jg, lift)
+            u = command_column(p, pp, j, sigma, gs, std, k, L, Jf, Jg)
+            v = command_column(p, qq, j, sigma, gs, std, k, L, Jf, Jg)
             g = SVector{3}(ntuple(i -> @inbounds(gH[i, o, a]), Val(3)))
             h11, h21, h22 = @inbounds(gH[4, o, a]), @inbounds(gH[5, o, a]), @inbounds(gH[6, o, a])
             h31, h32, h33 = @inbounds(gH[7, o, a]), @inbounds(gH[8, o, a]), @inbounds(gH[9, o, a])
             H = SMatrix{3,3}(h11, h21, h31, h21, h22, h32, h31, h32, h33)
-            total += dot(u, H * v) + outer_cross(p, pp, qq, o, j, sigma, gs, std, g, lift)
-            # a lifted command does not contain the feedforward S
-            (lift === nothing || lift_index(p, o) == 0) && (gsum += g)
+            total += dot(u, H * v) + command_cross(p, pp, qq, j, sigma, gs, std, g)
+            gsum += g
         end
-        @inbounds zeta[pair, a] = add_feedforward_curvature(p, total, pp, qq, gsum, theta, n)
+        @inbounds zeta[pair, a] = add_feedforward_curvature(total, pp, qq, gsum)
     end
 end
 
@@ -675,9 +596,8 @@ within c0 + 1 : c0 + C, with its exact constant partials sqrt(d) S[r, m].
     end)
 end
 
-"The throttle as a dual on direction 57 (throttle controls; unused otherwise)."
-@inline throttle_dual(p::UTParams, x, theta_index, theta_fixed, a, ::Val) = 1.0
-@inline throttle_dual(p::UTParams{<:GravityModel,<:Any,<:ThrottleControls}, x, theta_index, theta_fixed, a, nt::Val) =
+"The throttle as a dual on direction 57."
+@inline throttle_dual(p::UTParams, x, theta_index, theta_fixed, a, nt::Val) =
     seed(TagArc, SVector(arc_throttle(p, x, theta_index, theta_fixed, a)), 56, nt)[1]
 
 "Arc inputs as ntheta(p)-direction duals, the factor as the spread."
@@ -686,7 +606,7 @@ end
     nt = Val(ntheta(p))
     gamma = throttle_dual(p, x, theta_index, theta_fixed, a, nt)
     return seed(TagArc, m, 0, nt),
-        feedforward_command(p, seed(TagArc, theta, 7, nt), arc_direction(theta_fixed, a), gamma),
+        gamma * seed(TagArc, theta, 7, nt),
         seed(TagArc, k, 10, nt), spread_duals(TagArc, p, start_scale(full, arc_std, a), L, 0, nt)
 end
 
@@ -698,7 +618,7 @@ end
     end)
 end
 
-"Sigma-point input z_s, W_s = dz_s/dtheta over all 56 directions, and the Wiener increment."
+"Sigma-point input z_s, W_s = dz_s/dtheta over all 57 directions, and the Wiener increment."
 @inline function point_input_jacobian(p::UTParams, x, theta_index, theta_fixed, arc_std, gain_scale, a, s, h, full)
     md, fd, kd, S = arc_duals(p, x, theta_index, theta_fixed, arc_std, a, full)
     K = @inbounds(gain_scale[a]) * SMatrix{3,6}(kd)
@@ -777,9 +697,8 @@ end
 
 @inline load_point_input(Z, s, a) = SVector{10}(ntuple(r -> @inbounds(Z[r, s, a]), Val(10)))
 
-"The throttle as a dual on direction 57 within the chunk c0+1 : c0+C (throttle controls; unused otherwise)."
-@inline throttle_chunk_dual(p::UTParams, x, theta_index, theta_fixed, a, c0, chunk) = 1.0
-@inline throttle_chunk_dual(p::UTParams{<:GravityModel,<:Any,<:ThrottleControls}, x, theta_index, theta_fixed, a, c0, chunk) =
+"The throttle as a dual on direction 57 within the chunk c0+1 : c0+C."
+@inline throttle_chunk_dual(p::UTParams, x, theta_index, theta_fixed, a, c0, chunk) =
     chunk_seed(TagArc, SVector(arc_throttle(p, x, theta_index, theta_fixed, a)), 56, c0, chunk)[1]
 
 "`arc_duals` seeded on the directions c0+1 : c0+C only."
@@ -787,7 +706,7 @@ end
     m, theta, k, L = load_arc(x, theta_index, theta_fixed, a)
     gamma = throttle_chunk_dual(p, x, theta_index, theta_fixed, a, c0, chunk)
     return chunk_seed(TagArc, m, 0, c0, chunk),
-        feedforward_command(p, chunk_seed(TagArc, theta, 7, c0, chunk), arc_direction(theta_fixed, a), gamma),
+        gamma * chunk_seed(TagArc, theta, 7, c0, chunk),
         chunk_seed(TagArc, k, 10, c0, chunk), spread_duals(TagArc, p, start_scale(full, arc_std, a), L, c0, chunk)
 end
 
@@ -803,8 +722,7 @@ end
     h = @inbounds steps[a]
     md, fd, kd, S = arc_chunk_duals(p, x, theta_index, theta_fixed, arc_std, a, c0, chunk, full)
     K = @inbounds(gain_scale[a]) * SMatrix{3,6}(kd)
-    lift = point_lift_chunk(p, x, theta_index, theta_fixed, a, outer_index(p, s), c0, chunk)
-    xs, us, _ = point_input(p, md, fd, K, S, s, h, lift)
+    xs, us, _ = point_input(p, md, fd, K, S, s, h)
     for r in 1:10
         zr = r <= 7 ? xs[r] : us[r-7]
         c == 1 && (@inbounds Z[r, s, a] = ForwardDiff.value(zr))
@@ -938,12 +856,6 @@ end
 
 # ---------------------------------------------------------------- callbacks
 
-"""
-The per-point stages over threads (`ut_point_input_kernel!` ...) run on the GPU, and on the CPU too with lifted
-commands: their 153 inputs would make the CPU kernels' full-width duals and 10 x 153 static matrices too large.
-"""
-staged(ut::UTOracle) = ut.gpu || lifted(ut.params)
-
 function ut_values!(out, x, ut::UTOracle)
     d, w, p, n = ut.data, ut.workspace, ut.params, ut.n
     fill!(out, 0.0)   # other oracles write the remaining rows of the same blocks
@@ -964,7 +876,7 @@ end
 function ut_jacobian!(vals, x, ut::UTOracle)
     d, w, p, n = ut.data, ut.workspace, ut.params, ut.n
     P = p.n_points
-    if staged(ut)
+    if ut.gpu
         launch_point_inputs!(x, ut)
         launch!(ut_point_step_kernel!, n * P, w.Y, w.Jpt, w.Z, d.steps, p)
         launch!(ut_point_v_kernel!, n * P * ntheta(p), w.V, w.Jpt, w.W, p)
@@ -985,7 +897,7 @@ function ut_hessian!(vals, x, y, ut::UTOracle)
     launch!(ut_forward_kernel!, n * P, w.Y, x, d.theta_index, d.theta_fixed, d.arc_std, d.gain_scale, d.steps, p, ut.full)
     launch!(ut_hessian_prep_kernel!, n * NUT_ROWS, w.ybar, w.aN, w.Y, y, d.rows, d.ratio, d.inv_next, p, ut.full)
     launch!(ut_weight_kernel!, n, w.aN, d.inv_next, p, ut.full)
-    if staged(ut)
+    if ut.gpu
         launch_point_inputs!(x, ut)
         launch!(ut_point_adjoint_kernel!, n * P, w.Hraw, w.Jpt, w.mu, w.Z, w.Y, w.ybar, w.aN, d.steps, p)
         launch!(ut_point_curvature_kernel!, n * P, w.M, w.Hraw, p)
@@ -1052,7 +964,7 @@ function ut_oracle(layout, p::UTParams, backend)
         device(Matrix{Float64}(inv_next)), device(Vector{Float64}(gain_scale)), device(Vector{Float64}(steps)),
         device(pair_p), device(pair_q), device(jac_gather), device(hess_gather))
     gpu = backend !== nothing
-    P, m = p.n_points, gpu || lifted(p) ? n : 0
+    P, m = p.n_points, gpu ? n : 0
     buffer(dims...) = device(zeros(dims...))
     # aN holds a (7) and N (7 x 7): 56 rows whatever the number of inputs
     workspace = UTWorkspace(buffer(NX, P, n), buffer(NX, P, n), buffer(2NX, n), buffer(10, nt, P, n), buffer(NX, nt, P, n),
@@ -1061,45 +973,3 @@ function ut_oracle(layout, p::UTParams, backend)
         buffer(10, P, m), buffer(10, 10, P, m), buffer(10, 10, P, m))
     return UTOracle(data, workspace, (; jac_rows, jac_cols, hess_rows, hess_cols), p, n, gpu, get(layout, :full, Val(false)))
 end
-
-"""
-Commands c_o = S + sigma K m_o of the lifted outer points (3 x NLIFT x n, by lift index) of the arcs of an
-unlifted UT `layout` (57 inputs) at the point `x`, as the oracle forms them: the start of the lifted inputs.
-"""
-function lifted_commands(layout, p::UTParams, x)
-    (; theta_index, theta_fixed, arc_std, gain_scale, steps) = layout
-    full = get(layout, :full, Val(false))
-    n = size(theta_index, 2)
-    commands = zeros(3, NLIFT, n)
-    for a in 1:n
-        m, theta, k, L = load_arc(x, theta_index, theta_fixed, a)
-        f = arc_feedforward(p, x, theta_index, theta_fixed, theta, a)
-        S = spread_factor(p, start_scale(full, arc_std, a), L)
-        K = gain_scale[a] * SMatrix{3,6}(k)
-        for o in 1:2p.d
-            l = lift_index(p, o)
-            l == 0 && continue
-            commands[:, l, a] = outer_point(p, m, f, K, S, o, steps[a])[2]
-        end
-    end
-    return commands
-end
-
-"Single-phase layout: arc a maps node a to node a+1, the first arc starts at the fixed initial factor."
-function single_phase_ut_layout(n::Int, offsets, scaling::CovarianceScaling, seed::InitialGuess, steps)
-    theta_index = zeros(Int, NTHETA, n)
-    theta_fixed = zeros(NTHETA, n)
-    for a in 1:n
-        theta_index[1:7, a] = offsets.means .+ 7(a-1) .+ (1:7)
-        theta_index[8:10, a] = offsets.ff .+ 3(a-1) .+ (1:3)
-        theta_index[11:28, a] = offsets.gains .+ 18(a-1) .+ (1:18)
-        a >= 2 && (theta_index[29:56, a] = offsets.chol .+ 28(a-2) .+ (1:28))
-    end
-    theta_fixed[29:56, 1] = scaling.initial_factor
-    rows = [row <= NX ? row + 7(a-1) : 7n + (row - NX) + 28(a-1) for row in 1:NUT_ROWS, a in 1:n]
-    return (; theta_index, theta_fixed, rows, ratio = ones(NX, n), arc_std = scaling.std[:, 1:n],
-        inv_next = scaling.inv_std[:, 2:n+1], gain_scale = seed.gain_scale, steps = collect(steps))
-end
-
-ut_oracle(n::Int, offsets, scaling::CovarianceScaling, seed::InitialGuess, steps, p::UTParams, backend) =
-    ut_oracle(single_phase_ut_layout(n, offsets, scaling, seed, steps), p, backend)

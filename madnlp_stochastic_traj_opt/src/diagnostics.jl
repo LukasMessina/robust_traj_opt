@@ -16,16 +16,8 @@ end
 "Values of an ExaModels variable block, in its declared shape."
 variable_values(x, v) = reshape(Array(x)[v.offset+1:v.offset+v.length], length.(v.size)...)
 
-"Feedforward S_k of the controlled arcs: the ff variables, or Gamma_k d_k of the polar and throttle controls."
-function feedforward_values(x, blocks)
-    theta = variable_values(x, blocks.ff)
-    gamma = get(blocks, :throttle, nothing)
-    gamma === nothing || return theta .* reshape(variable_values(x, gamma), 1, :)
-    D = get(blocks, :polar_directions, nothing)
-    D === nothing && return theta
-    return reduce(hcat, [Vector(theta[1, k] * polar_direction(theta[2, k], theta[3, k], SVector{3}(D[:, k])))
-                         for k in axes(theta, 2)])
-end
+"Feedforward S_k = Gamma_k d_k of the controlled arcs."
+feedforward_values(x, blocks) = variable_values(x, blocks.ff) .* reshape(variable_values(x, blocks.throttle), 1, :)
 
 function extract_solution(x, blocks, scaling::CovarianceScaling, seed::InitialGuess, n)
     get(v) = variable_values(x, v)
@@ -61,7 +53,7 @@ function evaluate_solution(case::CaseData, o::Options, ref::ReferenceTraj, sol::
             SMatrix{6,6}(sol.covariances[1:NP, 1:NP, k]))
         closed_form_gap = max(closed_form_gap, maximum(abs, closed - T) / max(maximum(abs, T), 1e-300))
     end
-    norms = [feedforward_norm(p, SVector{3}(sol.feedforward[:, k])) for k in 1:n]
+    norms = [norm(sol.feedforward[:, k]) for k in 1:n]
     chance = norms .+ p.psi .* sol.radius
     inv_next = scaling.inv_std[:, 2:n+1]
     scaled_defects = map(1:n) do k
@@ -71,7 +63,7 @@ function evaluate_solution(case::CaseData, o::Options, ref::ReferenceTraj, sol::
     inverse_target = terminal_inverse_std(o)
     target = sol.covariances[1:NP, 1:NP, end] .* (inverse_target * inverse_target')
     G = unpack_lower(sol.terminal_margin, NP)
-    terminal_bound = o.terminal_covariance == :constraint
+    terminal_bound = chance_sum(o)
     # with the terminal covariance in the cost there is no margin: the violation of G P_N G' <= I is reported instead
     terminal_residual = terminal_bound ? maximum(abs, I - target - G * G') : max(0.0, eigmax(Symmetric(target)) - 1)
     mean_target = terminal_mean_target(case, o, ref)
@@ -80,20 +72,19 @@ function evaluate_solution(case::CaseData, o::Options, ref::ReferenceTraj, sol::
     equality = max(boundary, mean_defect, maximum(scaled_defects), terminal_residual)
     chance_violation = max(0.0, maximum(chance) - 1)
     bounds = max(0.0, -minimum(sol.cholesky_factor[collect(LTRI_DIAGONAL), :]),
-        terminal_bound ? o.terminal_margin_floor - minimum(sol.terminal_margin[collect(MTRI_DIAGONAL)]) : 0.0)
-    state_term = [tr(sol.covariances[1:NP, 1:NP, k]) / o.bryson_sigma_factor^2 for k in 1:n]
+        terminal_bound ? TERMINAL_MARGIN_FLOOR - minimum(sol.terminal_margin[collect(MTRI_DIAGONAL)]) : 0.0)
+    state_term = [tr(sol.covariances[1:NP, 1:NP, k]) / BRYSON_SIGMA_FACTOR^2 for k in 1:n]
     control_term = [tr(sol.control_covariances[:, :, k]) for k in 1:n]
     # Shares of the standard cost (tracking and arc weights applied), whatever the objective of the run.
-    w = single_phase_arc_weights(o, ref)
-    terminal_cost = terminal_bound ? 0.0 : o.terminal_covariance_weight * tr(target) / o.bryson_sigma_factor^2
+    w = single_phase_arc_weights(ref)
+    terminal_cost = terminal_bound ? 0.0 : TERMINAL_COVARIANCE_WEIGHT * tr(target) / BRYSON_SIGMA_FACTOR^2
     weighted = (sum(w .* norms), o.state_covariance_weight * sum(w .* state_term),
         o.control_covariance_weight * sum(w .* control_term), terminal_cost)
     ratio = eigvals(Symmetric(target))
     return Dict{String,Any}(
         "control_chance_covariance" => "executed control; commanded dispersion, navigation and execution included",
         # weighted like the NLP cost; the components below are the physical (unweighted) terms
-        "objective" => o.objective == :quantile ? sum(chance) : o.objective == :chance_sum ? sum(w .* chance) :
-            sum(weighted),
+        "objective" => chance_sum(o) ? sum(w .* chance) : sum(weighted),
         "objective_kind" => String(o.objective),
         "objective_mean_control" => sum(ref.steps .* norms),
         "objective_state_covariance" => sum(ref.steps .* state_term),

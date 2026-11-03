@@ -2,7 +2,7 @@
 # restoration before a step. Account for that difference when counting runs.
 # Dispatch is specialized only for solvers carrying this application's guard.
 Base.@kwdef mutable struct RestorationGuard <: MadNLP.AbstractUserCallback
-    limit::Int = 5
+    limit::Int = typemax(Int)     # consecutive restoration iterations allowed (no limit; the report checks <= 5)
     regular_iterations::Int = 0
     restoration_iterations::Int = 0
     consecutive::Int = 0

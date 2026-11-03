@@ -1,4 +1,4 @@
-# Orchestration of one run: energy-optimal seed, TVLQR/UT initial guess, stochastic solve.
+# Orchestration of one run: fuel-optimal reoptimised reference, TVLQR/UT initial guess, stochastic solve.
 
 log_line(args...) = (println(args...); flush(stdout))
 
@@ -13,19 +13,15 @@ function _solve_problem(o::Options, backend)
     log_line(@sprintf("%s %d arcs, UT dimension %d (%d outer, %d nested sigma points), mode %s",
         tag, n, p.d, 2p.d + 1, 6(2p.d + 1), o.execution_mode))
 
-    log_line("$tag $(o.reference_objective)-optimal reference ($(o.control_parameterization == :throttle ? "throttle and direction, " : "")" *
-        "Dopri8 shooting, MadNLP/MUMPS on the CPU) ...")
+    log_line("$tag fuel-optimal reference (throttle and direction, Dopri8 shooting, MadNLP/MUMPS on the CPU) ...")
     nominal_seconds = @elapsed ref, nominal = reoptimize_reference(case, o, source;
         output_file = joinpath(directory, case.id * "_madnlp_nominal.log"))
     log_line(@sprintf("%s reference: %s in %d iterations, objective %.10f, violation %.2e (%.1f s)",
         tag, nominal["status"], nominal["iterations"], nominal["objective"], nominal["max_constraint_violation"],
         nominal_seconds))
 
-    # polar controls: the model's parameters (the seed keeps those above); throttle controls: the seed too
-    o.control_parameterization == :throttle && (p = model_params(o, p))
     seed_seconds = @elapsed seed = build_initial_guess(case, o, normalization, p, ref)
     scaling = covariance_scaling(seed, normalization)
-    p = model_params(o, p)
     build_seconds = @elapsed blocks = build_stochastic_model(case, o, ref, seed, scaling, p, backend)
     model = solver_model(o, blocks.model)
     seed_violation = original_violation(model, model.meta.x0)
@@ -69,34 +65,22 @@ function _solve_problem(o::Options, backend)
 end
 
 function solver_settings_report(o::Options, solver)
-    settings = Dict{String,Any}("tol" => o.tol, "acceptable_tol" => o.acceptable_tol, "max_iter" => o.max_iter,
-        "alpha_min_frac" => o.alpha_min_frac, "barrier_mu_init" => o.barrier_mu_init,
-        "barrier_mu_min" => o.barrier_mu_min, "max_consecutive_restoration" => something(o.max_consecutive_restoration, "none"),
-        "control_norm_eps" => o.control_norm_eps, "mass_flow_smoothing" => o.mass_flow_smoothing,
-        "gain_bound" => o.gain_bound, "control_covariance_weight" => o.control_covariance_weight,
-        "state_covariance_weight" => o.state_covariance_weight,
-        "eigenvalue_smoothing" => o.eigenvalue_smoothing, "spectral_radius_floor" => o.spectral_radius_floor,
-        "terminal_margin_floor" => o.terminal_margin_floor, "chance_formulation" => string(o.chance_formulation),
-        "objective" => string(o.objective),
-        "chance_slack_floor" => o.chance_slack_floor, "barrier_rule" => string(o.barrier_rule),
-        "covariance_defect" => string(o.covariance_defect), "terminal_covariance" => string(o.terminal_covariance),
-        "control_parameterization" => string(o.control_parameterization),
-        "constr_mult_init_max" => o.constr_mult_init_max, "direction_constraint" => string(o.direction_constraint),
-        "terminal_covariance_weight" => o.terminal_covariance_weight, "norm_epigraph" => o.norm_epigraph)
-    if o.control_parameterization != :cartesian
-        # The model's norm and mass flow (the options above are those of the nominal and seed solves).
-        settings["model_norm_smoothing"] = 0.0
-        settings["model_mass_flow_smoothing"] = o.model_mass_flow_smoothing
-        settings["sigma_command_lifting"] = o.sigma_command_lifting
-        settings["lifting_start"] = string(o.lifting_start)
-        settings["model_gates_jitter"] = 0.0
-    end
-    settings["kkt_system"] = string(stochastic_linear_system(o).kkt_system)
-    settings["bound_push"] = o.bound_push
+    settings = Dict{String,Any}("objective" => string(o.objective), "tol" => o.tol, "acceptable_tol" => o.acceptable_tol,
+        "max_iter" => o.max_iter, "alpha_min_frac" => ALPHA_MIN_FRAC, "barrier_mu_init" => BARRIER_MU_INIT,
+        "barrier_mu_min" => BARRIER_MU_MIN, "constr_mult_init_max" => CONSTR_MULT_INIT_MAX,
+        "control_covariance_weight" => o.control_covariance_weight, "state_covariance_weight" => o.state_covariance_weight,
+        "seed_weights" => collect(seed_weights(o)),
+        "eigenvalue_smoothing" => EIGENVALUE_SMOOTHING, "spectral_radius_floor" => SPECTRAL_RADIUS_FLOOR,
+        "terminal_margin_floor" => TERMINAL_MARGIN_FLOOR, "terminal_covariance_weight" => TERMINAL_COVARIANCE_WEIGHT,
+        "chance_slack_floor" => CHANCE_SLACK_FLOOR, "kkt_system" => string(LINEAR_SYSTEM.kkt_system),
+        # what tools/validate_psyche.py replays: the reference's eps and smoothing (control_norm_eps,
+        # mass_flow_smoothing, gain_bound) and the model's exact norm, sigma-point mass flow and Gates factors
+        "control_norm_eps" => CONTROL_NORM_EPS, "mass_flow_smoothing" => CONTROL_NORM_EPS, "gain_bound" => Inf,
+        "model_norm_smoothing" => 0.0, "model_mass_flow_smoothing" => MASS_FLOW_SMOOTHING, "model_gates_jitter" => 0.0)
     # Effective values, including the MadNLP defaults of options that are not passed.
+    settings["bound_push"] = solver.opt.bound_push
     settings["bound_relax_factor"] = solver.opt.bound_relax_factor
     settings["inertia_correction"] = string(nameof(typeof(solver.inertia_corrector)))
-    o.execution_mode == :gpu && (settings["condensed_relaxation"] = o.condensed_relaxation)
     return settings
 end
 
@@ -109,17 +93,17 @@ function print_report(tag, r)
         r["objective"], r["max_constraint_violation"]))
     log_line(@sprintf("  unscaled: dual infeasibility %.3e, constraint violation %.3e, complementarity %.3e",
         kkt["dual_infeasibility_unscaled"], kkt["constraint_violation_unscaled"], kkt["complementarity_unscaled"]))
-    log_line(@sprintf("  restoration: %d iterations, longest run %d (limit %s, requirement <= %d): %s",
-        r["restoration_iterations"], r["longest_restoration_run"], r["settings"]["max_consecutive_restoration"],
-        MAX_RESTORATION_RUN, r["restoration_requirement_met"] ? "met" : "violated"))
+    log_line(@sprintf("  restoration: %d iterations, longest run %d (requirement <= %d): %s",
+        r["restoration_iterations"], r["longest_restoration_run"], MAX_RESTORATION_RUN,
+        r["restoration_requirement_met"] ? "met" : "violated"))
     log_line("  converged (solver success and restoration requirement): ", yes(r["converged"]))
 end
 
 """
     solve_problem(options) -> result
 
-Energy-optimal reference, TVLQR/UT seed and the stochastic MadNLP solve for one
-case and execution mode. `result.report` holds the solver status, the final KKT
+Fuel-optimal reference, TVLQR/UT seed and the stochastic MadNLP solve for one
+case, execution mode and problem. `result.report` holds the solver status, the final KKT
 measures and independently recomputed residuals; `save_results` writes them.
 """
 function solve_problem(o::Options = Options())

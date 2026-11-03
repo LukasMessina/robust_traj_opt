@@ -2,13 +2,12 @@
 CR3BP, Earth--Mars and multiphase Psyche stochastic low-thrust trajectory optimization
 with ExaModels and MadNLP.
 
-Julia port of `stochastic_traj_opt_jax.py`: the same normalized
-multiple-shooting NLP (node means, feedforward, gains, seed-scaled covariance
-Cholesky factors and the terminal margin factor), augmented unscented transform
-with navigation error, XMDS2 RK9 acceleration diffusion and nested Gates
-execution error, thrust chance and terminal covariance constraints, and the same
-energy-optimal + TVLQR + propagated-covariance initial guess. Exact Hessians only;
-runs on the CPU (MUMPS) or on a CUDA GPU (condensed KKT system, cuDSS).
+The normalized multiple-shooting NLP of `stochastic_traj_opt_jax.py` (node means, throttle and
+direction, gains, seed-scaled covariance Cholesky factors), augmented unscented transform with
+navigation error, XMDS2 RK9 acceleration diffusion and nested Gates execution error, thrust chance
+constraints and the terminal covariance, from the fuel-optimal reference + TVLQR +
+propagated-covariance initial guess; two problems (`OBJECTIVES`, options.jl). Exact Hessians only;
+MadNLP with MUMPS on the CPU, the model evaluated on the CPU or on a CUDA GPU.
 Mission code is precompilable; CUDA is still loaded only for GPU runs.
 """
 module CR3BPStochastic
@@ -55,7 +54,6 @@ include("oracles/ut_moments.jl")
 include("oracles/ut_factor.jl")
 include("oracles/chance.jl")
 include("oracles/chance_slack.jl")
-include("oracles/chance_objective.jl")
 include("model.jl")
 include("diagnostics.jl")
 include("solve.jl")

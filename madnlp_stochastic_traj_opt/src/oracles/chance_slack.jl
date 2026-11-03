@@ -1,11 +1,11 @@
-# Cholesky-slack (epigraph) form of the thrust chance constraint for the polar and throttle controls and
-# the multiphase layout (chance_formulation = :slack): per controlled arc k the 6 packed lower rows
+# Cholesky-slack (epigraph) form of the thrust chance constraint of step 4: per controlled arc k the 6 packed
+# lower rows
 #
 #   tau_hat_k^2 I - G_hat_k G_hat_k' - T_k / s_k^2 = 0,
 #
-# with T_k the closed form `control_covariance` of the chance rows (the inputs of `chance_layout`: f, K_hat,
+# with T_k the closed form `control_covariance` of the chance rows (the inputs of `chance_layout`: d, K_hat,
 # L_tilde rows 1..6 and the throttle) and s_k = sqrt(lambda_max(T_k)) at the start, a fixed scale. G_hat_k is
-# lower triangular with diagonal >= chance_slack_floor / s_k, so tau_k = s_k tau_hat_k >= rho(T_k) without an
+# lower triangular with diagonal >= CHANCE_SLACK_FLOOR / s_k, so tau_k = s_k tau_hat_k >= rho(T_k) without an
 # eigenvalue: the chance row is Gamma_k + psi s_k tau_hat_k <= 1 and the chance_sum cost
 # sum_k w_k (Gamma_k + psi s_k tau_hat_k). Inputs nchance(p) + 1 (tau_hat) and + 2..7 (G_hat, packed row-major
 # lower: (1,1), (2,1), (2,2), (3,1), (3,2), (3,3)); exact derivatives from single and pair-seeded duals.
@@ -20,8 +20,8 @@ const SLACK_COLS = (1, 1, 2, 1, 2, 3)
 @inline slack_matrix(g) = SMatrix{3,3}(g[1], g[2], g[4], zero(g[1]), g[3], g[5], zero(g[1]), zero(g[1]), g[6])
 
 "The 6 rows of arc `a` from its inputs (any number type)."
-@inline function slack_values(p::UTParams, std, gs, theta, k, L, n, gamma, tau, g, kappa)
-    f = feedforward_command(p, theta, n, gamma)
+@inline function slack_values(p::UTParams, std, gs, theta, k, L, gamma, tau, g, kappa)
+    f = gamma * theta
     T = control_covariance(p, f, gs * SMatrix{3,6}(k), position_velocity_covariance(std, L))
     G = slack_matrix(g)
     GG = G * G'
@@ -39,8 +39,8 @@ end
     a = @index(Global, Linear)
     f, k, L = chance_inputs(x, index, fixed, a)
     tau, g = slack_inputs(x, index, fixed, a, nchance(p))
-    v = slack_values(p, start_scale(full, arc_std, a), @inbounds(gain_scale[a]), f, k, L, chance_direction(fixed, a),
-        chance_throttle(p, x, index, fixed, a), tau, g, @inbounds(kappa[a]))
+    v = slack_values(p, start_scale(full, arc_std, a), @inbounds(gain_scale[a]), f, k, L, chance_throttle(x, index, fixed, a), tau, g,
+        @inbounds(kappa[a]))
     for r in 1:NSLACK
         @inbounds out[NSLACK * (a - 1) + r] = v[r]
     end
@@ -56,10 +56,10 @@ end
     fd = SVector{3}(ntuple(j -> single_seed(f[j], q == j), Val(3)))
     kd = SVector{18}(ntuple(j -> single_seed(k[j], q == 3 + j), Val(18)))
     Ld = SVector{21}(ntuple(j -> single_seed(L[j], q == 21 + j), Val(21)))
-    gd = throttle_seed(p, chance_throttle(p, x, index, fixed, a), q)
+    gd = throttle_seed(chance_throttle(x, index, fixed, a), q)
     td = single_seed(tau, q == nq + 1)
     Gd = SVector{NSLACK}(ntuple(j -> single_seed(g[j], q == nq + 1 + j), Val(NSLACK)))
-    v = slack_values(p, start_scale(full, arc_std, a), @inbounds(gain_scale[a]), fd, kd, Ld, chance_direction(fixed, a),
+    v = slack_values(p, start_scale(full, arc_std, a), @inbounds(gain_scale[a]), fd, kd, Ld,
         gd, td, Gd, @inbounds(kappa[a]))
     for r in 1:NSLACK
         @inbounds jac[r, q, a] = ForwardDiff.partials(v[r])[1]
@@ -77,10 +77,10 @@ end
     fd = SVector{3}(ntuple(j -> pair_seed(f[j], pp == j, qq == j), Val(3)))
     kd = SVector{18}(ntuple(j -> pair_seed(k[j], pp == 3 + j, qq == 3 + j), Val(18)))
     Ld = SVector{21}(ntuple(j -> pair_seed(L[j], pp == 21 + j, qq == 21 + j), Val(21)))
-    gd = throttle_pair_seed(p, chance_throttle(p, x, index, fixed, a), pp, qq)
+    gd = throttle_pair_seed(chance_throttle(x, index, fixed, a), pp, qq)
     td = pair_seed(tau, pp == nq + 1, qq == nq + 1)
     Gd = SVector{NSLACK}(ntuple(j -> pair_seed(g[j], pp == nq + 1 + j, qq == nq + 1 + j), Val(NSLACK)))
-    v = slack_values(p, start_scale(full, arc_std, a), @inbounds(gain_scale[a]), fd, kd, Ld, chance_direction(fixed, a),
+    v = slack_values(p, start_scale(full, arc_std, a), @inbounds(gain_scale[a]), fd, kd, Ld,
         gd, td, Gd, @inbounds(kappa[a]))
     total = 0.0
     for r in 1:NSLACK
@@ -90,7 +90,7 @@ end
 end
 
 """
-The slack rows of the arcs in the chance `layout` (`chance_layout`, with the throttle when the controls have one):
+The slack rows of the arcs in the chance `layout` (`chance_layout`):
 the inputs of arc a are its chance inputs, then tau_hat (variable `tau + a`) and G_hat (variables
 `factor + NSLACK (a - 1) + (1:NSLACK)`); `kappa[a]` = 1 / s_a^2.
 """
@@ -135,6 +135,19 @@ function chance_slack_oracle(layout, nvar::Int, p::UTParams, backend, tau::Int, 
             launch!(slack_hessian_kernel!, n * nslack_pairs(p), hess_buffer, x, y, di, df, ds, dg, dk, dp, dq, p, full)
             gather!(vals, hess_buffer, dhg)
         end)
+end
+
+"""
+Scale s = sqrt(lambda_max(T)) and the scaled start of the slack chance variables: tau^2 =
+lambda_max + 4 floor^2 (the smallest G pivot starts near 2 floor) and G = chol(tau^2 I - T).
+lambda_max comes from the LAPACK symmetric eigensolver, not the smoothed formula.
+"""
+function slack_chance_start(T::AbstractMatrix, floor)
+    lambda_max = eigmax(Symmetric(T))
+    s = sqrt(max(lambda_max, 1e-16))
+    tau = sqrt(lambda_max + 4floor^2)
+    G = cholesky(Symmetric(tau^2 * I - T)).L
+    return s, tau / s, pack_lower(Matrix(G)) ./ s
 end
 
 "Start of the slack variables: s = sqrt(lambda_max(T)), tau_hat = tau / s and G_hat = chol(tau^2 I - T) / s packed."

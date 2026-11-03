@@ -1,13 +1,22 @@
-# MadNLP configuration. Both execution modes use the exact Lagrangian Hessian and the
-# monotone barrier rule; they differ only in the linear algebra:
-#   cpu  SparseKKTSystem + MUMPS, exact equalities
-#   gpu  SparseCondensedKKTSystem + cuDSS LDL, equalities relaxed by `condensed_relaxation`
-# The energy-optimal seed is always solved on the CPU.
+# MadNLP configuration. Both execution modes solve the same KKT system with the same settings: the exact
+# Lagrangian Hessian, the monotone barrier rule, SparseKKTSystem + MUMPS and exact equalities, on the CPU; the gpu
+# mode only evaluates the model on a CUDA device (`HostModel`). The deterministic reoptimisations run on the CPU.
+
+const ALPHA_MIN_FRAC = 0.05                  # MadNLP alpha_min_frac
+const BARRIER_MU_INIT = 0.1                  # stochastic solve, monotone barrier rule
+const BARRIER_MU_MIN = 1e-10
+# Least-squares initial multipliers are kept up to this infinity norm and otherwise all set to zero
+# (MadNLP's default 1e3). With zero multipliers the first step sees only the objective's curvature.
+const CONSTR_MULT_INIT_MAX = 1e4
+const NOMINAL_TOL = 1e-8                     # deterministic reoptimisations
+const NOMINAL_MAX_ITER = 3000
+const NOMINAL_BARRIER_MU_INIT = 0.1
+const PSYCHE_NOMINAL_BARRIER_MU_INIT = 1e-6  # its already-nearly-feasible seed needs a smaller initial barrier
 
 "Array backend of the stochastic model: `nothing` (CPU arrays) or the CUDA backend."
 function execution_backend(o::Options)
     o.execution_mode == :cpu && return nothing
-    @eval import CUDA, CUDSS, MadNLPGPU   # loaded only for GPU runs
+    @eval import CUDA   # loaded only for GPU runs
     return Base.invokelatest(cuda_backend)
 end
 
@@ -17,49 +26,32 @@ function cuda_backend()
     return CUDA.CUDABackend()
 end
 
-const CPU_LINEAR_SYSTEM = (; linear_solver = MadNLP.MumpsSolver, kkt_system = MadNLP.SparseKKTSystem,
+const LINEAR_SYSTEM = (; linear_solver = MadNLP.MumpsSolver, kkt_system = MadNLP.SparseKKTSystem,
     equality_treatment = MadNLP.EnforceEquality, bound_relax_factor = 0.0)
 
-gpu_linear_system(o::Options) = (; linear_solver = MadNLPGPU.CUDSSSolver, cudss_algorithm = MadNLP.LDL,
-    kkt_system = MadNLP.SparseCondensedKKTSystem, equality_treatment = MadNLP.RelaxEquality,
-    fixed_variable_treatment = MadNLP.MakeParameter, bound_relax_factor = o.condensed_relaxation)
-
-stochastic_linear_system(o::Options) = o.execution_mode == :gpu ? gpu_linear_system(o) : CPU_LINEAR_SYSTEM
-
-"MadNLP barrier update of `rule` (one of BARRIER_RULES)."
-function barrier_update(rule::Symbol, mu_init, mu_min)
-    rule == :quality && return MadNLP.QualityFunctionUpdate{Float64}(; mu_init, mu_min)
-    rule == :loqo && return MadNLP.LOQOUpdate{Float64}(; mu_init, mu_min)
-    return MadNLP.MonotoneUpdate{Float64}(; mu_init, mu_min)
-end
-
-function solver_options(o::Options; tol, acceptable_tol, mu_init, mu_min, max_iter, output_file, linear_system,
-        barrier_rule = :monotone)
+function solver_options(o::Options; tol, acceptable_tol, mu_init, mu_min, max_iter, output_file)
     return (; tol, acceptable_tol, acceptable_iter = 15, max_iter,
         hessian_approximation = MadNLP.ExactHessian,
-        barrier = barrier_update(barrier_rule, mu_init, mu_min),
-        alpha_min_frac = o.alpha_min_frac,
-        intermediate_callback = RestorationGuard(limit = something(o.max_consecutive_restoration, typemax(Int))),
+        barrier = MadNLP.MonotoneUpdate{Float64}(; mu_init, mu_min),
+        alpha_min_frac = ALPHA_MIN_FRAC,
+        intermediate_callback = RestorationGuard(),
         print_level = o.verbose ? MadNLP.INFO : MadNLP.ERROR,
-        output_file, file_print_level = MadNLP.INFO, linear_system...)
+        output_file, file_print_level = MadNLP.INFO, LINEAR_SYSTEM...)
 end
 
-"Energy-optimal seed solve: CPU, exact equalities, tighter tolerance."
+"Single-phase reoptimisation: tighter tolerance."
 nominal_solver_options(o::Options; output_file::String = "") = solver_options(o;
-    tol = o.nominal_tol, acceptable_tol = o.nominal_tol, mu_init = o.nominal_barrier_mu_init,
-    mu_min = min(1e-4, o.nominal_tol) / 11, max_iter = o.nominal_max_iter, output_file,
-    linear_system = CPU_LINEAR_SYSTEM)
+    tol = NOMINAL_TOL, acceptable_tol = NOMINAL_TOL, mu_init = NOMINAL_BARRIER_MU_INIT,
+    mu_min = min(1e-4, NOMINAL_TOL) / 11, max_iter = NOMINAL_MAX_ITER, output_file)
 
 stochastic_solver_options(o::Options; output_file::String = "") = merge(solver_options(o;
-    tol = o.tol, acceptable_tol = o.acceptable_tol, mu_init = o.barrier_mu_init, mu_min = o.barrier_mu_min,
-    max_iter = o.max_iter, output_file, linear_system = stochastic_linear_system(o), barrier_rule = o.barrier_rule),
-    (; constr_mult_init_max = o.constr_mult_init_max, bound_push = o.bound_push))
+    tol = o.tol, acceptable_tol = o.acceptable_tol, mu_init = BARRIER_MU_INIT, mu_min = BARRIER_MU_MIN,
+    max_iter = o.max_iter, output_file), (; constr_mult_init_max = CONSTR_MULT_INIT_MAX))
 
-"Psyche energy seed: preserve the effective MadNLP settings of the verified runs."
+"Psyche reoptimisation: the effective MadNLP settings of the verified runs."
 function psyche_nominal_solver_options(o::Options; output_file::String = "")
-    settings=solver_options(o;tol=o.nominal_tol,acceptable_tol=o.nominal_tol,
-        mu_init=o.psyche_nominal_barrier_mu_init,mu_min=min(1e-4,o.nominal_tol)/11,
-        max_iter=o.nominal_max_iter,output_file,linear_system=CPU_LINEAR_SYSTEM)
+    settings = solver_options(o; tol = NOMINAL_TOL, acceptable_tol = NOMINAL_TOL, mu_init = PSYCHE_NOMINAL_BARRIER_MU_INIT,
+        mu_min = min(1e-4, NOMINAL_TOL) / 11, max_iter = NOMINAL_MAX_ITER, output_file)
     # MadNLP uses bound_push/bound_fac for both variables and slacks; bound_fac is its default 1e-2.
     return merge(settings, (bound_push = 1e-8, bound_fac = 1e-2))
 end

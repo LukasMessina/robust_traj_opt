@@ -1,12 +1,11 @@
 # Post-solve Monte Carlo validation: the Python/JAX validators of tools/, run on
-# the device of the solve (cpu: JAX on the CPU cores, gpu and hybrid: JAX on CUDA).
+# the device of the solve (cpu: JAX on the CPU cores, gpu: JAX on CUDA).
 
-"JAX device of the validation: the CPU, or CUDA for the gpu and hybrid modes."
-validation_device(o::Options) = o.execution_mode == :cpu ? :cpu : :gpu
+"JAX device of the validation: the execution mode's (cpu or gpu)."
+validation_device(o::Options) = o.execution_mode
 
-"Solution file the validator reads, or `nothing` for runs it does not validate."
+"Solution file the validator reads."
 function validation_input(o::Options)
-    o.feasibility_only && return nothing
     directory = output_directory(o)
     return joinpath(directory, o.case_id == "psyche" ? "psyche_solution.npz" : o.case_id * ".npz")
 end
@@ -50,8 +49,8 @@ thrown: the solve and its files are kept, and the manual command is printed.
 """
 function validate_solution(o::Options)
     input = validation_input(o)
-    if input === nothing || !isfile(input)
-        input === nothing || println("Validation skipped: no saved solution ($input).")
+    if !isfile(input)
+        println("Validation skipped: no saved solution ($input).")
         return false
     end
     o.execution_mode != :cpu && release_gpu_memory()

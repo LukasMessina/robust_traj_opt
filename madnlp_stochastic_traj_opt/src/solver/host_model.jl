@@ -1,4 +1,4 @@
-# Hybrid execution (execution_mode = :hybrid): the model is built and evaluated on the device, MadNLP and
+# GPU execution (execution_mode = :gpu): the model is built and evaluated on the device, MadNLP and
 # its linear solver (MUMPS, the CPU's exact sparse KKT system) run on the host. `HostModel` is the host view
 # MadNLP sees: every evaluation copies the point (and the multipliers) to the device, evaluates the device
 # model there and copies the values back; the sparsity structures are copied once. MadNLP passes views of
@@ -99,5 +99,5 @@ end
 NLPModels.hess_coord!(m::HostModel, x::AbstractVector, vals::AbstractVector; obj_weight = one(eltype(x))) =
     NLPModels.hess_coord!(m, x, zeros(m.meta.ncon), vals; obj_weight)
 
-"The model MadNLP solves: the device model itself, or its host view in the hybrid mode."
-solver_model(o::Options, model) = o.execution_mode == :hybrid ? HostModel(model) : model
+"The model MadNLP solves: the CPU model itself, or the host view of the device model in the gpu mode."
+solver_model(o::Options, model) = o.execution_mode == :gpu ? HostModel(model) : model

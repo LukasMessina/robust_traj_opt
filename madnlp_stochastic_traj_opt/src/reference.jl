@@ -1,5 +1,5 @@
-# Deterministic energy-optimal reference: loading and uniform resampling
-# (`load_ref_traj` / `_build_uniform_ref_traj` of the JAX script).
+# Deterministic fuel-optimal reference: loading and resampling on its own mesh with every interval split
+# into REFERENCE_MESH_REFINEMENT equal pieces (`load_ref_traj` of the JAX script).
 
 struct ReferenceTraj
     node_times::Vector{Float64}   # nondimensional, first entry zero
@@ -9,16 +9,6 @@ struct ReferenceTraj
     fuel_consumed::Float64        # [kg]
 end
 n_arcs(r::ReferenceTraj) = length(r.steps)
-
-uniform_arc_count(case::CaseData, o::Options) = something(o.uniform_mesh_arcs, case.uniform_arcs)
-
-"numpy.linspace: i * ((stop - start) / (num - 1)) + start, last entry pinned."
-function numpy_linspace(start, stop, num)
-    step = (stop - start) / (num - 1)
-    y = [i * step + start for i in 0:num-1]
-    y[end] = stop
-    return y
-end
 
 "numpy.interp for increasing sample points, including its exact-hit and NaN branches."
 function numpy_interp(x::AbstractVector, xp::AbstractVector, fp::AbstractVector)
@@ -46,16 +36,15 @@ function numpy_interp(x::AbstractVector, xp::AbstractVector, fp::AbstractVector)
     return result
 end
 
-"Directory of the deterministic reference: the case's energy-optimal one or its fuel-optimal sibling."
-reference_directory(case::CaseData, o::Options) =
-    o.reference_objective == :fuel ? replace(case.reference_dir, "energy_optimal" => "fuel_optimal") : case.reference_dir
+"Directory of the deterministic fuel-optimal reference (the fuel-optimal sibling of the exported energy-optimal one)."
+reference_directory(case::CaseData) = replace(case.reference_dir, "energy_optimal" => "fuel_optimal")
 
 function load_reference(case::CaseData, o::Options)
-    path = joinpath(reference_directory(case, o), case.id * ".npz")
+    path = joinpath(reference_directory(case), case.id * ".npz")
     isfile(path) || error("missing deterministic reference $path; run deterministic_traj_opt.py first")
     data = NPZ.npzread(path, ["t_dense_days", "x_dense", "u_dense", "mesh_fraction", "x"])
     case.id == "earth_mars" && check_earth_mars_reference(case, path, data["x"])
-    return build_uniform_reference(case, o, data)
+    return build_reference(case, o, data)
 end
 
 "The JAX script's checks of the archived Earth--Mars reference: same units and ephemeris boundary states."
@@ -71,12 +60,8 @@ function check_earth_mars_reference(case::CaseData, path, states)
         error("Reference boundary states do not match archived ephemerides")
 end
 
-function build_uniform_reference(case::CaseData, o::Options, data)
-    n = uniform_arc_count(case, o)
-    n >= 1 || throw(ArgumentError("uniform_mesh_arcs must be positive"))
-    truncated = o.truncated_uniform_mesh_arcs
-    truncated === nothing || 1 <= truncated <= n ||
-        throw(ArgumentError("truncated_uniform_mesh_arcs must be between 1 and $n"))
+function build_reference(case::CaseData, o::Options, data)
+    truncated = o.truncated_arcs
     dense_days = vec(Float64.(data["t_dense_days"]))
     dense_states = Float64.(data["x_dense"])
     dense_controls = Float64.(data["u_dense"])
@@ -91,14 +76,12 @@ function build_uniform_reference(case::CaseData, o::Options, data)
     unique_states = dense_states[:, unique_index]
     horizon = mesh[end] * case.tof_nd
     dense_times[end] >= horizon - 1e-12 || error("the dense reference stops before the requested horizon")
-    node_times = numpy_linspace(0.0, horizon, n + 1)
-    r = o.reference_mesh_refinement
-    if r !== nothing
-        # the reference's own nodes, every interval split into r equal pieces
-        node_times = vcat([mesh[k] .+ (mesh[k+1] - mesh[k]) .* (0:r-1) ./ r for k in 1:length(mesh)-1]..., mesh[end]) .* case.tof_nd
-        n = length(node_times) - 1
-    end
+    # the reference's own nodes, every interval split into r equal pieces
+    r = REFERENCE_MESH_REFINEMENT
+    node_times = vcat([mesh[k] .+ (mesh[k+1] - mesh[k]) .* (0:r-1) ./ r for k in 1:length(mesh)-1]..., mesh[end]) .* case.tof_nd
+    n = length(node_times) - 1
     if truncated !== nothing
+        truncated <= n || throw(ArgumentError("truncated_arcs must be at most $n"))
         node_times = node_times[1:truncated+1]
         n = truncated
     end
@@ -122,10 +105,9 @@ function build_uniform_reference(case::CaseData, o::Options, data)
     return ReferenceTraj(node_times, diff(node_times), node_states, node_controls, fuel)
 end
 
-"Arc cost weights: unit on the uniform mesh, N dt_k / (t_f - t_0) on the refined reference mesh."
-single_phase_arc_weights(o::Options, ref::ReferenceTraj) =
-    o.reference_mesh_refinement === nothing ? ones(n_arcs(ref)) : n_arcs(ref) .* ref.steps ./ sum(ref.steps)
+"Arc cost weights N dt_k / (t_f - t_0) of the reference mesh."
+single_phase_arc_weights(ref::ReferenceTraj) = n_arcs(ref) .* ref.steps ./ sum(ref.steps)
 
 "Terminal mean target: the full-transfer target or the truncated relative node."
 terminal_mean_target(case::CaseData, o::Options, ref::ReferenceTraj) =
-    o.truncated_uniform_mesh_arcs === nothing ? Vector(case.xf) : ref.states[1:NP, end]
+    o.truncated_arcs === nothing ? Vector(case.xf) : ref.states[1:NP, end]

@@ -52,10 +52,9 @@ device kernels. Column classes of the augmented spread (reference model):
 1..7 state, 8..13 navigation, 14..16 Wiener increments. Each outer point carries
 `inner` executed controls: the six Gates cubature points, or one (the command
 itself) on arcs without thrust (`tmax == 0`), where the six would coincide.
-The control type `C` (`CartesianControls`, `PolarControls` or `ThrottleControls`) fixes the
-feedforward inputs of the oracles and, through `ntheta`, their number at compile time.
+The feedforward is the throttle and unit direction of the deterministic optimisation, S = Gamma d.
 """
-struct UTParams{G<:GravityModel,S,C}
+struct UTParams{G<:GravityModel,S}
     d::Int
     inner::Int                    # executed-control points per outer point: 6, or 1 without thrust
     n_points::Int                 # 2d outer points times `inner`
@@ -74,63 +73,38 @@ struct UTParams{G<:GravityModel,S,C}
     sqrt_d::Float64
     sqrt3::Float64
     psi::Float64
-    eps::Float64                  # control_norm_eps
     floor::Float64                # spectral_radius_floor
     smoothing_sq::Float64         # eigenvalue_smoothing^2
     inv_sigma_sq::Float64         # state_covariance_weight / bryson_sigma_factor^2
-    flow_sq::Float64              # (T_max mass_flow_smoothing)^2; 0: the reference's ||u||
-    controls::C                   # feedforward inputs; see `model_params`
+    flow_sq::Float64              # (T_max MASS_FLOW_SMOOTHING)^2 on the feedback-carrying points
 end
 
-"Feedforward inputs S (the reference)."
-struct CartesianControls end
-"Polar feedforward inputs (Gamma, alpha, beta): S = Gamma H(n) (cos a cos b, sin a cos b, sin b)."
-struct PolarControls end
-"""
-Throttle and direction as in the deterministic optimisation: d in the f inputs, Gamma the 57th input, S = Gamma d.
-`ThrottleControls{true}` (`sigma_command_lifting`) also lifts the commands of the outer points that carry
-feedback (`lift_index`): c_o = eta_o e_o with ||e_o|| = 1 (eta_o free) are the oracle inputs
-LIFT_BASE + 4(l-1) + (1:4), and the model ties them to Gamma d + sigma K m_o by equality rows.
-"""
-struct ThrottleControls{Lifted} end
-
-const CONTROL_TYPES = Dict(:cartesian => CartesianControls(), :polar => PolarControls(), :throttle => ThrottleControls{false}())
-
-const NLIFT = 4NP        # lifted outer points: the + and - points of the 6 state and 6 navigation feedback columns
-const LIFT_BASE = 57     # (eta_l, e_l) are the oracle inputs LIFT_BASE + 4(l-1) + (1:4)
-
-"Number of arc inputs of the UT oracle (m 7, f 3, K_hat 18, L_tilde 28, the throttle and the lifted commands)."
-@inline ntheta(::UTParams) = 56
-@inline ntheta(::UTParams{<:GravityModel,<:Any,<:ThrottleControls}) = 57
-@inline ntheta(::UTParams{<:GravityModel,<:Any,ThrottleControls{true}}) = LIFT_BASE + 4NLIFT
-@inline lifted(::UTParams) = false
-@inline lifted(::UTParams{<:GravityModel,<:Any,ThrottleControls{true}}) = true
+"Number of arc inputs of the UT oracle: m 7, d 3, K_hat 18, L_tilde 28 and the throttle Gamma."
+@inline ntheta(::UTParams) = 57
+@inline nhess(p::UTParams) = ntheta(p) * (ntheta(p) + 1) ÷ 2
 
 """
-Lift index 1..NLIFT of outer point `o` when its command carries feedback (state columns 1..6 and navigation
-columns 8..13; the mass column 7 has no position/velocity entries), 0 otherwise (c_o = S).
+Feedback column 1..4NP of outer point `o` when its command carries feedback (state columns 1..6 and navigation
+columns 8..13, + and - points; the mass column 7 has no position/velocity entries), 0 otherwise (c_o = S).
 """
-@inline function lift_index(p::UTParams, o::Int)
+@inline function feedback_index(p::UTParams, o::Int)
     j = (o - 1) % p.d + 1
     column = j <= NP ? j : NX < j <= NX + NP ? j - 1 : 0
     return column == 0 ? 0 : column + 2NP * (o > p.d)
 end
-@inline nhess(p::UTParams) = ntheta(p) * (ntheta(p) + 1) ÷ 2
-"Models without the norm smoothing: exact ||S||, plain mass flow, Gates factors without jitter."
-@inline exact_norm(::UTParams) = true
-@inline exact_norm(::UTParams{<:GravityModel,<:Any,CartesianControls}) = false
 
 """
 UT parameters from the problem data: `scale` (a vector of standard deviations or a lower
 factor of the initial covariance, in state units) converts normalized covariance coordinates
 to state units; `nav_cov` is the normalized navigation covariance (a vector of variances or
-a matrix); `tmax`, `ve` and `sigma_nd` are in the units of the propagated state.
+a matrix); `tmax`, `ve` and `sigma_nd` are in the units of the propagated state. The mass flow of the sigma
+points is the plain norm except on the outer points that carry feedback (`outer_flow_sq`), the Gates factors have
+no jitter (the factor of a command Gamma d is Gamma chol(Q_G(d))).
 """
 function ut_params(o::Options; scale, nav_cov, tmax, gravity, ve, sigma_nd)
     d = UT_DIMENSION
     inner = tmax == 0 ? 1 : 6
-    # The reference constant is the literal 1e-30; keep it bitwise.
-    smoothing_sq = o.eigenvalue_smoothing == JAX_EIGENVALUE_SMOOTHING ? 1e-30 : o.eigenvalue_smoothing^2
+    smoothing_sq = EIGENVALUE_SMOOTHING^2
     normalization = scale isa AbstractVector ? DiagonalScale(SVector{7}(scale)) : TriangularScale(scale)
     covariance, factor = if nav_cov isa AbstractVector
         SMatrix{6,6}(Diagonal(SVector{6}(nav_cov))), SMatrix{6,6}(Diagonal(SVector{6}(sqrt.(max.(d .* nav_cov, 0.0)))))
@@ -140,107 +114,42 @@ function ut_params(o::Options; scale, nav_cov, tmax, gravity, ve, sigma_nd)
     end
     return UTParams(d, inner, 2d * inner, unscented_weights(d)[2] * (1.0 / inner), 1.0 / d,
         normalization, factor, covariance,
-        tmax, gravity, ve, sigma_nd, o.cholesky_jitter,
+        tmax, gravity, ve, sigma_nd, CHOLESKY_JITTER,
         o.gates_proportional_magnitude_std^2, o.gates_proportional_pointing_std^2,
         sqrt(Float64(d)), sqrt(3.0), psi_inverse(NU, o.violation_parameter),
-        o.control_norm_eps, o.spectral_radius_floor, smoothing_sq, o.state_covariance_weight / o.bryson_sigma_factor^2,
-        (tmax * o.mass_flow_smoothing)^2, CartesianControls())
+        SPECTRAL_RADIUS_FLOOR, smoothing_sq, o.state_covariance_weight / BRYSON_SIGMA_FACTOR^2,
+        (tmax * MASS_FLOW_SMOOTHING)^2)
 end
-
-"""
-UT parameters of the stochastic model. Polar and throttle controls (S = Gamma d, ||d|| = 1) use the
-plain mass-flow norm (delta = 0) and Gates factors without jitter: the Gates factor of a command
-without feedback is Gamma chol(Q_G(d)) and its executed points Gamma (d +- sqrt(3) G_l), so their mass
-flow is Gamma times a smooth function of d (||d +- sqrt(3) G_l|| >= 1 - sqrt(3) sigma_max). The nominal
-and seed solves keep the parameters of `ut_params`. `model_mass_flow_smoothing` (a diagnostic, default 0)
-puts delta back in the sigma-point mass flow only; the feedforward and the Gates factors stay exact.
-`sigma_command_lifting` lifts the feedback commands of the thrust arcs (`ThrottleControls{true}`).
-"""
-function model_params(o::Options, p::UTParams)
-    o.control_parameterization == :cartesian && return p
-    controls = o.sigma_command_lifting && p.tmax != 0 ? ThrottleControls{true}() : CONTROL_TYPES[o.control_parameterization]
-    flow_sq = (p.tmax * o.model_mass_flow_smoothing)^2
-    return UTParams(ntuple(i -> fieldname(UTParams, i) === :flow_sq ? flow_sq : fieldname(UTParams, i) === :controls ?
-        controls : getfield(p, i), fieldcount(UTParams))...)
-end
-model_params(o::Options, p::AbstractVector{<:UTParams}) = [model_params(o, q) for q in p]
 
 ut_params(case::CaseData, o::Options, n::Normalization) = ut_params(o; scale = n.scale,
     nav_cov = navigation_variances(case, o, n), tmax = case.tmax, gravity = case.gravity, ve = case.ve,
     sigma_nd = acceleration_diffusion_nd(case, o))
 
-@inline control_norm(f::SVector{3}, eps) = sqrt(dot(f, f) + eps^2)
-
-"||S|| as the model evaluates it: smoothed by eps, or exact for the polar and throttle controls (||S|| = Gamma)."
-@inline feedforward_norm(p, f::SVector{3}) = exact_norm(p) ? norm(f) : control_norm(f, p.eps)
-
-"Reflection H(n) u that takes e1 to the unit seed direction n (the identity for n = e1)."
-@inline function reflect_e1(u::SVector{3}, n::SVector{3})
-    w = SVector(n[1] - 1.0, n[2], n[3])
-    ww = dot(w, w)
-    return ww < 1e-24 ? u : u - (2 * dot(w, u) / ww) * w
-end
-
-"Unit direction d = H(n) (cos a cos b, sin a cos b, sin b)."
-@inline polar_direction(alpha, beta, n::SVector{3}) =
-    reflect_e1(SVector(cos(alpha) * cos(beta), sin(alpha) * cos(beta), sin(beta)), n)
-
 """
-Feedforward of the f inputs `theta`: S itself (cartesian), Gamma d(alpha, beta) (polar, seed direction n)
-or Gamma d (throttle `gamma`, the direction d in `theta`).
-"""
-@inline feedforward_command(::UTParams, theta::SVector{3}, n, gamma) = theta
-@inline feedforward_command(::UTParams{<:GravityModel,<:Any,PolarControls}, theta::SVector{3}, n, gamma) =
-    theta[1] * polar_direction(theta[2], theta[3], n)
-@inline feedforward_command(::UTParams{<:GravityModel,<:Any,<:ThrottleControls}, theta::SVector{3}, n, gamma) = gamma * theta
-
-"""
-Jacobian J = dS/d(Gamma, alpha, beta) of the polar feedforward and its second derivatives
-(packed lower: GG, aG, aa, bG, ba, bb, each a 3-vector).
-"""
-@inline function polar_derivatives(theta::SVector{3}, n::SVector{3})
-    G, a, b = theta[1], theta[2], theta[3]
-    ca, sa, cb, sb = cos(a), sin(a), cos(b), sin(b)
-    d = reflect_e1(SVector(ca * cb, sa * cb, sb), n)
-    da = reflect_e1(SVector(-sa * cb, ca * cb, 0.0), n)
-    db = reflect_e1(SVector(-ca * sb, -sa * sb, cb), n)
-    daa = reflect_e1(SVector(-ca * cb, -sa * cb, 0.0), n)
-    dab = reflect_e1(SVector(sa * sb, -ca * sb, 0.0), n)
-    dbb = reflect_e1(SVector(-ca * cb, -sa * cb, -sb), n)
-    J = hcat(d, G * da, G * db)
-    return J, (zero(d), da, G * daa, db, G * dab, G * dbb)
-end
-
-"""
-Mass-flow magnitude of an executed sigma point, sqrt(||u||^2 + (T_max delta)^2), the smoothing
-that `control_norm` applies to the feedforward (delta = `mass_flow_smoothing`). The reference
-arc map uses the plain ||u|| (delta = 0), whose curvature grows like 1/||u|| on coast arcs.
+Mass-flow magnitude of an executed sigma point, sqrt(||u||^2 + (T_max delta)^2) (delta = MASS_FLOW_SMOOTHING on
+the outer points that carry feedback, `outer_flow_sq`): the plain ||u|| has curvature 1/||u|| on coast arcs.
 Arcs without thrust have exactly zero mass flow.
 """
 @inline sigma_mass_flow(p, u) = sigma_mass_flow(p, u, p.flow_sq)
 @inline sigma_mass_flow(p, u, flow_sq) = p.tmax == 0 ? zero(eltype(u)) : sqrt(dot(u, u) + flow_sq)
 
 """
-delta^2 term of the mass flow of outer point `o` (0: the zero-weight center). The polar and throttle models
-(`model_mass_flow_smoothing`) smooth only the points whose command carries feedback (`lift_index`): the others
-command Gamma d, whose mass flow Gamma ||d +- sqrt(3) G(d)_l|| is already smooth, and keep the exact norm. The
-cartesian reference smooths every point.
+delta^2 term of the mass flow of outer point `o` (0: the zero-weight center): only the points whose command carries
+feedback (`feedback_index`) are smoothed; the others command Gamma d, whose mass flow Gamma ||d +- sqrt(3) G(d)_l||
+is already smooth, and keep the exact norm.
 """
-@inline outer_flow_sq(p::UTParams, o::Int) = exact_norm(p) && (o == 0 || lift_index(p, o) == 0) ? 0.0 : p.flow_sq
+@inline outer_flow_sq(p::UTParams, o::Int) = o == 0 || feedback_index(p, o) == 0 ? 0.0 : p.flow_sq
 
 "Q_G(u) = sigma_4^2 ||u||^2 I + (sigma_2^2 - sigma_4^2) u u'."
 @inline gates_covariance(c::SVector{3}, var_mag, var_point) =
     var_point * dot(c, c) * SMatrix{3,3}(1.0I) + (var_mag - var_point) * (c * c')
 
 """
-Cholesky factor of the six-point Gates cubature conditional on the command `c`. The polar and
-throttle models leave out the jitter, so the factor is homogeneous of degree one in `c` (Gamma G(d)
-without feedback).
+Cholesky factor of the six-point Gates cubature conditional on the command `c`, without jitter: the factor is
+homogeneous of degree one in `c` (Gamma G(d) without feedback).
 """
-@inline function gates_factor(c::SVector{3}, p::UTParams)
-    covariance = gates_covariance(c, p.var_mag, p.var_point) + (exact_norm(p) ? 0.0 : p.jitter) * SMatrix{3,3}(1.0I)
-    return lower_matrix3(cholesky_packed(covariance, -Inf))
-end
+@inline gates_factor(c::SVector{3}, p::UTParams) =
+    lower_matrix3(cholesky_packed(gates_covariance(c, p.var_mag, p.var_point), -Inf))
 
 "Smoothed analytic 3x3 largest eigenvalue, `spectral_radius` of the JAX script."
 @inline spectral_radius(T::SMatrix{3,3}, floor, smoothing_sq) =
@@ -303,10 +212,6 @@ end
     end)
     return F * F'
 end
-
-"Chance-constraint value ||S_tilde||_eps + psi rho(T) (must be <= 1)."
-@inline control_chance(p::UTParams, f::SVector{3}, K::SMatrix{3,6}, P6::SMatrix{6,6}) =
-    control_norm(f, p.eps) + control_spread(p, f, K, P6)
 
 "Covariance part psi rho(T) of the thrust chance left-hand side."
 @inline control_spread(p::UTParams, f::SVector{3}, K::SMatrix{3,6}, P6::SMatrix{6,6}) =

@@ -48,13 +48,13 @@ function tvlqr_gains(state_weight, control_weight, terminal_weights, A_list, B_l
 end
 
 """
-Bryson weights Q~ = w_P I/c^2, R~ = w I (the tracking weights of the cost, or the seed weights when given),
-Qf~ = diag(r_p I3, r_v I3)/c^2.
+Bryson weights Q~ = w_P I/c^2, R~ = w I (`seed_weights`: the cost's tracking weights, or Bryson's rule in
+step 4), Qf~ = diag(r_p I3, r_v I3)/c^2.
 """
 function seed_gains(o::Options, A_list, B_list; arc_weights = nothing)
-    terminal = [fill(o.position_covariance_reduction, 3); fill(o.velocity_covariance_reduction, 3)] ./ o.bryson_sigma_factor^2
-    return tvlqr_gains(something(o.seed_state_covariance_weight, o.state_covariance_weight) / o.bryson_sigma_factor^2,
-        something(o.seed_control_covariance_weight, o.control_covariance_weight), terminal, A_list, B_list; arc_weights)
+    terminal = [fill(o.position_covariance_reduction, 3); fill(o.velocity_covariance_reduction, 3)] ./ BRYSON_SIGMA_FACTOR^2
+    state_weight, control_weight = seed_weights(o)
+    return tvlqr_gains(state_weight / BRYSON_SIGMA_FACTOR^2, control_weight, terminal, A_list, B_list; arc_weights)
 end
 
 struct InitialGuess
@@ -75,16 +75,16 @@ function build_initial_guess(case::CaseData, o::Options, n::Normalization, p::UT
     # Position/velocity rows only: the gains never act on mass, and the mass row
     # (normalised by the mass scale) would otherwise dominate the norm by ~1e3.
     gain_scale = [1.0 / max(opnorm(B[1:NP, :], 2), 1e-300) for B in B_list]
-    # Q_k = w_k Q, R_k = w_k R with the cost's arc weights on a refined reference mesh
+    # Q_k = w_k Q, R_k = w_k R with the cost's arc weights
     gains = seed_gains(o, A_list, B_list;
-        arc_weights = o.reference_mesh_refinement === nothing ? nothing : single_phase_arc_weights(o, ref))
+        arc_weights = single_phase_arc_weights(ref))
     _, covariances, controls = propagate_stochastic_moments(p, means, feedforward, gains,
         initial_covariance(n), ref.steps)
     inverse_std = terminal_inverse_std(o)
     slack = I - (inverse_std * inverse_std') .* covariances[1:NP, 1:NP, end]
     E = eigen(Symmetric((slack + slack') / 2))
     margin = cholesky(Symmetric(E.vectors * Diagonal(max.(E.values, 0.0)) * E.vectors' +
-        o.terminal_margin_floor^2 * I)).L
+        TERMINAL_MARGIN_FLOOR^2 * I)).L
     return InitialGuess(means, feedforward, gains, gain_scale, pack_lower(Matrix(margin)),
         covariances, controls)
 end

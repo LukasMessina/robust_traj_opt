@@ -1,13 +1,12 @@
 # Psyche checks on the exported mission arrays (included by runtests.jl when present): the
 # data and uncertainty model, ballistic Mars, the analytic B-plane Jacobian, and the full
-# stochastic model at a perturbed seed (exported energy mesh, no reoptimisation) against the
+# stochastic model of both problems at a perturbed seed (exported fuel mesh, no reoptimisation) against the
 # literal arc map, with directional central differences of its Jacobian and Lagrangian Hessian.
 
-"The Psyche model from the exported mesh (no energy reoptimisation)."
-function psyche_setup(; backend = nothing)
-    o = C.Options(; case_id = "psyche", LEGACY_OPTIONS..., psyche_nominal_objective = :energy,
-        psyche_input_file = joinpath(C.PROJECT_ROOT, "data", "psyche_inputs.npz"))
-    d = C.load_psyche_data(o.psyche_input_file)
+"The Psyche model from the exported mesh (no fuel reoptimisation)."
+function psyche_setup(; objective = :standard, backend = nothing)
+    o = C.Options(; case_id = "psyche", objective)
+    d = C.load_psyche_data(C.PSYCHE_INPUT_FILE)
     u = C.psyche_uncertainty(d, o)
     params = C.psyche_phase_params(d, o, u)
     ref = (means = d.seed_states, feedforward = d.seed_controls, days = d.seed_days, steps = C.arc_steps(d, d.seed_days))
@@ -71,14 +70,18 @@ end
     @test J ≈ ForwardDiff.jacobian(v -> C.scaled_bplane(v, mu, rho), z) rtol = 1e-10
 end
 
-@testset "Psyche stochastic model" begin
-    (; o, d, u, params, seed, scaling, blocks) = PSYCHE
+@testset "Psyche stochastic model ($objective)" for objective in (:standard, :chance_sum)
+    (; o, d, u, params, seed, scaling, blocks) = objective == :standard ? PSYCHE : psyche_setup(; objective)
     model, layout, n = blocks.model, blocks.layout, d.n
     nc = count(>(0), d.slots)
-    @test model.meta.nvar == 7(n + 1) + 21nc + 28n + 21
-    @test model.meta.ncon == 19 + 35n + 21 + nc + 1
+    step4 = objective == :chance_sum
+    @test model.meta.nvar == 7(n + 1) + 22nc + 28n + (step4 ? 21 + 7nc : 0)
+    @test model.meta.ncon == 19 + 35n + 2nc + 1 + (step4 ? 21 + 6nc : 0)
     rng = Xoshiro(13)
     x = Array(model.meta.x0) .* (1 .+ 1e-4 .* randn(rng, model.meta.nvar))
+    # unit directions (the rows ||d_k||^2 = 1): the cost's Gamma_k is ||S_k|| only there
+    directions = reshape(view(x, blocks.ff.offset .+ (1:3nc)), 3, nc)
+    directions ./= sqrt.(sum(abs2, directions; dims = 1))
     sol = C.psyche_solution(x, blocks, seed)
     values = Array(NLPModels.cons(model, x))
     offset = length(layout.boundary)
@@ -88,15 +91,25 @@ end
             sol.feedforward[:, k], sol.gains[:, :, k], layout.steps[k])
         mean_error = max(mean_error, maximum(abs, values[offset .+ 7(k-1) .+ (1:7)] -
             (sol.means[:, k+1] - layout.ratio[:, k] .* mu - layout.defect_rhs[:, k])))
-        L = C.unpack_lower(sol.factors[:, k], C.NX)
-        expected = C.pack_lower(L * L' - C.node_scaled_covariance(scaling, k + 1, P))
+        # square-root rows L_{k+1} - chol(V_k), V_k the UT covariance in the coordinates of node k+1
+        R = cholesky(Symmetric(C.node_scaled_covariance(scaling, k + 1, P))).L
+        expected = sol.factors[:, k] - C.pack_lower(Matrix(R))
         covariance_error = max(covariance_error, maximum(abs, values[offset + 7n .+ 28(k-1) .+ (1:28)] - expected))
     end
     @info "Psyche oracle rows against the literal arc map" mean_error covariance_error
-    @test mean_error < 1e-12
-    @test covariance_error < 1e-10
-    report = C.psyche_evaluate(d, o, u, params, layout, scaling, seed, sol)
-    @test abs(NLPModels.obj(model, x) + blocks.objective_constant - report["objective"]) < 1e-10 * report["objective"]
+    @test mean_error < 1e-11
+    @test covariance_error < 1e-9
+    if step4
+        slack = blocks.chance_slack
+        gamma, tau = C.variable_values(x, blocks.throttle), C.variable_values(x, slack.tau)
+        weights = layout.weights[blocks.controlled]
+        @test NLPModels.obj(model, x) ≈ sum(weights .* (gamma .+ params[1].psi .* slack.scale .* tau)) rtol = 1e-13
+    else
+        report = C.psyche_evaluate(d, o, u, params, layout, scaling, seed, sol)
+        # the model's closed-form tr(T) keeps the 3 eps of the executed covariance, the literal arc map's T does not
+        jitter = sum(layout.weights[k] * o.control_covariance_weight * 3params[1].jitter for k in 1:n if d.slots[k] > 0)
+        @test abs(NLPModels.obj(model, x) + blocks.objective_constant - jitter - report["objective"]) < 1e-10 * report["objective"]
+    end
     @test abs(values[end] - blocks.clearance([sol.means[:, d.ca_node]; sol.factors[1:21, d.ca_node-1]])) < 1e-14
 
     # Directional central differences of the Jacobian and of the Lagrangian gradient.

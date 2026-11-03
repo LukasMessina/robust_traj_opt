@@ -6,7 +6,7 @@
 const GPU_BACKEND = C.execution_backend(C.Options(execution_mode = :gpu))
 
 @testset "GPU kernels match the CPU model ($case_id, $objective)" for case_id in ("lyapunov_l1_to_l2", "earth_mars"),
-        objective in (:standard, :quantile)
+        objective in (:standard, :chance_sum)
     cpu = truncated_setup(; case_id, objective)
     gpu = truncated_setup(; case_id, objective, backend = GPU_BACKEND)
     mc, mg = cpu.blocks.model, gpu.blocks.model
